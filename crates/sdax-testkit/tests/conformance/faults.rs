@@ -2,9 +2,9 @@
 //! C-52, C-59, C-66, C-67.
 
 use crate::corpus::*;
+use crate::Drv as ScriptedDriver;
 use sdax::*;
 use sdax_testkit::eol::*;
-use sdax_testkit::ScriptedDriver;
 
 fn faults_of<O>(d: &sdax_testkit::Driven<O>) -> Vec<String> {
     d.report.faults.iter().map(|f| f.node.to_string()).collect()

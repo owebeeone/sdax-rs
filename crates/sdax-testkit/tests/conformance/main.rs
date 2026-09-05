@@ -5,6 +5,11 @@
 //! contract as the file-level docs of each module say. The invariant checker
 //! runs on every trace produced here, in addition to the listed expectations.
 
+/// The driver the conformance modules run against in this binary. The tokio
+/// adapter's own binary (`sdax-tokio`, `tests/conformance.rs`) includes the
+/// same modules with its own `Drv`, so the suite has one source (LBT-009).
+pub use sdax_testkit::ScriptedDriver as Drv;
+
 mod cancel;
 mod cleanup;
 mod components;

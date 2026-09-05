@@ -2,9 +2,9 @@
 //! C-41, C-62, C-63. Every trace is checked by the invariant checker.
 
 use crate::corpus::*;
+use crate::Drv as ScriptedDriver;
 use sdax::*;
 use sdax_testkit::eol::*;
-use sdax_testkit::ScriptedDriver;
 
 fn ok_after(secs: f64) -> Body {
     Body::ok(At::plus(secs))

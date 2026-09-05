@@ -3,9 +3,9 @@
 //! not here.
 
 use crate::corpus::*;
+use crate::Drv as ScriptedDriver;
 use sdax::*;
 use sdax_testkit::eol::*;
-use sdax_testkit::ScriptedDriver;
 
 #[test]
 fn c11_cancel_before_start_has_no_effect_and_the_plan_is_reusable() {

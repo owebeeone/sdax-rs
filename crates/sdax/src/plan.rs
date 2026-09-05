@@ -6,9 +6,9 @@
 //! eligibility, the release graph, layers, arbitration — is derived from the
 //! declaration recorded here and from nothing else (INV-1).
 
-use crate::contracts::{BoxFuture, Error};
 use crate::cx::{Child, Cx, SpawnError};
-use crate::key::{RawKey, Slots};
+use crate::host::bodies::Bodies;
+use crate::key::RawKey;
 use crate::policy::{Ambiguity, CancelMode, Mode, Policy, Restart, Retry, Shutdown};
 use crate::view::NodePath;
 use std::marker::PhantomData;
@@ -260,36 +260,6 @@ impl PlanIr {
     }
 }
 
-/// A prepare body, with its dependency plumbing erased.
-pub(crate) type ErasedPrepare = Box<
-    dyn Fn(Arc<crate::cx::CxInner>, &Slots) -> Option<BoxFuture<'static, Result<(), Error>>>
-        + Send
-        + Sync,
->;
-
-/// A release body, with its plumbing erased.
-pub(crate) type ErasedRelease = Box<
-    dyn Fn(Arc<crate::cx::CxInner>, &Slots) -> Option<BoxFuture<'static, Result<(), Error>>>
-        + Send
-        + Sync,
->;
-
-/// A blocking body, run on a pool thread.
-pub(crate) type ErasedBlocking = Box<
-    dyn Fn(Arc<crate::cx::CxInner>, &Slots) -> Option<Box<dyn FnOnce() -> Result<(), Error> + Send>>
-        + Send
-        + Sync,
->;
-
-/// The bodies, erased. Stage 0 records them and never runs them; the Stage 1
-/// driver is what reads these fields.
-#[allow(dead_code)]
-pub(crate) struct Bodies {
-    pub(crate) prepare: Vec<Option<ErasedPrepare>>,
-    pub(crate) release: Vec<Option<ErasedRelease>>,
-    pub(crate) blocking: Vec<Option<ErasedBlocking>>,
-}
-
 /// An immutable, reusable lifecycle declaration.
 ///
 /// `Out` is the plan's exported value; `In` is a template's per-instance input.
@@ -322,9 +292,20 @@ impl<Out, In> std::fmt::Debug for Plan<Out, In> {
 }
 
 impl<Out, In> Plan<Out, In> {
-    /// The recorded declaration.
+    /// The recorded declaration. Host API, like
+    /// [`bodies_ref`](Self::bodies_ref): the engine and the run driver read
+    /// it, an author does not.
     pub(crate) fn ir(&self) -> &PlanIr {
         &self.ir
+    }
+
+    /// The erased bodies this plan recorded.
+    ///
+    /// Host API, reached through
+    /// [`host::bodies_of`](crate::host::bodies_of) rather than named here by
+    /// an author.
+    pub(crate) fn bodies_ref(&self) -> &Arc<Bodies> {
+        &self.bodies
     }
 
     /// The plan's name.

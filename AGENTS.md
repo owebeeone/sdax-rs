@@ -114,8 +114,8 @@ so a broken intra-doc link is a real defect.
 | stage | delivers | gate before the next |
 |---|---|---|
 | 0 *(done)* | surface, validator, inspection, seam, host contracts, testkit clock/recorder/static checker, `TokioRuntime` | suite (a) W-*, suite (b) P-* |
-| 1 | `engine::Machine`, `Plan::simulate`, the scripted driver, trace-level invariants | suite (c) C-* green on the scripted driver |
-| 2 | `Plan::start`, `Running`, the tokio run driver, drop guard, drainer | suite (c) re-run on the adapter with paused time; suite (d) R-* |
+| 1 *(done)* | `engine::Machine`, `Plan::simulate`, the scripted driver, trace-level invariants | suite (c) C-* green on the scripted driver |
+| 2 *(done)* | `PlanStart::start`, `Running`, the tokio run driver, drop guard, drainer | suite (c) re-run on the adapter with paused time; suite (d) R-* |
 | 3 | dynamic instances end to end | C-30, P-07 |
 
 Do not start a stage's work before the previous stage's gate is green.

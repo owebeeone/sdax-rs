@@ -67,7 +67,11 @@ pub struct Stop {
 }
 
 impl Stop {
-    pub(crate) fn on(signal: Arc<StopSignal>) -> Stop {
+    /// Wait on this signal.
+    ///
+    /// Host API: a body says `cx.stop()`; a run driver builds one directly,
+    /// which is why this is public.
+    pub fn on(signal: Arc<StopSignal>) -> Stop {
         Stop { signal }
     }
 }

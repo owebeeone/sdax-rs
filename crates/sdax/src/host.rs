@@ -11,8 +11,9 @@
 //!
 //! - a substrate implements [`Runtime`], [`TaskHandle`], [`Clock`] and
 //!   [`Observer`] — `sdax-tokio` is the reference implementation;
-//! - the Stage 2 run driver lives in `sdax-tokio`, so it must be able to build
-//!   a body context ([`CxInner`]) and take what the body left in it
+//! - the run driver lives in `sdax-tokio`, so it must be able to reach the
+//!   plan's erased bodies ([`bodies_of`], [`BodySource`]), build a body
+//!   context ([`CxInner`]) and take what the body left in it
 //!   ([`CxInner::take_held`], [`CxInner::put_output`],
 //!   [`CxInner::take_serve`], [`CxInner::hold_count`]);
 //! - a run implements [`Scope`] and [`ChildControl`] so that `cx.spawn` and
@@ -33,7 +34,9 @@ pub use crate::contracts::{
 pub use crate::cx::{ChildControl, CxInner, InstanceId, Scope, StopSignal};
 pub use crate::key::RawKey;
 pub use crate::plan::SEMANTICS;
+pub use bodies::{bodies_of, Bodies, BodySource, Task};
 
+pub mod bodies;
 pub mod engine;
 
 /// The stepping simulator behind `Plan::simulate`, for a harness that

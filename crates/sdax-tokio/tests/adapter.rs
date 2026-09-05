@@ -172,9 +172,7 @@ fn every_spawned_task_is_tracked_so_a_shutdown_can_wait_for_it() {
         }));
         assert_eq!(rt.tracked(), 1);
         tokio::time::advance(Duration::from_secs(2)).await;
-        rt.close_and_wait(Duration::from_secs(5))
-            .await
-            .expect("drained");
+        rt.shutdown(Duration::from_secs(5)).await.expect("drained");
         assert_eq!(rt.tracked(), 0);
     });
     assert_eq!(done.load(Ordering::SeqCst), 1);
@@ -189,7 +187,7 @@ fn a_shutdown_that_runs_out_of_budget_says_what_is_still_running() {
             std::future::pending::<()>().await;
         }));
         let left = rt
-            .close_and_wait(Duration::from_secs(1))
+            .shutdown(Duration::from_secs(1))
             .await
             .expect_err("cannot drain");
         assert_eq!(

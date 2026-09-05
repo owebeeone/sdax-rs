@@ -232,6 +232,40 @@ impl Script {
         &self.schedule
     }
 
+    /// What this script says a node's body does, attempt by attempt.
+    ///
+    /// A harness that runs the script on a real runtime rather than on the
+    /// stepping simulator reads it back through these three, and through
+    /// [`requests`](Self::requests).
+    pub fn body_of(&self, node: &str) -> Option<&[Body]> {
+        self.bodies
+            .iter()
+            .find(|(n, _)| n == node)
+            .map(|(_, b)| b.as_slice())
+    }
+
+    /// What this script says a service's serve future does, episode by
+    /// episode.
+    pub fn serve_of(&self, node: &str) -> Option<&[Serve]> {
+        self.serves
+            .iter()
+            .find(|(n, _)| n == node)
+            .map(|(_, s)| s.as_slice())
+    }
+
+    /// What this script says a node's release or compensation does.
+    pub fn cleanup_of(&self, node: &str) -> Option<&Cleanup> {
+        self.cleanups
+            .iter()
+            .find(|(n, _)| n == node)
+            .map(|(_, c)| c)
+    }
+
+    /// The external requests, in the order written.
+    pub fn requests(&self) -> &[(Duration, Request)] {
+        &self.requests
+    }
+
     /// Every node path the script names, for validation against a plan.
     pub fn named_nodes(&self) -> Vec<&str> {
         self.bodies

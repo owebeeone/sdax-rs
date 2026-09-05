@@ -2,9 +2,9 @@
 //! C-69.
 
 use crate::corpus::*;
+use crate::Drv as ScriptedDriver;
 use sdax::*;
 use sdax_testkit::eol::*;
-use sdax_testkit::ScriptedDriver;
 
 fn incomplete_of<O>(d: &sdax_testkit::Driven<O>) -> Vec<String> {
     d.report

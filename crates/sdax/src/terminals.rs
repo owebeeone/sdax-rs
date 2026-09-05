@@ -12,8 +12,9 @@ use crate::builder::{
 };
 use crate::contracts::Error;
 use crate::cx::{Acquire, Cx, Held, Release, Run, Serving, Start};
+use crate::host::bodies::{ErasedBlocking, ErasedPrepare, ErasedRelease};
 use crate::key::{Deps, Key};
-use crate::plan::{ErasedBlocking, ErasedPrepare, ErasedRelease, NodeDecl, Pool, ReleaseStyle};
+use crate::plan::{NodeDecl, Pool, ReleaseStyle};
 use crate::policy::Ambiguity;
 use std::any::TypeId;
 use std::future::Future;

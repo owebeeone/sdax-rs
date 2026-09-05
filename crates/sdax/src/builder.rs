@@ -6,10 +6,10 @@
 //! declaration.
 
 use crate::cx::Release;
-use crate::key::{Deps, Key, RawKey};
+use crate::host::bodies::{Bodies, ErasedBlocking, ErasedImport, ErasedPrepare, ErasedRelease};
+use crate::key::{Deps, Key, RawKey, Slots};
 use crate::plan::{
-    next_plan_id, Attrs, Bodies, ErasedBlocking, ErasedPrepare, ErasedRelease, Kind, NodeDecl,
-    Plan, PlanIr, Pool, PoolDecl, Template, SEMANTICS,
+    next_plan_id, Attrs, Kind, NodeDecl, Plan, PlanIr, Pool, PoolDecl, Template, SEMANTICS,
 };
 use crate::policy::{CancelMode, Mode, Policy, Restart, Retry, Shutdown};
 use crate::validate::{validate, Invalid};
@@ -45,6 +45,10 @@ pub(crate) struct Build {
     pub(crate) prepare: Vec<Option<ErasedPrepare>>,
     pub(crate) release: Vec<Option<ErasedRelease>>,
     pub(crate) blocking: Vec<Option<ErasedBlocking>>,
+    /// One entry per import node: the plan the value comes from, and the copy.
+    pub(crate) imports: Vec<(u64, ErasedImport)>,
+    /// The bodies of every component plan used, in declaration order.
+    pub(crate) children: Vec<Arc<Bodies>>,
     pub(crate) export: Option<RawKey>,
     pub(crate) input: Option<RawKey>,
     pub(crate) foreign_spawns: Vec<(RawKey, RawKey)>,
@@ -60,6 +64,8 @@ impl Build {
             prepare: Vec::new(),
             release: Vec::new(),
             blocking: Vec::new(),
+            imports: Vec::new(),
+            children: Vec::new(),
             export: None,
             input: None,
             foreign_spawns: Vec::new(),
@@ -151,7 +157,19 @@ impl<Out, In> PlanBuilder<Out, In> {
     pub fn import<T: ?Sized + Send + Sync + 'static>(&mut self, parent: Key<T>) -> Key<T> {
         let name = format!("import#{}", self.b.nodes.len());
         let mut decl = self.b.decl(&name, Kind::Import);
-        decl.source = Some(parent.raw());
+        let src = parent.raw();
+        let me = decl.key;
+        decl.source = Some(src);
+        // The driver reads a body's needs out of *this* plan's slot table, so
+        // the ancestor's value has to arrive in this plan's import slot. The
+        // copy is recorded where `T` is still known; everywhere else the value
+        // is an erased `Arc<T>` that cannot be cloned without it.
+        let copy: ErasedImport = Box::new(move |from: &Slots, to: &mut Slots| {
+            if let Some(a) = from.get::<T>(src) {
+                to.set::<T>(me, a);
+            }
+        });
+        self.b.imports.push((src.plan, copy));
         self.b.commit(decl, None, None, None)
     }
 
@@ -209,6 +227,7 @@ impl<Out, In> PlanBuilder<Out, In> {
         decl.needs = plan.ir.imports();
         decl.child = Some(plan.ir.clone());
         decl.attrs.release = crate::plan::ReleaseStyle::Inner;
+        self.b.children.push(plan.bodies.clone());
         self.b.commit(decl, None, None, None)
     }
 
@@ -276,8 +295,9 @@ impl<Out, In> PlanBuilder<Out, In> {
         shutdown: Shutdown,
         mode: Mode,
     ) -> Result<Plan<Out, In>, Invalid> {
+        let id = self.b.id;
         let ir = PlanIr {
-            id: self.b.id,
+            id,
             name: self.b.name,
             semantics: SEMANTICS,
             nodes: self.b.nodes,
@@ -296,9 +316,12 @@ impl<Out, In> PlanBuilder<Out, In> {
         Ok(Plan {
             ir: Arc::new(ir),
             bodies: Arc::new(Bodies {
+                plan: id,
                 prepare: self.b.prepare,
                 release: self.b.release,
                 blocking: self.b.blocking,
+                imports: self.b.imports,
+                children: self.b.children,
             }),
             _t: PhantomData,
         })

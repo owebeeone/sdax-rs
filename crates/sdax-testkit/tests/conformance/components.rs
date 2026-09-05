@@ -7,10 +7,10 @@
 //! is what is tested here.
 
 use crate::corpus::*;
+use crate::Drv as ScriptedDriver;
 use sdax::host::engine::{Effect, Event, Machine};
 use sdax::*;
 use sdax_testkit::eol::*;
-use sdax_testkit::ScriptedDriver;
 
 #[test]
 fn c32_a_component_is_ready_when_its_inner_run_is_steady_and_cleans_up_as_a_unit() {

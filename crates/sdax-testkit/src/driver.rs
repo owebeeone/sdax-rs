@@ -8,8 +8,9 @@ use sdax::host::sim::{ScriptError, SimStep, Simulator};
 use sdax::host::{RawKey, Time};
 use sdax::{Plan, PlanView, Reason, Report, Script, Trace};
 
-/// One `why` answer, recorded at a time.
-type WhyAt = (Time, String, Vec<(String, Reason)>);
+/// One `why` answer, recorded at a time: when, which node, and what it was
+/// waiting for.
+pub type WhyAt = (Time, String, Vec<(String, Reason)>);
 
 /// The most steps a run may take before the driver calls it non-terminating.
 const LIVENESS_STEPS: usize = 1_000;
@@ -138,7 +139,74 @@ impl ScriptedDriver {
     }
 }
 
+/// What a driver other than [`ScriptedDriver`] recorded of one run.
+///
+/// The fields the scripted driver fills from its simulator, named so that
+/// another driver — the tokio run driver in `sdax-tokio` — can hand the same
+/// material to the same checker. That is what makes suite (c) re-runnable
+/// against a real runtime without a second copy of it (LBT-009).
+pub struct Recorded<Out> {
+    /// The report, with the trace attached.
+    pub report: Report<Out>,
+    /// The plan as the checker should see it.
+    pub view: PlanView,
+    /// Every event fed and every effect returned, rendered.
+    pub steps: Vec<SimStep>,
+    /// A `why` answer per waiting node after every step.
+    pub whys: Vec<WhyAt>,
+    /// Every event the machine refused.
+    pub rejections: Vec<String>,
+    /// The run stopped short of `End`.
+    pub stuck: bool,
+    /// The key behind each node path.
+    pub keys: Vec<(String, RawKey)>,
+}
+
 impl<Out> Driven<Out> {
+    /// Check a run another driver produced, exactly as [`ScriptedDriver`]
+    /// checks its own.
+    ///
+    /// The prefix check runs over every prefix of the finished trace rather
+    /// than after each step, because the trace is what a real driver hands
+    /// back; that is a superset of the per-step checks, not a weaker one.
+    pub fn from_recorded(r: Recorded<Out>) -> Driven<Out> {
+        let trace = r.report.trace.clone().unwrap_or_default();
+        let mut violations = Vec::new();
+        let mut first_violation = None;
+        for len in 1..=trace.events.len() {
+            let prefix = Trace {
+                events: trace.events[..len].to_vec(),
+            };
+            for v in check_trace_prefix(&prefix, &r.view) {
+                if !violations.contains(&v) {
+                    violations.push(v);
+                    if first_violation.is_none() {
+                        first_violation = Some((len, len));
+                    }
+                }
+            }
+        }
+        if !r.stuck {
+            for v in check_trace(&trace, &r.view, &r.report) {
+                if !violations.contains(&v) {
+                    violations.push(v);
+                }
+            }
+        }
+        Driven {
+            report: r.report,
+            trace,
+            view: r.view,
+            steps: r.steps,
+            violations,
+            rejections: r.rejections,
+            stuck: r.stuck,
+            first_violation,
+            whys: r.whys,
+            keys: r.keys,
+        }
+    }
+
     /// The trace, queried.
     pub fn eol(&self) -> Eol<'_> {
         Eol(&self.trace)

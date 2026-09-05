@@ -9,9 +9,9 @@
 //! Every trace here is checked by the invariant checker as well.
 
 use crate::corpus::*;
+use crate::Drv as ScriptedDriver;
 use sdax::*;
 use sdax_testkit::eol::{is_abandoned, is_cleanup_end, is_cleanup_start, is_interrupted};
-use sdax_testkit::ScriptedDriver;
 
 fn unit_res<D: Deps>(p: &mut PlanBuilder, name: &str, deps: D) -> Key<Unit> {
     p.resource(name)

@@ -128,6 +128,15 @@ pub trait Runtime: Send + Sync + 'static {
 pub trait Observer: Send + Sync {
     /// Record one event.
     fn event(&self, e: &TraceEvent);
+
+    /// The run's report, once it has ended.
+    ///
+    /// The driver calls this on every run, awaited or dropped: a dropped
+    /// [`Running`](../../sdax_tokio/struct.Running.html) has nobody left to
+    /// hand a report to, and losing it would break INV-9 exactly when the run
+    /// went least well (`C-14`). The default does nothing, so an observer that
+    /// only wants events is unaffected.
+    fn report(&self, _r: &crate::report::Report<()>) {}
 }
 
 /// An observer that drops every event.

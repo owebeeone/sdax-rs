@@ -5,16 +5,23 @@
 //! work the engine does not own (`X5`), which `clippy.toml` refuses; the two
 //! call sites here carry a scoped `#[allow]` and say why.
 //!
-//! **Stage 0 delivers the [`Runtime`] contract**: spawning, task handles, the
-//! clock and the observer. The run driver, the `Running` drop guard and the
-//! drainer that runs a release graph after a drop are Stage 2, and no stub of
-//! them exists here.
+//! [`TokioRuntime`] is the [`Runtime`] contract on this substrate: spawning,
+//! task handles, the clock and the observer. [`PlanStart`] is the run driver:
+//! `plan.start(rt)` gives a [`Running`] whose drop cancels the run and leaves
+//! one tracked drainer to finish the release graph.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod body;
+mod driver;
+mod running;
+
+pub use running::{PlanStart, RunHandle, RunOptions, RunRecord, Running, Snapshot, WhyAt};
+
 use sdax::host::{BoxFuture, Clock, Joined, NoObserver, Observer, Runtime, TaskHandle, Time};
 use sdax::TraceEvent;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
@@ -24,12 +31,13 @@ use tokio_util::task::TaskTracker;
 ///
 /// Built from a [`Handle`], so a consumer keeps ownership of its own runtime
 /// and this crate never creates one. Every task it spawns is registered in a
-/// [`TaskTracker`], which is what lets [`close_and_wait`](Self::close_and_wait)
+/// [`TaskTracker`], which is what lets [`shutdown`](Self::shutdown)
 /// answer "is anything of mine still running?" — the property INV-15 ("no
 /// orphans") rests on.
 pub struct TokioRuntime {
     handle: Handle,
-    clock: TokioClock,
+    clock: Arc<dyn Clock>,
+    seen: Arc<AtomicU64>,
     observer: Arc<dyn Observer>,
     tracker: TaskTracker,
 }
@@ -37,20 +45,33 @@ pub struct TokioRuntime {
 impl TokioRuntime {
     /// An adapter over an existing runtime handle, recording nothing.
     pub fn new(handle: Handle) -> Self {
+        let seen = Arc::new(AtomicU64::new(0));
         TokioRuntime {
             handle,
-            clock: TokioClock::default(),
+            clock: Arc::new(TokioClock::new(seen.clone())),
+            seen,
             observer: Arc::new(NoObserver),
             tracker: TaskTracker::new(),
         }
+    }
+
+    /// Measure every deadline on this clock instead of tokio's own.
+    ///
+    /// The engine only ever reads time through [`Clock`], so a run can be put
+    /// on a compressed clock — which is how the suite runs against a
+    /// multi-threaded runtime, where `start_paused` is not available.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Send trace events to this observer.
     ///
     /// Named `with_observer` rather than `observer`: the `Runtime` contract
     /// already has an `observer(&self)` reader, and one name cannot be both.
-    pub fn with_observer(self, observer: Arc<dyn Observer>) -> Self {
-        TokioRuntime { observer, ..self }
+    pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = observer;
+        self
     }
 
     /// How many tasks this adapter spawned that have not finished.
@@ -63,7 +84,12 @@ impl TokioRuntime {
     ///
     /// `Ok(())` means everything finished. `Err(n)` means the budget expired
     /// with `n` tasks still running — the honest answer, not a silent success.
-    pub async fn close_and_wait(&self, budget: Duration) -> Result<(), usize> {
+    ///
+    /// This is the *runtime's* shutdown, not a run's: it is what a process
+    /// calls after every [`Running`] has ended or been dropped, to see whether
+    /// any drainer is still out there. Stage 0 left the name open
+    /// (`close_and_wait`); there is one operation, so there is one name.
+    pub async fn shutdown(&self, budget: Duration) -> Result<(), usize> {
         self.tracker.close();
         match tokio::time::timeout(budget, self.tracker.wait()).await {
             Ok(()) => Ok(()),
@@ -74,6 +100,25 @@ impl TokioRuntime {
     /// The runtime handle this adapter was built from.
     pub fn handle(&self) -> &Handle {
         &self.handle
+    }
+}
+
+impl Drop for TokioRuntime {
+    /// A runtime dropped with tasks of ours still running is reported, never
+    /// silent: whatever they were doing, nobody is left to join them (INV-15).
+    ///
+    /// The time is the last reading anything took from this clock, not a fresh
+    /// one: `Drop` can run outside the runtime, where tokio's own clock
+    /// panics.
+    fn drop(&mut self) {
+        if self.tracker.is_empty() {
+            return;
+        }
+        let at = Time::from_nanos(self.seen.load(Ordering::SeqCst));
+        self.observer.event(&TraceEvent::at(
+            at,
+            sdax::TraceKind::RuntimeDroppedWithLiveRuns,
+        ));
     }
 }
 
@@ -101,7 +146,7 @@ impl Runtime for TokioRuntime {
     }
 
     fn clock(&self) -> &dyn Clock {
-        &self.clock
+        self.clock.as_ref()
     }
 
     fn observer(&self) -> &dyn Observer {
@@ -145,9 +190,20 @@ impl TaskHandle for TokioTask {
 #[derive(Debug, Default)]
 pub struct TokioClock {
     origin: std::sync::OnceLock<tokio::time::Instant>,
+    seen: Arc<AtomicU64>,
 }
 
 impl TokioClock {
+    /// A clock that also records its last reading in `seen`, so that
+    /// [`TokioRuntime`]'s `Drop` can timestamp its event without touching
+    /// tokio's clock from outside a runtime.
+    pub fn new(seen: Arc<AtomicU64>) -> Self {
+        TokioClock {
+            origin: std::sync::OnceLock::new(),
+            seen,
+        }
+    }
+
     fn origin(&self) -> tokio::time::Instant {
         *self.origin.get_or_init(tokio::time::Instant::now)
     }
@@ -156,11 +212,11 @@ impl TokioClock {
 impl Clock for TokioClock {
     fn now(&self) -> Time {
         let origin = self.origin();
-        Time::from_nanos(
-            tokio::time::Instant::now()
-                .duration_since(origin)
-                .as_nanos() as u64,
-        )
+        let nanos = tokio::time::Instant::now()
+            .duration_since(origin)
+            .as_nanos() as u64;
+        self.seen.fetch_max(nanos, Ordering::SeqCst);
+        Time::from_nanos(nanos)
     }
 
     fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> {

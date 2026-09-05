@@ -9,7 +9,9 @@
 //! ([`ScriptedDriver`]: the core's simulator with recording and checking
 //! around it), the trace-level invariant checker ([`invariants`]), trace
 //! queries in the canonical tests' vocabulary ([`eol`]), and the Monte Carlo
-//! suite ([`mc`]).
+//! suite ([`mc`]), and a [`BodySource`](sdax::host::BodySource) that runs a
+//! `Script` on a real runtime ([`ScriptedBodies`]) so suite (c) can be
+//! re-run against an adapter without a second copy of the suite.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -21,7 +23,9 @@ pub mod mc;
 mod clock;
 mod driver;
 mod recorder;
+mod scripted;
 
 pub use clock::FakeClock;
-pub use driver::{Driven, ScriptedDriver};
-pub use recorder::TraceRecorder;
+pub use driver::{Driven, Recorded, ScriptedDriver, WhyAt};
+pub use recorder::{ReportSummary, TraceRecorder};
+pub use scripted::{quiet_scripted_panics, ScriptedBodies};

@@ -18,12 +18,25 @@ unsafe_code = "forbid"
 [dependencies]
 sdax = { path = "../sdax", version = "0.1.0" }
 # Minimal features on purpose: no `macros` (so no proc-macro chain in a
-# consumer's cold build), no `net`, no `io-util`. `rt` gives spawn and
-# spawn_blocking, `time` gives the clock, `tokio-util/rt` gives the task
-# tracker the drop-guard drainer will need.
-tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time"] }
+# consumer's cold build, no `#[tokio::test]` and no `select!`), no `net`, no
+# `io-util`. `rt` gives spawn and spawn_blocking, `time` gives the clock,
+# `sync` gives the driver its inbox (`mpsc::unbounded_channel`, one receiver in
+# the run loop, one sender per body task) and the report hand-off
+# (`oneshot`) — a run loop cannot be written without an async channel, and
+# hand-rolling one would be a waker implementation nobody reviews.
+# `tokio-util/rt` gives the task tracker INV-15 rests on.
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "sync", "time"] }
 tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] }
 
 [dev-dependencies]
 sdax-testkit = { path = "../sdax-testkit" }
-tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time", "test-util"] }
+# `rt-multi-thread` is a **dev** feature only: `R-05` and `R-07` need genuine
+# parallelism, and the library never builds a runtime of its own, so a consumer
+# of `sdax-tokio` never compiles the multi-threaded scheduler because of us.
+tokio = { version = "=1.53.1", default-features = false, features = [
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "test-util",
+] }

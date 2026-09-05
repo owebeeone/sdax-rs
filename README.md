@@ -15,9 +15,9 @@ and a dev-only testkit. Stop at machine + testkit before buying an engine.
   `Plan::simulate`. No tokio types.
   This is the crates.io package. Its crate root and `prelude` are the **author**
   API; `sdax::host` is the **host** API (see Status).
-- `crates/sdax-tokio` — tokio `Runtime` adapter; the run driver and drop-guard
-  drainer arrive in Stage 2. The only crate that may mention tokio types, and
-  the only one that may spawn a raw task.
+- `crates/sdax-tokio` — the tokio `Runtime` adapter **and the run driver**:
+  `plan.start(rt)`, `Running` with its drop guard and drainer. The only crate
+  that may mention tokio types, and the only one that may spawn a raw task.
 - `crates/sdax-testkit` — fake clock, trace recorder, static invariant checks,
   the scripted driver, the trace-level invariant checker and the Monte Carlo
   suite. `publish = false`; never a production dependency.
@@ -41,7 +41,7 @@ cargo build -p sdax-tokio
 # Dev-only harness.
 cargo build -p sdax-testkit
 
-# Whole workspace (the fast loop: ~1.65 s of execution, ~8.5 s with a rebuild).
+# Whole workspace (the fast loop: ~2.5 s of execution, ~11.7 s with a rebuild).
 cargo test --workspace --locked --offline
 cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 cargo fmt --check
@@ -63,20 +63,21 @@ Release tags are immutable. Details in [`RELEASE.md`](RELEASE.md).
 
 ## Status
 
-**Stage 1 — the engine, simulated. No run driver.** Version `0.1.0` is
-unreleased and nothing is frozen.
+**Stage 2 — the engine, running on tokio.** Version `0.1.0` is unreleased and
+nothing is frozen. Dynamic template instances are Stage 3 and are not stubbed.
 
 **Two surfaces.** The crate root and `sdax::prelude` are the **author** API:
 what a plan is written, validated, inspected and read back against. `sdax::host`
 is the **host** API: what a runtime adapter, a run driver or the engine needs and
 an author does not — `Runtime`, `TaskHandle`, `Joined`, `Clock`, `Time`,
 `Observer`, `NoObserver`, `BoxFuture`, `Scope`, `ChildControl`, `InstanceId`,
-`StopSignal`, `CxInner`, `RawKey`, `SEMANTICS` and
-`host::engine::{Event, Effect, TimerId, JoinedLabel}`. **Only the author surface
-carries the stability promise**; `sdax::host` may change in a minor version
-before 1.0, because the run driver is still being written — Stage 1 already
-changed four of its signatures (`Event::NodeErr` and `Event::ServeEnded` carry
-their fault, `Effect::CancelTimer` and `Effect::Reject` are new).
+`StopSignal`, `CxInner`, `RawKey`, `SEMANTICS`, `Bodies`, `BodySource`, `Task`,
+`bodies_of` and `host::engine::{Event, Effect, TimerId, JoinedLabel}`. **Only
+the author surface carries the stability promise**; `sdax::host` may change in a
+minor version before 1.0 — Stage 1 changed four of its signatures
+(`Event::NodeErr` and `Event::ServeEnded` carry their fault, `Effect::CancelTimer`
+and `Effect::Reject` are new) and Stage 2 added `Observer::report`,
+`Machine::{kind_of, deadline_for, nodes}` and the `Bodies`/`BodySource` group.
 `crates/sdax/tests/surface.rs` pins the author half and witness S-01 in
 `sdax::compile_fail` pins the absence of the host half from the root.
 
@@ -117,12 +118,34 @@ Stage 1 adds, on top of that:
   through the machine and checks every trace, with a coverage floor per corner.
   It has found 24 defects; a 50 000-case walk and a 200 000-case walk both pass.
 
-What does not exist, and is not stubbed: `Plan::start`, `Running`, the tokio run
-driver, the drop guard and the drainer (**Stage 2**); `cx.spawn`, `Child::ready`
-and live template instances (**Stage 3** — `Effect::SpawnInstance` is in the
-vocabulary and the machine never emits it). Five suite-(c) rows are omitted for
-those reasons and named in `dev-docs/Stage1Report.md` § 7, which also states
-that `S-02` (exhaustive schedule enumeration) did not run.
+Stage 2 adds the part that executes:
 
-`dev-docs/Stage0Report.md` and `dev-docs/Stage1Report.md` state what was
-measured, what is deferred, and where verification stops.
+- the **run driver** in `sdax-tokio`: a loop around `Machine::step` over an
+  `mpsc` inbox, one task per attempt, one handle per node, timers as tasks,
+  aborts joined before a node counts as settled (T5), a superseded attempt's
+  outcome dropped by epoch, and a body's registration reported in the poll that
+  observed it (T2);
+- `use sdax_tokio::PlanStart;` then **`plan.start(rt)`** → a `#[must_use]`
+  `Running<Out>`: a `Future` for the `Report`, plus `ready()`, `shutdown()`,
+  `cancel()`, `snapshot()` and a clonable `handle()`. It is **lazy** — a cancel
+  before the first poll ends the run with nothing spawned — and **dropping it**
+  cancels the run and leaves one tracked drainer to finish the release graph
+  inside the shutdown budget, reporting to the `Observer` (`C-14`);
+- `host::BodySource` and `host::bodies_of`, with `Bodies` now carrying a
+  component plan's own bodies and an import's value copy;
+- suite (c) **re-run against the adapter** with paused time, from the same
+  sources rather than a second copy: 58 rows green, and the traces are equal to
+  the pure machine's once same-instant events are normalised;
+- suite (d): `R-01`…`R-07`, `C-14`, and `S-01` — the research spike, walked
+  with random cancellation, drops and panics — plus a Monte Carlo walk of
+  generated plans on the adapter.
+
+What does not exist, and is not stubbed: `cx.spawn`, `Child::ready` and live
+template instances (**Stage 3** — `Effect::SpawnInstance` is in the vocabulary
+and the machine never emits it). Four suite-(c) rows are omitted for that reason
+and named in `dev-docs/Stage1Report.md` § 7; `S-02` (exhaustive schedule
+enumeration) still did not run.
+
+`dev-docs/Stage0Report.md`, `dev-docs/Stage1Report.md` and
+`dev-docs/Stage2Report.md` state what was measured, what is deferred, and where
+verification stops.

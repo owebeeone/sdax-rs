@@ -181,6 +181,37 @@ impl Machine {
         self.t.index_of(key).map(|i| &self.t.nodes[i].path)
     }
 
+    /// What kind of node this key names.
+    ///
+    /// A run driver needs it: a service's readiness hands over a serve future
+    /// and a component never gets a body at all.
+    pub fn kind_of(&self, key: RawKey) -> Option<Kind> {
+        self.t.index_of(key).map(|i| self.t.nodes[i].kind)
+    }
+
+    /// The deadline a body of this node must respect: its declared `within`
+    /// from now, or else the scope's remaining shutdown budget.
+    ///
+    /// What `cx.deadline()` reads (contract § 6). The machine arms the timer
+    /// either way; this is the same number, for the body to see.
+    pub fn deadline_for(&self, key: RawKey) -> Option<Time> {
+        let i = self.t.index_of(key)?;
+        match self.t.nodes[i].attrs.within {
+            Some(d) => Some(self.now + d),
+            None => self.scopes[self.t.nodes[i].scope].deadline,
+        }
+    }
+
+    /// Every node of the run, in flat table order: its key, its path and its
+    /// kind. What a driver builds its own index from.
+    pub fn nodes(&self) -> Vec<(RawKey, NodePath, Kind)> {
+        self.t
+            .nodes
+            .iter()
+            .map(|n| (n.key, n.path.clone(), n.kind))
+            .collect()
+    }
+
     /// Where a node is, by key.
     pub fn state(&self, key: RawKey) -> Option<NodeState> {
         self.t.index_of(key).map(|i| self.node_state(i))

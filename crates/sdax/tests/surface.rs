@@ -16,13 +16,13 @@
 // ---------------------------------------------------------------- the root
 
 use sdax::{
-    release, Acquire, Ambiguity, AttrChange, Backoff, Blocking, CancelMode, Child, Cx, Deps, Edge,
-    Effect, Effects, Error, Fault, FaultKind, FaultLabel, Finding, Held, Hold, Invalid, Key, Kind,
-    Mode, NeedsCompensate, NeedsRelease, NoAmbiguity, NoPool, Node, NodePath, NodeRecord, NodeView,
-    Outcome, Phase, Plan, PlanBuilder, PlanDiff, PlanView, Policy, Pool, PoolView, Reason,
-    RecordOrder, Release, ReleaseOrder, ReleaseStyle, Report, Resource, Restart, Retry, Rule, Run,
-    Service, Serving, Shutdown, SpawnError, Start, Step, Stop, Template, Timeout, Trace,
-    TraceEvent, TraceKind, TryStep, Why,
+    release, Acquire, Ambiguity, At, AttrChange, Backoff, Blocking, Body, CancelMode, Child,
+    Cleanup, Cx, Deps, Edge, Effect, Effects, Ending, Error, Fault, FaultKind, FaultLabel, Finding,
+    Held, Hold, Invalid, Key, Kind, Mode, NeedsCompensate, NeedsRelease, NoAmbiguity, NoPool, Node,
+    NodePath, NodeRecord, NodeView, Outcome, Phase, Plan, PlanBuilder, PlanDiff, PlanView, Policy,
+    Pool, PoolView, Reason, RecordOrder, Release, ReleaseOrder, ReleaseStyle, Report, Request,
+    Resource, Restart, Retry, Rule, Run, Schedule, Script, Serve, Service, Serving, Shutdown,
+    SpawnError, Start, Step, Stop, Template, Timeout, Trace, TraceEvent, TraceKind, TryStep, Why,
 };
 
 // ---------------------------------------------------------------- the prelude
@@ -104,10 +104,10 @@ mod prelude_only {
 
 // ---------------------------------------------------------------- the host
 
-use sdax::host::engine::{Effect as EngineEffect, Event, JoinedLabel, TimerId};
+use sdax::host::engine::{Effect as EngineEffect, Event, JoinedLabel, Machine, TimerId};
 use sdax::host::{
-    BoxFuture, ChildControl, Clock, CxInner, InstanceId, Joined, NoObserver, Observer, RawKey,
-    Runtime, Scope, StopSignal, TaskHandle, Time, SEMANTICS,
+    bodies_of, Bodies, BodySource, BoxFuture, ChildControl, Clock, CxInner, InstanceId, Joined,
+    NoObserver, Observer, RawKey, Runtime, Scope, StopSignal, Task, TaskHandle, Time, SEMANTICS,
 };
 
 /// The host traits are reachable and usable as bounds and as `dyn`.
@@ -274,4 +274,60 @@ fn unresolved_imports_names_the_import_nodes_rather_than_raw_keys() {
         root.unresolved_imports().is_empty(),
         "a root plan imports nothing"
     );
+}
+
+#[test]
+fn the_script_vocabulary_is_author_api_at_the_root() {
+    // `Plan::simulate` is author API (contract § 9), so the values it takes
+    // are too. Stage 1 left them unpinned; this is the pin.
+    let script = Script::new()
+        .prepare("Db", Body::ok(At::plus(1.0)))
+        .body("Audit", [Body::fail(At::tick(2.0), "no"), Body::pending()])
+        .serve("Db", [Serve::StopsAfter(std::time::Duration::ZERO)])
+        .cleanup("Db", Cleanup::Ok(std::time::Duration::ZERO))
+        .at(3.0, Request::Shutdown)
+        .schedule(Schedule::order(["Db"]));
+    assert_eq!(script.named_nodes(), vec!["Db", "Audit", "Db", "Db"]);
+    assert_eq!(script.requests().len(), 1);
+    assert!(matches!(script.body_of("Db"), Some([_])));
+    assert!(script.serve_of("Audit").is_none());
+    assert!(matches!(script.cleanup_of("Db"), Some(Cleanup::Ok(_))));
+    assert!(matches!(Ending::Pending, Ending::Pending));
+
+    let plan = prelude_only::build().expect("valid");
+    let trace = plan.simulate(&Script::new()).expect("simulates");
+    assert!(!trace.events.is_empty());
+}
+
+#[test]
+fn the_run_drivers_hand_offs_are_reachable_from_another_crate() {
+    // Stage 2: the driver lives in `sdax-tokio` and needs the plan's erased
+    // bodies, the node table and the deadline the machine would give a body.
+    let plan = prelude_only::build().expect("valid");
+    let src: std::sync::Arc<dyn BodySource> = bodies_of(&plan);
+    assert!(src.export().is_none());
+
+    let machine = Machine::new(&plan).expect("a static plan");
+    let nodes = machine.nodes();
+    assert_eq!(nodes.len(), 2);
+    let (key, path, kind) = nodes[0].clone();
+    assert_eq!(path.to_string(), "Db");
+    assert_eq!(kind, Kind::Resource);
+    assert_eq!(machine.kind_of(key), Some(Kind::Resource));
+    // `Db` declares `within(3s)`, and the machine's clock has not moved.
+    assert_eq!(
+        machine.deadline_for(key),
+        Some(Time::ZERO + std::time::Duration::from_secs(3))
+    );
+
+    let inner = CxInner::new(key, std::sync::Arc::new(Frozen));
+    assert!(matches!(src.body(key, &inner), Some(Task::Async(_))));
+    // Nothing has been stored, so the release body has no value to discharge.
+    assert!(src.cleanup(key, &inner).is_none());
+}
+
+/// `Bodies` names a plan's erased code and the bodies of its components.
+/// Never called: the witness is that the path and the signature resolve.
+fn _names_the_bodies_type(b: &Bodies) -> (u64, usize) {
+    (b.plan(), b.children().len())
 }

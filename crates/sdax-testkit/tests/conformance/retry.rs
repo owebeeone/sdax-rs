@@ -1,9 +1,9 @@
 //! Suite (c), retries, restarts and timeouts: C-24, C-24b, C-40, C-57, C-61.
 
 use crate::corpus::*;
+use crate::Drv as ScriptedDriver;
 use sdax::*;
 use sdax_testkit::eol::*;
-use sdax_testkit::ScriptedDriver;
 
 fn timers<O>(d: &sdax_testkit::Driven<O>) -> Vec<String> {
     d.effects()
