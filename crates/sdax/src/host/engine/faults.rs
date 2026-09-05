@@ -227,8 +227,7 @@ impl Machine {
             self.slots[n].st = St::Interrupted;
             self.slots[n].attempt += 1;
             self.emit(n, TraceKind::Interrupted { held: false });
-            let faults = std::mem::take(&mut self.slots[n].faults);
-            self.faults.extend(faults);
+            self.flush_faults(n);
             self.after_settle(n);
         }
     }
@@ -266,8 +265,7 @@ impl Machine {
     /// and the scope's policy applies.
     fn node_failed(&mut self, n: usize) {
         self.slots[n].st = St::Failed;
-        let faults = std::mem::take(&mut self.slots[n].faults);
-        self.faults.extend(faults);
+        self.flush_faults(n);
         let scope = self.t.nodes[n].scope;
         match self.t.scopes[scope].policy {
             Policy::FailFast => self.settle(scope, Cause::Fault(n)),
@@ -298,11 +296,7 @@ impl Machine {
         // a sibling that became ready afterwards started a body after the run
         // had settled. Its inner graph is torn down by the component's own
         // release, which `open_component` opens when the gate allows.
-        if let Some(i) = self.t.nodes[c].inner {
-            if matches!(self.scopes[i].st, RunState::Admitting | RunState::Steady) {
-                self.settle(i, Cause::Parent(Some(inner)));
-            }
-        }
+        self.settle_or_skip_inner(c, Some(inner));
         let parent = self.t.nodes[c].scope;
         match self.t.scopes[parent].policy {
             Policy::FailFast => self.settle(parent, Cause::Fault(c)),
@@ -380,8 +374,7 @@ impl Machine {
             self.slots[n].st = St::Interrupted;
             self.emit(n, TraceKind::Interrupted { held });
         }
-        let faults = std::mem::take(&mut self.slots[n].faults);
-        self.faults.extend(faults);
+        self.flush_faults(n);
         self.after_settle(n);
     }
 
@@ -394,8 +387,7 @@ impl Machine {
     /// An ambiguous effect that is not retried ends here; its timeout is a
     /// fault under the scope's policy, and it stays `Ambiguous`.
     fn ambiguous_failed(&mut self, n: usize) {
-        let faults = std::mem::take(&mut self.slots[n].faults);
-        self.faults.extend(faults);
+        self.flush_faults(n);
         let scope = self.t.nodes[n].scope;
         match self.t.scopes[scope].policy {
             Policy::FailFast => self.settle(scope, Cause::Fault(n)),

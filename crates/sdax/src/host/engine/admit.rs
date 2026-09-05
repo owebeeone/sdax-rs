@@ -249,13 +249,9 @@ impl Machine {
                     let path = self.t.nodes[because].path.clone();
                     self.emit(d, TraceKind::Skipped { because: path });
                     // A node waiting for its *next* attempt still owns the
-                    // faults of the attempts that already failed (INV-9), as
-                    // it does when the scope settles under it.
-                    let faults = std::mem::take(&mut self.slots[d].faults);
-                    self.faults.extend(faults);
-                    if let Some(inner) = self.t.nodes[d].inner {
-                        self.skip_scope(inner, Some(because));
-                    }
+                    // faults of the attempts that already failed (INV-9).
+                    self.flush_faults(d);
+                    self.settle_or_skip_inner(d, Some(because));
                     stack.push(d);
                 }
             }

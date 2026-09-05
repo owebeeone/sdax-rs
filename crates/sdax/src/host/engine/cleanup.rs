@@ -8,7 +8,7 @@
 //! parent's graph reaches it, or as soon as it settled by itself and nothing
 //! outside still depends on it.
 
-use super::state::{Cause, Machine, Purpose, St};
+use super::state::{Machine, Purpose, St};
 use super::{Effect, RunState};
 use crate::plan::Kind;
 use crate::report::{Report, TraceKind};
@@ -93,8 +93,7 @@ impl Machine {
                             && self.scopes[inner].st == RunState::Settling
                             && self.in_flight(inner) == 0
                         {
-                            self.slots[c].st = St::Interrupted;
-                            self.emit(c, TraceKind::Interrupted { held: true });
+                            self.end_component_attempt(c);
                         }
                     }
                 }
@@ -196,26 +195,12 @@ impl Machine {
             // short the way `settle::interrupt` does when the parent settles.
             // Left alone the component went `Start(Prepare)` → `ReleaseStart`
             // with no terminal observation, an orphan (INV-15). It never
-            // became `Ready` (the inner run never reached steady state) and
-            // the engine stopped admitting under it, so `Interrupted` is the
-            // honest state and it is never a fault (INV-10). `held` is
-            // `started`: there is an inner graph left to tear down.
-            if self.slots[c].st == St::Running {
-                self.slots[c].st = St::Interrupted;
-                let held = self.slots[c].started;
-                self.emit(c, TraceKind::Interrupted { held });
-                let faults = std::mem::take(&mut self.slots[c].faults);
-                self.faults.extend(faults);
-            }
+            // became `Ready`: the inner run never reached steady state.
+            self.end_component_attempt(c);
             self.slots[c].st = St::Releasing;
             self.emit(c, TraceKind::ReleaseStart);
         }
-        if matches!(
-            self.scopes[inner].st,
-            RunState::Admitting | RunState::Steady
-        ) {
-            self.settle(inner, Cause::Parent(None));
-        }
+        self.settle_or_skip_inner(c, None);
         if self.scopes[inner].st == RunState::Settling && self.in_flight(inner) == 0 {
             self.scopes[inner].st = RunState::Cleanup;
             self.advance_cleanup(inner);
@@ -242,11 +227,9 @@ impl Machine {
         self.slots[n].cancelling = false;
         self.slots[n].st = St::Abandoned;
         self.emit(n, TraceKind::Abandoned);
-        // Whatever earlier attempts already faulted is the report's, exactly
-        // as it is when the node fails or is interrupted (INV-9): the budget
-        // running out is not a reason for an observed fault to disappear.
-        let faults = std::mem::take(&mut self.slots[n].faults);
-        self.faults.extend(faults);
+        // The budget running out is not a reason for an observed fault to
+        // disappear (INV-9).
+        self.flush_faults(n);
         let rec = self.record(n);
         self.incomplete.push(rec);
     }
@@ -280,27 +263,23 @@ impl Machine {
                 continue;
             };
             match self.slots[n].st {
-                St::Running if bodies => self.abandon_inner(inner),
+                St::Running if bodies => self.abandon_inner(n),
                 St::Releasing | St::Compensating | St::Stopping | St::RetryRelease => {
-                    self.abandon_inner(inner)
+                    self.abandon_inner(n)
                 }
                 St::Ready | St::Failed | St::Interrupted
                     if self.scopes[inner].st != RunState::Ended && self.slots[n].started =>
                 {
-                    self.abandon_inner(inner)
+                    self.abandon_inner(n)
                 }
                 _ => {}
             }
         }
     }
 
-    fn abandon_inner(&mut self, inner: usize) {
-        if matches!(
-            self.scopes[inner].st,
-            RunState::Admitting | RunState::Steady
-        ) {
-            self.settle(inner, Cause::Parent(None));
-        }
+    fn abandon_inner(&mut self, n: usize) {
+        let inner = self.t.nodes[n].inner.expect("component");
+        self.settle_or_skip_inner(n, None);
         self.abandon_all(inner, true);
         self.scopes[inner].spent = true;
         // The scope is left `Settling`, with no `ReleaseStart` for the

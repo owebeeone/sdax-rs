@@ -28,6 +28,7 @@ use crate::report::{FaultKind, Outcome, TraceEvent};
 
 mod admit;
 mod cleanup;
+mod exits;
 mod faults;
 mod machine;
 mod settle;

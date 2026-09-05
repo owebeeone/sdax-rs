@@ -56,11 +56,7 @@ impl Machine {
                     // A node waiting for its *next* attempt (a zero backoff,
                     // or a grant it never got) still owns the faults of the
                     // attempts that already failed (INV-9).
-                    let faults = std::mem::take(&mut self.slots[n].faults);
-                    self.faults.extend(faults);
-                    if let Some(inner) = self.t.nodes[n].inner {
-                        self.skip_scope(inner, because);
-                    }
+                    self.flush_faults(n);
                 }
                 St::Backoff => {
                     // The attempt that would have followed is the one cut
@@ -70,26 +66,18 @@ impl Machine {
                     self.slots[n].st = St::Interrupted;
                     self.slots[n].attempt += 1;
                     self.emit(n, TraceKind::Interrupted { held: false });
-                    let faults = std::mem::take(&mut self.slots[n].faults);
-                    self.faults.extend(faults);
+                    self.flush_faults(n);
                 }
                 St::Running => self.interrupt(n, because),
                 _ => {}
             }
-            // A component whose inner graph is already up settles with the
-            // scope that holds it: nothing new starts inside it either (T5),
-            // and its release cannot open while its scope is still `Steady` —
-            // `in_flight` would count the component, so the run would wait for
-            // a component that is waiting for the run. `settle` is idempotent,
-            // so the `St::Running` path above may have done it already.
-            if let Some(inner) = self.t.nodes[n].inner {
-                if matches!(
-                    self.scopes[inner].st,
-                    RunState::Admitting | RunState::Steady
-                ) {
-                    self.settle(inner, Cause::Parent(because));
-                }
-            }
+            // A component's inner scope stops admitting with the node, whether
+            // the node had started it or not: a component whose inner graph is
+            // already up settles with the scope that holds it, and one that
+            // never started is skipped so the gates it holds shut can open.
+            // `settle` and `skip_scope` are both idempotent, so the arms above
+            // may have done it already.
+            self.settle_or_skip_inner(n, because);
         }
     }
 
@@ -128,20 +116,13 @@ impl Machine {
         match self.t.nodes[n].kind {
             Kind::BlockingStep => {}
             Kind::Component => {
-                if let Some(inner) = self.t.nodes[n].inner {
-                    self.settle(inner, Cause::Parent(because));
-                }
+                self.settle_or_skip_inner(n, because);
                 // The component's own attempt ends here: its inner graph was
                 // cut short before it came up. Without this the component
                 // would go from `Start(Prepare)` straight to `ReleaseStart`
                 // with no terminal observation of its own — an orphan
-                // (INV-15). `held` is `started`: there is an inner graph left
-                // to tear down, which is what opens the release.
-                self.slots[n].st = St::Interrupted;
-                let held = self.slots[n].started;
-                self.emit(n, TraceKind::Interrupted { held });
-                let faults = std::mem::take(&mut self.slots[n].faults);
-                self.faults.extend(faults);
+                // (INV-15).
+                self.end_component_attempt(n);
             }
             Kind::Service => {
                 // A start body in flight: signal-then-deadline, the service's
