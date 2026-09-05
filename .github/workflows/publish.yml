@@ -1,0 +1,66 @@
+name: Publish sdax to crates.io
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release tag to verify
+        required: true
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo package -p sdax --locked
+
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: test
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require tag/crate version agreement
+        run: |
+          for crate in sdax sdax-tokio; do
+            version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' "crates/${crate}/Cargo.toml")
+            test "$version" = "${RELEASE_TAG#v}"
+          done
+      - name: Publish sdax if this immutable version is absent
+        run: |
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' crates/sdax/Cargo.toml)
+          if curl --fail --silent --show-error \
+            --header 'User-Agent: sdax-release-workflow' \
+            "https://crates.io/api/v1/crates/sdax/$version" >/dev/null; then
+            echo "sdax $version is already published"
+          else
+            cargo publish -p sdax --locked
+          fi
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish sdax-tokio if this immutable version is absent
+        run: |
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' crates/sdax-tokio/Cargo.toml)
+          if curl --fail --silent --show-error \
+            --header 'User-Agent: sdax-release-workflow' \
+            "https://crates.io/api/v1/crates/sdax-tokio/$version" >/dev/null; then
+            echo "sdax-tokio $version is already published"
+          else
+            cargo publish -p sdax-tokio --locked
+          fi
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

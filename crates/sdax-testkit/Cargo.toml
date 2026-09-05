@@ -1,0 +1,18 @@
+# SELF-CONTAINED MANIFEST: concrete literals rather than `*.workspace = true`
+# inheritance. Keep in sync with ../../Cargo.toml [workspace.package] by hand.
+# Dev-only harness: never a production dependency (LBT-005).
+[package]
+name = "sdax-testkit"
+description = "Scripted driver, fake clock, and invariant checks for sdax (dev-only)."
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/owebeeone/sdax-rs"
+rust-version = "1.75"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+sdax = { path = "../sdax", version = "0.1.0" }

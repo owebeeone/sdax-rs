@@ -1,0 +1,20 @@
+# SELF-CONTAINED MANIFEST: every field below is a concrete literal, NOT a
+# `*.workspace = true` inherited value. External workspaces splice/vendor this
+# manifest without carrying sdax-rs's [workspace.package] — e.g. rules_rust
+# crate_universe, and `cargo publish`. Inherited fields would dangle there.
+# Keep values in sync with ../../Cargo.toml [workspace.package] by hand.
+[package]
+name = "sdax"
+description = "Declarative async lifecycle orchestrator: typed plan, derived release graph, reverse teardown."
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/owebeeone/sdax-rs"
+readme = "../../README.md"
+rust-version = "1.75"
+keywords = ["async", "lifecycle", "orchestration", "tokio"]
+categories = ["asynchronous"]
+
+# Inlined from [workspace.lints.rust].
+[lints.rust]
+unsafe_code = "forbid"

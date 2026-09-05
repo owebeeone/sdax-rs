@@ -1,0 +1,29 @@
+# SELF-CONTAINED MANIFEST: concrete literals rather than `*.workspace = true`
+# inheritance. Keep in sync with ../../Cargo.toml [workspace.package] by hand.
+[package]
+name = "sdax-tokio"
+description = "Tokio adapter for sdax: Runtime impl, run driver, drop-guard drainer."
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/owebeeone/sdax-rs"
+readme = "../../README.md"
+rust-version = "1.75"
+keywords = ["async", "tokio", "lifecycle", "orchestration"]
+categories = ["asynchronous"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+sdax = { path = "../sdax", version = "0.1.0" }
+# Minimal features on purpose: no `macros` (so no proc-macro chain in a
+# consumer's cold build), no `net`, no `io-util`. `rt` gives spawn and
+# spawn_blocking, `time` gives the clock, `tokio-util/rt` gives the task
+# tracker the drop-guard drainer will need.
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time"] }
+tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] }
+
+[dev-dependencies]
+sdax-testkit = { path = "../sdax-testkit" }
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time", "test-util"] }

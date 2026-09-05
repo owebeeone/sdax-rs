@@ -1,0 +1,20 @@
+# Adoption A2 — the raw-spawn gate.
+#
+# A body that spawns its own task creates work the engine does not own: it is
+# not aborted at stop, not joined at End, and not in the report (class X5). The
+# owned form is `cx.spawn(&template, input)`. This moves X5 from "silent" to
+# "caught by the gate" in every crate that authors bodies.
+#
+# `sdax-tokio` is the one place a raw spawn is correct. Its two call sites carry
+# a scoped `#[allow(clippy::disallowed_methods)]` and a comment saying why.
+#
+# Paths that a crate does not depend on simply do not resolve, and clippy
+# ignores them, so this one file applies to the whole workspace.
+disallowed-methods = [
+    { path = "tokio::task::spawn", reason = "a body must not own tasks; use cx.spawn(&template, input)" },
+    { path = "tokio::task::spawn_blocking", reason = "declare a blocking_step on a pool instead" },
+    { path = "tokio::spawn", reason = "a body must not own tasks; use cx.spawn(&template, input)" },
+    { path = "tokio::runtime::Handle::spawn", reason = "only sdax-tokio may spawn; it is tracked there" },
+    { path = "tokio::runtime::Handle::spawn_blocking", reason = "only sdax-tokio may spawn; it is tracked there" },
+    { path = "std::thread::spawn", reason = "an unowned thread outlives the run; use a blocking_step on a pool" },
+]

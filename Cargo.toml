@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sdax",
+    "crates/sdax-tokio",
+    "crates/sdax-testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/owebeeone/sdax-rs"
+rust-version = "1.75"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
