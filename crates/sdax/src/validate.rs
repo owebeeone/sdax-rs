@@ -57,11 +57,17 @@ pub enum Rule {
     BudgetOrder,
     /// `V-MODE`: `Mode::Finite` on a plan that has a service or a template (F3).
     Mode,
+    /// `V-BLOCKING-CANCEL`: `cooperative` on a blocking step, whose grace can
+    /// never be spent — a thread is signalled and never aborted.
+    BlockingCancel,
+    /// `V-PERSIST-AMBIG`: `on_ambiguous(Compensate)` on a `persistent` effect,
+    /// which has nothing to compensate.
+    PersistAmbig,
 }
 
 impl Rule {
     /// Every rule, in emission order.
-    pub const ALL: [Rule; 15] = [
+    pub const ALL: [Rule; 17] = [
         Rule::Empty,
         Rule::ForeignKey,
         Rule::DupName,
@@ -77,6 +83,8 @@ impl Rule {
         Rule::TryUnconsumed,
         Rule::BudgetOrder,
         Rule::Mode,
+        Rule::BlockingCancel,
+        Rule::PersistAmbig,
     ];
 
     /// The rule's stable identifier, as it appears in the gate inventory.
@@ -97,6 +105,8 @@ impl Rule {
             Rule::TryUnconsumed => "V-TRY-UNCONSUMED",
             Rule::BudgetOrder => "V-BUDGET-ORDER",
             Rule::Mode => "V-MODE",
+            Rule::BlockingCancel => "V-BLOCKING-CANCEL",
+            Rule::PersistAmbig => "V-PERSIST-AMBIG",
         }
     }
 }
@@ -201,6 +211,8 @@ pub(crate) fn validate(ir: &PlanIr) -> Vec<Finding> {
             Rule::TryUnconsumed => budgets::try_unconsumed(&mut c),
             Rule::BudgetOrder => budgets::budget_order(&mut c),
             Rule::Mode => budgets::mode(&mut c),
+            Rule::BlockingCancel => rules::blocking_cancel(&mut c),
+            Rule::PersistAmbig => rules::persist_ambig(&mut c),
         }
     }
     c.out

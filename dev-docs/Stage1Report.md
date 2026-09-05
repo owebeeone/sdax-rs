@@ -509,7 +509,7 @@ returned and never reordered.
 | `ServeEnded { node, fault }` | a service's serve future returned; `None` for `Ok` |
 | `Timer(id)` | a timer the machine armed fired. Call `machine.advance(now)` first |
 | `ShutdownRequested` / `CancelRequested` | `Running::shutdown()`, and `cancel()` or a drop of `Running` |
-| `TaskJoined { node, joined }` | the general form of the join: `Cancelled` is `NodeCancelled`, `Panicked` is an `Err`, `Done` is a no-op. Use it where the runtime gives a `JoinError` rather than a body result |
+| `TaskJoined { node, joined }` | the general form of the join: `Cancelled` is `NodeCancelled`, `Done` is a no-op, and `Panicked` splits — on a body the engine had already cancelled (`cancelling`, whether it was signalled or aborted) it is the panic *on the way out* of the cancel, so it goes to the trace and the node is `Interrupted`, never a fault (`OD-PANIC-CANCELLED`); anywhere else it is an `Err`. A `NodeErr(_, Panic)` is always a fault: that is the body's own return. Use `TaskJoined` where the runtime gives a `JoinError` rather than a body result. It is refused for a `component` or a `join`, which have no body |
 | `InstanceSpawned` / `InstanceEnded` | **Stage 3.** The machine refuses them today with `"template instances are Stage 3"` |
 
 ### Two ordering rules the simulator encodes and the driver must keep

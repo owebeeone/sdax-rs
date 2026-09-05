@@ -184,11 +184,19 @@ pub(super) struct Slot {
     pub signalled: bool,
     /// The abort was for a `within` deadline.
     pub timing_out: bool,
+    /// A blocking attempt's `within` expired. The thread cannot be aborted
+    /// (T7), so the attempt keeps its grants and the slot stays `Running`
+    /// until the thread reports: the next attempt never overlaps it (INV-12)
+    /// and the pool is never over-subscribed.
+    pub timed_out: bool,
     pub timer: Option<TimerId>,
     pub backoff_until: Time,
     pub restarts: u32,
     /// FIFO position among waiters, taken when the node became need-ready.
     pub queued: Option<u64>,
+    /// The earlier waiter whose unmet want refused this one its grant (T1's
+    /// FIFO). Recorded so `Waiting{on}` can name the reason (contract § 2).
+    pub blocked_by: Option<usize>,
     pub granted: bool,
     /// A body was spawned at least once (a component: its inner run began).
     pub started: bool,
@@ -196,6 +204,9 @@ pub(super) struct Slot {
     /// Faults of attempts not yet exhausted: moved to the report if the node
     /// never becomes Ready, dropped (they stay in the trace) if it does.
     pub faults: Vec<Fault>,
+    /// An ambiguous attempt's record, parked with the faults: reported if the
+    /// node never becomes Ready, dropped if an `Ambiguity::Retry` resolves it.
+    pub ambiguity: Option<NodeRecord>,
 }
 
 impl Slot {
@@ -207,14 +218,17 @@ impl Slot {
             cancelling: false,
             signalled: false,
             timing_out: false,
+            timed_out: false,
             timer: None,
             backoff_until: Time::ZERO,
             restarts: 0,
             queued: None,
+            blocked_by: None,
             granted: false,
             started: false,
             because: None,
             faults: Vec::new(),
+            ambiguity: None,
         }
     }
 }
@@ -273,6 +287,9 @@ pub struct Machine {
     pub(super) timers: Vec<(TimerId, Purpose, Time)>,
     pub(super) next_timer: u64,
     pub(super) seq: u64,
+    /// How many bodies the engine has started. `admit_all` uses it to know
+    /// whether a pass made progress.
+    pub(super) starts: u64,
     pub(super) fx: Vec<Effect>,
     pub(super) faults: Vec<Fault>,
     pub(super) cleanup_failures: Vec<Fault>,
@@ -307,6 +324,7 @@ impl Machine {
             timers: Vec::new(),
             next_timer: 1,
             seq: 0,
+            starts: 0,
             fx: Vec::new(),
             faults: Vec::new(),
             cleanup_failures: Vec::new(),

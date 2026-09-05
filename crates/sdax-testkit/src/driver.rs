@@ -3,7 +3,7 @@
 //! driver — plus, after every step, the independent trace checker.
 
 use crate::eol::Eol;
-use crate::invariants::{check_trace, check_trace_prefix, Violation};
+use crate::invariants::{check_trace, check_trace_prefix, check_whys, Violation};
 use sdax::host::sim::{ScriptError, SimStep, Simulator};
 use sdax::host::{RawKey, Time};
 use sdax::{Plan, PlanView, Reason, Report, Script, Trace};
@@ -96,6 +96,11 @@ impl ScriptedDriver {
         if !stuck && report.trace.is_none() {
             report.trace = Some(trace.clone());
         }
+        for v in check_whys(&whys) {
+            if !violations.contains(&v) {
+                violations.push(v);
+            }
+        }
         if !stuck {
             for v in check_trace(&trace, &view, &report) {
                 if !violations.contains(&v) {
@@ -184,6 +189,11 @@ impl<Out> Driven<Out> {
                         first_violation = Some((len, len));
                     }
                 }
+            }
+        }
+        for v in check_whys(&r.whys) {
+            if !violations.contains(&v) {
+                violations.push(v);
             }
         }
         if !r.stuck {

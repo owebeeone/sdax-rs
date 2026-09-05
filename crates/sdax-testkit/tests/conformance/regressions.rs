@@ -323,6 +323,12 @@ fn mc_record_order_counts_only_the_nodes_the_view_shows() {
 /// A component that faulted left its inner scope `Admitting` under an inner
 /// `Isolate`, so a sibling that became ready afterwards started a body after
 /// the run had settled (T5).
+///
+/// The child exports `X` since F-03 (`Review-Stage1-Semantics.md`): a child's
+/// declared `Isolate` now governs its own scope, so a fault the export does
+/// not depend on no longer faults the component and nothing settles. The T5
+/// condition this row pins needs a component that *does* fail, which is what
+/// a dead export gives; `review_r3_*` pins the other half.
 #[test]
 fn mc_a_failed_component_stops_admitting_inside() {
     let mut c = Plan::builder("Child");
@@ -332,8 +338,9 @@ fn mc_a_failed_component_stops_admitting_inside() {
         .step("Y")
         .needs(z)
         .run(|_cx, _z: std::sync::Arc<()>| async move { Ok(()) });
-    let _ = (x, y);
+    let _ = y;
     let inner = c
+        .export(x)
         .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Finite)
         .expect("valid child");
     let mut outer = Plan::builder("Outer");
@@ -544,6 +551,12 @@ fn mc_a_waiter_a_nested_admit_already_started_is_not_started_twice() {
 /// `Started for a node with no body in flight`. A run driver holds one task
 /// handle per node and drops a superseded attempt's result; the simulator
 /// stands in for one, so it must too.
+///
+/// The schedule below moved with F-05 (`Review-Stage1-Semantics.md`): the
+/// timed-out attempt now keeps its grants and its slot until the thread
+/// reports, so attempt 2 starts *when attempt 1 is back*, not beside it. What
+/// this row pins is unchanged — attempt 1's ending must not end attempt 2 —
+/// and the overlap it used to assert as correct was the defect.
 #[test]
 fn mc_a_timed_out_blocking_attempt_does_not_end_the_next_one() {
     let mut p = Plan::builder("Stale");
@@ -556,8 +569,8 @@ fn mc_a_timed_out_blocking_attempt_does_not_end_the_next_one() {
     let plan = p
         .build(Policy::Isolate, Shutdown::within(secs(20)), Mode::Finite)
         .expect("valid");
-    // Attempt 1's thread finishes at t=4, two seconds after the deadline that
-    // already failed it; attempt 2 starts at t=2 and returns `Ok` at t=4 too.
+    // The deadline at t=2 fails attempt 1; its thread only reports at t=4, and
+    // attempt 2 starts there and returns `Ok` two seconds later.
     let script = Script::new().body(
         "B",
         vec![Body::fail(At::tick(4.0), "late"), Body::ok(At::plus(2.0))],
@@ -566,10 +579,15 @@ fn mc_a_timed_out_blocking_attempt_does_not_end_the_next_one() {
     d.check();
     let t = d.eol();
     assert_eq!(t.attempts("B"), 2, "two attempts, no more:\n{}", t.render());
-    assert_eq!(t.start_attempt("B", 2), Some(2.0));
+    assert_eq!(t.fail("B"), Some(2.0), "the deadline fails attempt 1");
+    assert_eq!(
+        t.start_attempt("B", 2),
+        Some(4.0),
+        "and attempt 2 starts when attempt 1's thread is back, never beside it"
+    );
     assert_eq!(
         t.ready("B"),
-        Some(4.0),
+        Some(6.0),
         "attempt 2 ends on its own body, not attempt 1's"
     );
     assert_eq!(d.report.outcome, Outcome::Ok);

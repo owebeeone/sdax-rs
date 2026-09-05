@@ -67,16 +67,21 @@ impl Machine {
     pub fn step(&mut self, event: Event) -> Vec<Effect> {
         let described = format!("{event:?}");
         let result = match event {
-            Event::Started(k) => self.node(k).and_then(|n| self.on_started(n)),
-            Event::Held(k) => self.node(k).and_then(|n| self.on_held(n)),
-            Event::NodeOk(k) => self.node(k).and_then(|n| self.on_ok(n)),
-            Event::NodeErr(k, kind) => match self.node(k) {
+            Event::Started(k) => self.body_node(k).and_then(|n| self.on_started(n)),
+            Event::Held(k) => self.body_node(k).and_then(|n| {
+                if !self.t.nodes[n].kind.can_hold() {
+                    return Err("Held for a kind that carries no obligation");
+                }
+                self.on_held(n)
+            }),
+            Event::NodeOk(k) => self.body_node(k).and_then(|n| self.on_ok(n)),
+            Event::NodeErr(k, kind) => match self.body_node(k) {
                 Ok(n) => self.on_err(n, kind),
                 Err(reason) => Err(reason),
             },
-            Event::NodeCancelled { node, held } => {
-                self.node(node).and_then(|n| self.on_cancelled(n, held))
-            }
+            Event::NodeCancelled { node, held } => self
+                .body_node(node)
+                .and_then(|n| self.on_cancelled(n, held)),
             Event::ServeEnded { node, fault } => match self.node(node) {
                 Ok(n) => self.on_serve_ended(n, fault),
                 Err(reason) => Err(reason),
@@ -85,7 +90,7 @@ impl Machine {
             Event::ShutdownRequested => self.on_shutdown(),
             Event::CancelRequested => self.on_cancel(),
             Event::TaskJoined { node, joined } => {
-                self.node(node).and_then(|n| self.on_joined(n, joined))
+                self.body_node(node).and_then(|n| self.on_joined(n, joined))
             }
             Event::InstanceSpawned { .. } | Event::InstanceEnded { .. } => {
                 Err("template instances are Stage 3")
@@ -111,6 +116,22 @@ impl Machine {
         self.t.index_of(key).ok_or("unknown node")
     }
 
+    /// The node behind a key for an event that reports on a **body**.
+    ///
+    /// A component and a join have no body — a component's attempt is its inner
+    /// graph coming up, a join's is nothing at all — so the engine never spawns
+    /// one and an outcome for one can only be a driver's mistake. Taken, it
+    /// gives a component a fault vector the exit helpers assume is always empty
+    /// (Stage 1 report § 4.3), and leaves its inner scope live behind a `Ready`
+    /// or `Failed` component. D1 says so: a `Reject`, not a silent state.
+    fn body_node(&self, key: RawKey) -> Result<usize, &'static str> {
+        let n = self.node(key)?;
+        match self.t.nodes[n].kind {
+            Kind::Component | Kind::Join => Err("this kind has no body"),
+            _ => Ok(n),
+        }
+    }
+
     fn on_started(&mut self, n: usize) -> Result<(), &'static str> {
         match self.slots[n].st {
             St::Running | St::Abandoned => Ok(()),
@@ -122,6 +143,24 @@ impl Machine {
         match joined {
             super::JoinedLabel::Cancelled => self.on_cancelled(n, self.slots[n].held),
             super::JoinedLabel::Panicked => {
+                // `OD-PANIC-CANCELLED`: a body the engine had already cancelled
+                // panicked on the way out. For a cooperative cancel `on_err`
+                // sees `signalled` and does this; for a drop-mode `Abort` —
+                // the default for resources, steps and effects — `signalled` is
+                // false, and the panic the driver reports on the *join* is not
+                // the body's own return. It is observed in the trace and is
+                // not a fault. A `NodeErr(_, Panic)` still is: that is the
+                // body's own outcome, delivered because it was already due.
+                let s = &self.slots[n];
+                if s.st == St::Running && s.cancelling && !s.signalled {
+                    let phase = self.body_phase(n);
+                    self.emit(
+                        n,
+                        crate::report::TraceKind::Fail(phase, crate::report::FaultLabel::Panic),
+                    );
+                    self.finish_interrupted(n);
+                    return Ok(());
+                }
                 self.on_err(n, crate::report::FaultKind::Panic(Box::new("panicked")))
             }
             super::JoinedLabel::Done => Ok(()),
@@ -266,6 +305,12 @@ impl Machine {
             if self.scopes[node.scope].pools[p] >= decl.limit {
                 out.push((NodePath::root(&decl.name), Reason::Pool));
             }
+        }
+        // T1's FIFO: an earlier waiter's unmet want refuses this grant even
+        // when the grant itself is free. Without this the delay is silent and
+        // `Waiting{on}` is empty, which contract § 2 forbids.
+        if let Some(b) = self.slots[i].blocked_by {
+            out.push((self.t.nodes[b].path.clone(), Reason::QueuedBehind));
         }
         if !self.admitting(node.scope) {
             out.push((

@@ -130,6 +130,50 @@ fn r04_a_declared_pool_bounds_the_blocking_steps_and_the_bound_is_measured() {
     assert_eq!(rt.tracked(), 0);
 }
 
+/// `R-05` — F-05: a blocking step whose `within` expires does not
+/// over-subscribe its pool.
+///
+/// The thread cannot be aborted (T7), so the deadline used to fail the attempt,
+/// free the pool grant and start the next attempt beside the thread that was
+/// still running: two bodies in a pool of one, INV-12 ("attempts never
+/// overlap") and INV-15 ("every task the engine spawned has been joined or is
+/// listed as abandoned") both false. The bound is measured by the bodies.
+#[test]
+fn r05_a_blocking_within_does_not_oversubscribe_its_pool() {
+    let hw = Arc::new(HighWater::default());
+    let mut p = Plan::builder("Blocking timeout");
+    let cpu = p.pool("cpu", 1);
+    let h = hw.clone();
+    p.blocking_step("B")
+        .within(Duration::from_millis(50))
+        .retry(Retry::attempts(2))
+        .on(cpu)
+        .run(move |_cx, ()| {
+            h.enter();
+            // Attempt 1 runs well past its own deadline; attempt 2 is quick.
+            if h.ever.load(Ordering::SeqCst) == 1 {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            h.exit();
+            Ok(())
+        });
+    let plan = p
+        .build(Policy::Isolate, Shutdown::within(secs(10)), Mode::Finite)
+        .expect("valid");
+    // Real time: a pool thread cannot advance a paused clock.
+    let tokio_rt = live();
+    let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
+    let report = tokio_rt.block_on(async { plan.start(rt.clone()).await });
+    assert_eq!(
+        hw.max.load(Ordering::SeqCst),
+        1,
+        "cpu(1): the timed-out thread keeps its grant until it returns"
+    );
+    assert_eq!(hw.now.load(Ordering::SeqCst), 0);
+    assert_eq!(rt.tracked(), 0, "INV-15: every thread was joined");
+    assert_eq!(report.outcome, Outcome::Ok, "{report:?}");
+}
+
 // --------------------------------------------------------------- R-06
 
 /// The payload the testkit's panic hook swallows, so a suite that raises

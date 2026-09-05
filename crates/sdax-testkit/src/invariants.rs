@@ -10,6 +10,12 @@
 //! [`check_trace_prefix`] and [`check_trace`] check a run's trace against
 //! the plan view and the report (INV-1…5, 7…12, 15, 18, 20, `orphans:
 //! none`), from the view and the trace alone — never from the machine.
+//! [`check_arbitration`] and [`check_scopes`] add INV-1's lock and pool
+//! *exclusion* clauses, `Skipped`, `terminal` and inner-scope settling
+//! (`MUTEX`, `POOL`, `SKIPPED`, `TERMINAL`, `T5-INNER`); [`check_whys`] adds
+//! the contract's "`on` lists each reason" (`WHY`). Each of them was missing
+//! when `dev-docs/Review-Stage1-Semantics.md` § 5.1 was written, and each is
+//! run over every case of suite (d).
 //!
 //! **Honest limit.** INV-1 has a negative fixture (an edge no node declared).
 //! INV-5 and INV-6 do not: the core derives the release order *from* the edge
@@ -18,8 +24,10 @@
 //! are regression guards with positive coverage over every plan shape, not
 //! independently falsified checks, and this crate does not claim otherwise.
 
+mod arbitration;
 mod trace;
 
+pub use arbitration::{check_arbitration, check_scopes, check_whys};
 pub use trace::{check_trace, check_trace_prefix};
 
 use sdax::host::{Clock, Time};

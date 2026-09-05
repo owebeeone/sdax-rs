@@ -338,3 +338,67 @@ pub(crate) fn lock_needs(c: &mut Ctx<'_>) {
         );
     }
 }
+
+/// `V-BLOCKING-CANCEL`: `cooperative(g)` on a blocking step.
+///
+/// Decision procedure: a node of kind `BlockingStep` whose `cancel` is
+/// `CancelMode::Cooperative` is a finding.
+///
+/// A blocking body runs on a thread, and a thread cannot be dropped: the engine
+/// signals it at the settle and never aborts it (T5, T7), so the grace the
+/// author wrote is a duration nothing ever spends. `cx.is_stopping()` works in
+/// a blocking body without the attribute — the signal is unconditional — so the
+/// declaration adds nothing and hides that fact.
+pub(crate) fn blocking_cancel(c: &mut Ctx<'_>) {
+    let names: Vec<String> =
+        c.ir.nodes
+            .iter()
+            .filter(|n| {
+                n.kind == Kind::BlockingStep
+                    && matches!(n.attrs.cancel, crate::policy::CancelMode::Cooperative(_))
+            })
+            .map(|n| n.name.clone())
+            .collect();
+    for node in names {
+        c.add(
+            Rule::BlockingCancel,
+            vec![node.clone()],
+            Vec::new(),
+            format!("blocking step {node:?} declares a cooperative grace"),
+            "drop `.cooperative(..)`: a blocking body is signalled and never \
+             aborted, so `cx.is_stopping()` already works and the grace is never spent",
+        );
+    }
+}
+
+/// `V-PERSIST-AMBIG`: `on_ambiguous(Compensate)` on a `persistent` effect.
+///
+/// Decision procedure: a node whose `release` is `ReleaseStyle::Persistent` and
+/// whose `on_ambiguous` is `Ambiguity::Compensate` is a finding.
+///
+/// `persistent` says the record stands and is never compensated, and the engine
+/// honours that over the ambiguity policy (`OD-PERSIST-AMBIG`). The pair is
+/// therefore two declarations that cancel out, and
+/// `V-IDEMPOTENT-REQUIRED` then obliges the author to assert the idempotency of
+/// a compensation that can never run.
+pub(crate) fn persist_ambig(c: &mut Ctx<'_>) {
+    let names: Vec<String> =
+        c.ir.nodes
+            .iter()
+            .filter(|n| {
+                n.attrs.release == crate::plan::ReleaseStyle::Persistent
+                    && n.attrs.on_ambiguous == Some(crate::policy::Ambiguity::Compensate)
+            })
+            .map(|n| n.name.clone())
+            .collect();
+    for node in names {
+        c.add(
+            Rule::PersistAmbig,
+            vec![node.clone()],
+            Vec::new(),
+            format!("persistent effect {node:?} declares `on_ambiguous(Compensate)`"),
+            "a persistent effect has nothing to compensate: use `Ambiguity::Report` or \
+             `Ambiguity::Retry`, or drop `.persistent()`",
+        );
+    }
+}

@@ -53,6 +53,10 @@ pub(super) struct Scope {
     pub parent: Option<usize>,
     /// The component node (in the parent scope) this scope runs for.
     pub component: Option<usize>,
+    /// The node this scope exports, if it exports one. A component becomes
+    /// `Ready` on its export, so an inner fault that kills the export kills the
+    /// component whatever the child's fail policy.
+    pub export: Option<usize>,
 }
 
 /// The whole run, flattened.
@@ -160,6 +164,7 @@ impl Table {
             pools: ir.pools.clone(),
             parent,
             component,
+            export: None,
         });
         let lookup = |map: &Vec<(RawKey, usize)>, k: RawKey| -> Option<usize> {
             map.iter().rev().find(|(key, _)| *key == k).map(|(_, i)| *i)
@@ -218,6 +223,9 @@ impl Table {
                 }
             }
         }
+        // Resolved last: an export names a node of this scope, which is flat
+        // by now (and, for a component, so is its whole subtree).
+        self.scopes[scope].export = ir.export.and_then(|k| lookup(map, k));
         Ok(())
     }
 

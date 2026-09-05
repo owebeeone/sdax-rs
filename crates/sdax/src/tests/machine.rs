@@ -294,6 +294,133 @@ fn p17_fail_fast_aborts_in_flight_siblings_joins_them_then_releases_in_graph_ord
     assert!(matches!(fx.as_slice(), [Effect::Reject(_)]), "{fx:?}");
 }
 
+// -------------------------------------------- review remediation (R-4, R-8)
+
+/// `R-4` / F-07 — `OD-PANIC-CANCELLED` on the **drop** path.
+///
+/// The decision says a body the engine had already cancelled that panics is
+/// `Interrupted` and is not a fault. The escape was keyed on `signalled`, so it
+/// held only for a cooperative cancel; a drop-mode `Abort` — the default for
+/// resources, steps and effects — left `signalled` false and the panic the
+/// driver reported on the join became a fault and `Failed`.
+#[test]
+fn r4_a_panic_joined_after_a_drop_abort_is_not_a_fault() {
+    let plan = p17_plan();
+    let mut m = Machine::new(&plan).expect("static plan");
+    m.begin();
+    ok(&mut m, "Base");
+    for n in ["A", "B", "C"] {
+        let k = key(&m, n);
+        m.step(Event::Started(k));
+    }
+    let fx = err(&mut m, "B");
+    assert_eq!(aborted(&m, &fx), ["A", "C"], "drop-mode aborts");
+
+    let k = key(&m, "A");
+    m.step(Event::TaskJoined {
+        node: k,
+        joined: crate::host::engine::JoinedLabel::Panicked,
+    });
+    assert!(
+        matches!(m.state_of("A"), Some(NodeState::Interrupted { .. })),
+        "{:?}",
+        m.state_of("A")
+    );
+
+    let k = key(&m, "C");
+    m.step(Event::NodeCancelled {
+        node: k,
+        held: false,
+    });
+    let k = key(&m, "Base");
+    let fx = m.step(Event::NodeOk(k));
+    assert_eq!(ended(&fx), Some(Outcome::Failed));
+    let report = m.take_report().expect("ended");
+    let faults: Vec<String> = report.faults.iter().map(|f| f.node.to_string()).collect();
+    assert_eq!(faults, ["B"], "the panic on the way out is not a fault");
+}
+
+/// `R-8` / F-11 — a `NodeCancelled` for a body the engine never aborted.
+///
+/// INV-7 forbids the engine to cancel a cleanup body, so the event can only
+/// mean the *driver* dropped one. It was accepted silently and the node stayed
+/// `Releasing` until the budget — for ever under `Shutdown::unbounded()`. D1
+/// says an event that makes no sense here is a `Reject`.
+#[test]
+fn r8_a_cancelled_cleanup_body_is_refused() {
+    let plan = p17_plan();
+    let mut m = Machine::new(&plan).expect("static plan");
+    m.begin();
+    ok(&mut m, "Base");
+    for n in ["A", "B", "C"] {
+        let k = key(&m, n);
+        m.step(Event::Started(k));
+        m.step(Event::Held(k));
+        m.step(Event::NodeOk(k));
+    }
+    let k = key(&m, "Down");
+    m.step(Event::Started(k));
+    let fx = m.step(Event::NodeOk(k));
+    assert_eq!(released(&m, &fx), ["A", "B", "C"], "{fx:?}");
+
+    let k = key(&m, "A");
+    let fx = m.step(Event::NodeCancelled {
+        node: k,
+        held: true,
+    });
+    assert!(matches!(fx.as_slice(), [Effect::Reject(_)]), "{fx:?}");
+    assert!(matches!(m.state_of("A"), Some(NodeState::Releasing)));
+}
+
+/// F-10 — a body outcome for a kind that has no body is refused.
+///
+/// A component's attempt is its inner graph coming up and a join's is nothing
+/// at all: the engine spawns neither, so an outcome for one can only be a
+/// driver's mistake. Taken, `NodeErr(component)` gave the component a fault
+/// vector the exit helpers assume is always empty, and `NodeOk(component)` made
+/// it `Ready` with its inner scope still admitting.
+#[test]
+fn f10_a_body_outcome_for_a_component_or_a_join_is_refused() {
+    let mut p = Plan::builder("Kinds");
+    let child = {
+        let mut c = Plan::builder("Child");
+        c.step("Inner").run(|_cx, ()| async move { Ok(()) });
+        c.build(Policy::FailFast, Shutdown::within(secs(4)), Mode::Finite)
+            .expect("valid child")
+    };
+    let a = p.step("A").run(|_cx, ()| async move { Ok(()) });
+    let b = p.step("B").run(|_cx, ()| async move { Ok(()) });
+    p.join("J", (a, b));
+    p.component("C", &child);
+    let plan = p
+        .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
+        .expect("valid");
+    let mut m = Machine::new(&plan).expect("static plan");
+    m.begin();
+    for path in ["C", "J"] {
+        let k = key(&m, path);
+        let fx = m.step(Event::NodeOk(k));
+        assert!(
+            matches!(fx.as_slice(), [Effect::Reject(_)]),
+            "{path}: {fx:?}"
+        );
+        let fx = m.step(Event::NodeErr(k, crate::report::FaultKind::Timeout));
+        assert!(
+            matches!(fx.as_slice(), [Effect::Reject(_)]),
+            "{path}: {fx:?}"
+        );
+        let fx = m.step(Event::Held(k));
+        assert!(
+            matches!(fx.as_slice(), [Effect::Reject(_)]),
+            "{path}: {fx:?}"
+        );
+    }
+    // And a `Held` for a kind that carries no obligation.
+    let k = key(&m, "A");
+    let fx = m.step(Event::Held(k));
+    assert!(matches!(fx.as_slice(), [Effect::Reject(_)]), "{fx:?}");
+}
+
 #[test]
 fn a_plan_with_a_template_is_refused_naming_stage_3() {
     let plan = super::corpus::i30().expect("valid");

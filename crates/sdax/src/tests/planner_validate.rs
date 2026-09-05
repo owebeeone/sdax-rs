@@ -539,3 +539,48 @@ fn l_imports_lists_what_a_root_run_could_not_resolve() {
     );
     assert!(i01().expect("valid").unresolved_imports().is_empty());
 }
+
+/// `V-BLOCKING-CANCEL` (F-04) — the grace of `.cooperative(g)` on a blocking
+/// step can never be spent: a thread is signalled and never aborted.
+#[test]
+fn v_blocking_cancel_rejects_a_cooperative_grace_on_a_blocking_step() {
+    let mut p = Plan::builder("Blocking");
+    let cpu = p.pool("cpu", 1);
+    p.blocking_step("Verify")
+        .on(cpu)
+        .cooperative(secs(1))
+        .run(|_cx, ()| Ok(()));
+    let inv = invalid(p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite));
+    let f = only(&inv, Rule::BlockingCancel);
+    assert_eq!(f.nodes, ["Verify"]);
+    assert!(f.fix.contains("is_stopping"), "{f}");
+}
+
+/// And the same step without the attribute is valid: `cx.is_stopping()` works
+/// in a blocking body regardless, because the signal is unconditional.
+#[test]
+fn v_blocking_cancel_allows_a_blocking_step_with_no_cancel_attribute() {
+    let mut p = Plan::builder("Blocking");
+    let cpu = p.pool("cpu", 1);
+    p.blocking_step("Verify").on(cpu).run(|_cx, ()| Ok(()));
+    assert!(p
+        .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite)
+        .is_ok());
+}
+
+/// `V-PERSIST-AMBIG` (F-09) — a persistent effect has nothing to compensate,
+/// and the pair also forced a meaningless `.idempotent()` through
+/// `V-IDEMPOTENT-REQUIRED`.
+#[test]
+fn v_persist_ambig_rejects_a_persistent_effect_that_compensates_an_ambiguity() {
+    let mut p = Plan::builder("Persist");
+    p.effect("Charge")
+        .idempotent()
+        .on_ambiguous(Ambiguity::Compensate)
+        .perform(|cx, ()| async move { Ok(cx.hold_value(Receipt("r"))) })
+        .persistent();
+    let inv = invalid(p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite));
+    let f = only(&inv, Rule::PersistAmbig);
+    assert_eq!(f.nodes, ["Charge"]);
+    assert!(f.fix.contains("Ambiguity::Report"), "{f}");
+}

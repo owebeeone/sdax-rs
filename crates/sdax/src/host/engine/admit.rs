@@ -52,8 +52,13 @@ impl Machine {
                 .filter(|&n| self.slots[n].st == St::Waiting)
                 .collect();
             waiters.sort_by_key(|&n| self.slots[n].queued);
-            let mut blocked_locks: Vec<usize> = Vec::new();
-            let mut blocked_pool = false;
+            // Per grant, the first waiter that wanted it and did not get it.
+            // One flag for every pool queued a waiter for a *free* pool behind
+            // a waiter for a full one, which INV-1 forbids: arbitration is
+            // "among nodes that declare the same lock or pool", and nothing
+            // else orders starts.
+            let mut blocked_locks: Vec<(usize, usize)> = Vec::new();
+            let mut blocked_pools: Vec<(usize, usize)> = Vec::new();
             let mut started = false;
             for n in waiters {
                 // The list above was taken before the first `start`, and a
@@ -73,16 +78,22 @@ impl Machine {
                     .chain(self.t.nodes[n].shared.iter())
                     .copied()
                     .collect();
-                let wants_pool = self.t.nodes[n].pool.is_some();
-                let blocked =
-                    wants.iter().any(|w| blocked_locks.contains(w)) || (wants_pool && blocked_pool);
-                if !blocked && self.grants_available(n) {
+                let pool = self.t.nodes[n].pool;
+                let ahead = wants
+                    .iter()
+                    .find_map(|w| blocked_locks.iter().find(|(r, _)| r == w))
+                    .or_else(|| pool.and_then(|p| blocked_pools.iter().find(|(q, _)| *q == p)))
+                    .map(|(_, waiter)| *waiter);
+                self.slots[n].blocked_by = ahead;
+                if ahead.is_none() && self.grants_available(n) {
                     self.take_grants(n);
                     self.start(n);
                     started = true;
                 } else {
-                    blocked_locks.extend(wants);
-                    blocked_pool |= wants_pool;
+                    blocked_locks.extend(wants.iter().map(|&w| (w, n)));
+                    if let Some(p) = pool {
+                        blocked_pools.push((p, n));
+                    }
                 }
             }
             if !started {
@@ -150,8 +161,32 @@ impl Machine {
         }
     }
 
+    /// Every scope that can admit, to a fixpoint.
+    ///
+    /// A lock or a pool belongs to a scope, but an **imported** resource does
+    /// not: `Table::flatten` resolves an import to the parent's node, so a
+    /// child node's `exclusive`/`shared` names the same lock a parent node
+    /// names. Re-admitting only the releasing node's own scope left a child
+    /// waiting for a lock nobody held — for ever, and with an empty `why`,
+    /// because the holder it would have named was gone.
+    pub(super) fn admit_all(&mut self) {
+        loop {
+            let before = self.starts;
+            for s in 0..self.scopes.len() {
+                if matches!(self.scopes[s].st, RunState::Admitting | RunState::Steady) {
+                    self.admit(s);
+                    self.check_steady(s);
+                }
+            }
+            if self.starts == before {
+                return;
+            }
+        }
+    }
+
     /// Spawn the next attempt of a need-ready, granted node.
     fn start(&mut self, n: usize) {
+        self.starts += 1;
         let kind = self.t.nodes[n].kind;
         let slot = &mut self.slots[n];
         slot.queued = None;
@@ -160,6 +195,7 @@ impl Machine {
         slot.cancelling = false;
         slot.signalled = false;
         slot.timing_out = false;
+        slot.timed_out = false;
         slot.started = true;
         slot.st = St::Running;
         let attempt = slot.attempt;
@@ -247,7 +283,12 @@ impl Machine {
                     self.slots[d].queued = None;
                     self.slots[d].because = Some(because);
                     let path = self.t.nodes[because].path.clone();
-                    self.emit(d, TraceKind::Skipped { because: path });
+                    self.emit(
+                        d,
+                        TraceKind::Skipped {
+                            because: Some(path),
+                        },
+                    );
                     // A node waiting for its *next* attempt still owns the
                     // faults of the attempts that already failed (INV-9).
                     self.flush_faults(d);
@@ -264,6 +305,9 @@ impl Machine {
         let scope = self.t.nodes[n].scope;
         self.admit(scope);
         self.check_steady(scope);
+        // The grants this node held are free, and a lock reached through an
+        // import is not this scope's alone.
+        self.admit_all();
         self.try_cleanup(scope);
     }
 }

@@ -169,10 +169,17 @@ impl<'a> Eol<'a> {
     pub fn ambiguous(&self, node: &str) -> bool {
         self.pos(is_ambiguous, node).is_some()
     }
-    /// `Skipped{because}`.
+    /// Whether the node was skipped at all — with or without a cause node.
+    pub fn skipped(&self, node: &str) -> bool {
+        self.pos(is_skipped, node).is_some()
+    }
+    /// The cause node of `Skipped{because}`. `None` both when the node was
+    /// never skipped and when the run itself ended its eligibility (a request,
+    /// a `Finite` scope, a `terminal` service); [`Eol::skipped`] tells them
+    /// apart.
     pub fn skipped_because(&self, node: &str) -> Option<String> {
         self.events(node).find_map(|(_, e)| match &e.kind {
-            TraceKind::Skipped { because } => Some(because.to_string()),
+            TraceKind::Skipped { because } => because.as_ref().map(|b| b.to_string()),
             _ => None,
         })
     }

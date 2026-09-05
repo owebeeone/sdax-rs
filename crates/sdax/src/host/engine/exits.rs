@@ -27,6 +27,14 @@ impl Machine {
     pub(super) fn flush_faults(&mut self, n: usize) {
         let faults = std::mem::take(&mut self.slots[n].faults);
         self.faults.extend(faults);
+        // INV-11: an ambiguity travels with the faults of the attempt that
+        // raised it. Reported eagerly, an `Ambiguity::Retry` whose retry
+        // succeeded still ended unclean, so `Retry` could never yield a clean
+        // run after one timeout — and the contract offers it as the policy for
+        // an idempotent effect that can simply be done again.
+        if let Some(rec) = self.slots[n].ambiguity.take() {
+            self.ambiguous.push(rec);
+        }
     }
 
     /// INV-15: end a component's own attempt with a terminal observation.
@@ -48,6 +56,13 @@ impl Machine {
         if self.slots[c].st != St::Running {
             return;
         }
+        // `St::Running ⟹ started`: `St::Running` is assigned in exactly one
+        // place (`admit::start`), on the line after `started = true`, and
+        // `started` is never cleared. Asserted here so the next writer of a
+        // path into `Running` — a restart, a template instance — trips on it
+        // rather than shipping an `Interrupted{held: false}` for a component
+        // whose inner graph is still up.
+        debug_assert!(self.slots[c].started, "St::Running implies started");
         self.slots[c].st = St::Interrupted;
         let held = self.slots[c].started;
         self.emit(c, TraceKind::Interrupted { held });

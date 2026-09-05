@@ -67,22 +67,6 @@ impl PlanView {
         };
         let mut resolver = Resolver::default();
         flatten(ir, &NodePath::default(), &mut v, &mut resolver);
-        for (idx, decl) in ir.pools.iter().enumerate() {
-            let users = ir
-                .nodes
-                .iter()
-                .filter(|n| {
-                    n.attrs.limit.map(|p| p.index()) == Some(idx as u32)
-                        || n.attrs.pool.map(|p| p.index()) == Some(idx as u32)
-                })
-                .map(|n| NodePath::root(&n.name))
-                .collect();
-            v.pools.push(PoolView {
-                name: decl.name.clone(),
-                limit: decl.limit,
-                users,
-            });
-        }
         v
     }
 
@@ -258,11 +242,49 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
             }
         }
     }
+    // Every scope's pools, not only the root's: a child plan declares its own,
+    // and a reader of `inspect()` — or a checker recomputing the pool clause of
+    // INV-1 — could not see them at all.
+    for (idx, decl) in ir.pools.iter().enumerate() {
+        let users = ir
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.attrs.limit.map(|p| p.index()) == Some(idx as u32)
+                    || n.attrs.pool.map(|p| p.index()) == Some(idx as u32)
+            })
+            .map(&path_of)
+            .collect();
+        out.pools.push(PoolView {
+            scope: prefix.clone(),
+            name: decl.name.clone(),
+            limit: decl.limit,
+            users,
+        });
+    }
     for n in &ir.nodes {
         if matches!(n.kind, Kind::Import | Kind::Input) {
             continue;
         }
         let path = path_of(n);
+        // Locks resolve the way `needs` do: a lock on an imported resource
+        // names the parent's node, not the child's import stub, so a reader —
+        // and a checker recomputing INV-1's exclusion clause — can see that two
+        // scopes contend for one resource.
+        let locks = Locks {
+            exclusive: n
+                .attrs
+                .exclusive
+                .iter()
+                .map(|k| resolve_need(ir, prefix, res, *k))
+                .collect(),
+            shared: n
+                .attrs
+                .shared
+                .iter()
+                .map(|k| resolve_need(ir, prefix, res, *k))
+                .collect(),
+        };
         let mut needs = Vec::new();
         for k in &n.needs {
             let to = resolve_need(ir, prefix, res, *k);
@@ -292,7 +314,7 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
             } else {
                 Vec::new()
             },
-            attrs: resolved_attrs(ir, n),
+            attrs: resolved_attrs(ir, n, &locks),
             declared: n.attrs.declared.clone(),
         });
         if let Some(child) = &n.child {
@@ -326,7 +348,20 @@ fn resolve_need(ir: &PlanIr, prefix: &NodePath, res: &Resolver, k: RawKey) -> No
     }
 }
 
-fn resolved_attrs(ir: &PlanIr, n: &NodeDecl) -> Vec<(&'static str, String)> {
+/// A node's locks, resolved to the paths they really name.
+struct Locks {
+    exclusive: Vec<NodePath>,
+    shared: Vec<NodePath>,
+}
+
+fn join_paths(v: &[NodePath]) -> String {
+    v.iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn resolved_attrs(ir: &PlanIr, n: &NodeDecl, locks: &Locks) -> Vec<(&'static str, String)> {
     let a = &n.attrs;
     let mut v: Vec<(&'static str, String)> = Vec::new();
     v.push(("release", a.release.label().to_string()));
@@ -374,17 +409,11 @@ fn resolved_attrs(ir: &PlanIr, n: &NodeDecl) -> Vec<(&'static str, String)> {
     if let Some(amb) = a.on_ambiguous {
         v.push(("ambiguous", ambiguity_label(amb).to_string()));
     }
-    if let Some(k) = a.exclusive.first() {
-        v.push((
-            "exclusive",
-            ir.node(*k).map(|d| d.name.clone()).unwrap_or_default(),
-        ));
+    if !locks.exclusive.is_empty() {
+        v.push(("exclusive", join_paths(&locks.exclusive)));
     }
-    if let Some(k) = a.shared.first() {
-        v.push((
-            "shared",
-            ir.node(*k).map(|d| d.name.clone()).unwrap_or_default(),
-        ));
+    if !locks.shared.is_empty() {
+        v.push(("shared", join_paths(&locks.shared)));
     }
     if let Some(p) = a.pool {
         v.push(("pool", ir.pools[p.index() as usize].name.clone()));

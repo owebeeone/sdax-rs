@@ -33,8 +33,10 @@ instantiated at run time by a body, with a per-instance input).
 | `resource` | `acquire(cx, deps) -> Result<Held<T>>` | the body returns `Ok` | `Arc<T>` | `cx.hold`/`hold_value` registered a value | `release(cx, Arc<T>)`, or `release::by_drop()` |
 | `step` | `run(cx, deps) -> Result<T>` | the body returns `Ok` | `Arc<T>` | never | none |
 | `try_step` | `run(cx, deps) -> Result<T>` | the body returns (`Ok` **or** `Err`) | `Arc<Result<T, Error>>` | never | none |
+| | *a panic or a `within` timeout is a **fault**, not a value: only a returned `Err` is the value* | | | | |
 | `blocking_step` | `run(cx, deps) -> Result<T>`, synchronous, on a declared pool | returns `Ok` | `Arc<T>` | never | none |
-| `service` | `start(cx, deps) -> Result<Serving<H>>` | the start body returns `Ok(Serving)` | `Arc<H>` | started (a serve future exists) | signal, wait ≤ `stop_within`, abort |
+| | *never aborted: signalled at the settle (T5), and its `within` faults the attempt while the thread keeps its grants until it returns (T7)* | | | | |
+| `service` | `start(cx, deps) -> Result<Serving<H>>` | the start body returns `Ok(Serving)` | `Arc<H>` | started (a serve future exists) **and** the start body returned before the stop request — a `Serving` returned after the signal is the answer to the cancel, is `Interrupted{held: false}`, and is dropped unpolled | signal, wait ≤ `stop_within`, abort |
 | `effect` | `perform(cx, deps) -> Result<Held<R>>` | the body returns `Ok` | `Arc<R>` (the receipt) | `hold` registered a receipt **and** the effect is not `persistent` | `compensate(cx, Arc<R>)`, reported distinctly from a release |
 | `join` | none | every need is Ready | `Arc<()>` | never | none |
 | `component` | none (a nested plan) | the inner run reaches steady state | `Arc<Out>` | the inner run started | the inner release graph, as one unit |
@@ -46,7 +48,7 @@ Edges and constraints:
 |---|---|---|
 | `.needs(deps)` | ordering **and** typed dataflow; the body receives `Arc<T>` per key | compiler (existence, type), `V-FOREIGN-KEY` |
 | `import(parent_key)` | a cross-scope need in a child plan; the parent's node is released only after the child is cleaned up | `V-IMPORT-SCOPE` |
-| `.exclusive(k)` / `.shared(k)` | arbitration on a resource the node already needs | `V-LOCK-NEEDS` |
+| `.exclusive(k)` / `.shared(k)` | arbitration on a resource the node already needs. The grant is held **from the start of the prepare/run body to its `Ready`, fault or interrupt** — a service keeps it while it serves; release and compensate bodies, including the between-attempts release of a retried resource, run unlocked. `k` may be an `import`, and then the lock is one lock shared by both scopes | `V-LOCK-NEEDS` |
 | `pool(name, n)`, `.limit(pool)`, `.on(pool)` | a per-run concurrency budget; `.on` is the required pool of a blocking step | `V-POOL-STARVE`, `V-UNUSED-POOL` |
 | `.spawns(&template)` | this service may instantiate this template (F1) | `V-SPAWN-KIND`, `V-SPAWN-SELF-IMPORT`, `V-FOREIGN-KEY` |
 | `.export(key)` | the plan's typed output | compiler |
@@ -74,37 +76,45 @@ from that clock's origin.
 | state | meaning |
 |---|---|
 | `Pending` | declared; not yet considered |
-| `Waiting{on}` | a need, a lock or a pool grant is missing; `on` lists each reason |
+| `Waiting{on}` | a need, a lock or a pool grant is missing; `on` lists each reason, and is never empty — a node refused only because an earlier waiter for the same grant has not been served names that waiter (`Reason::QueuedBehind`) |
 | `Running{attempt, held}` | the prepare body is in flight; `held` flips at `Held` |
 | `Backoff{attempt, until}` | between failed attempts |
 | `Ready` | see § 1; a service is also `Serving` → `Finished` \| `Faulted` |
 | `Failed{fault, held}` | attempts exhausted with `Err`/panic/timeout |
 | `Interrupted{held}` | the engine cancelled the body; never a fault |
 | `Ambiguous` | an effect interrupted or timed out after start and before `hold` |
-| `Skipped{because}` | a need ended `Failed`/`Interrupted`/`Ambiguous`/`Skipped`, or the scope stopped admitting |
+| `Skipped{because}` | a need ended `Failed`/`Interrupted`/`Ambiguous`/`Skipped`, or the scope stopped admitting. `because` names the node whose outcome did it, and is `None` when the run itself ended the node's eligibility — a request, a `Finite` scope reaching steady state, a `terminal` service finishing. The trace event is emitted either way |
 | `Releasing`/`Stopping`/`Compensating` → `Released`/`Stopped`/`Compensated` \| `ReleaseFailed{fault}` \| `Abandoned` | discharging the obligation; `Abandoned` = the budget expired |
 
 **Run states**: `Planned` → `Admitting` → `Steady` → `Settling` → `Cleanup` →
 `Ended(Report)`. Transitions into `Settling`: `shutdown()`; `cancel()` or drop
-of `Running`; a fault under `FailFast`; a `terminal` service finishing; or,
+of `Running`; a fault under `FailFast`; a `terminal` service **finishing** —
+its serve future returning `Ok`, which a serve that returned `Err` is not, and
+that is a fault under the scope's policy like any other; or,
 under `Mode::Finite`, reaching `Steady`.
 
 `Mode` is per scope, and a nested scope has its own. A `Finite` parent may
 contain a `Resident` component; the component becomes Ready when its inner run
 is steady and its residency ends with the parent's cleanup. (Owner decision,
-2026-09-05.)
+2026-09-05.) A **child** plan's `Mode` is a declaration only: `V-MODE` reads it,
+and at run time an inner scope stays `Steady` whatever its mode until the
+parent's cleanup opens it. A child plan's `Policy`, by contrast, does govern its
+own scope at run time (`OD-INNER-POLICY`).
 
 ## 3. Transitions
 
 | id | rule |
 |---|---|
-| T1 | *start*: `Waiting → Running` iff every key in `needs ∪ imports` is `Ready` **and** the node's lock and pool grants are taken atomically (all or none, in a fixed global order, FIFO among waiters). Nothing else is required: no wave, no level, no sibling. |
+| T1 | *start*: `Waiting → Running` iff every key in `needs ∪ imports` is `Ready` **and** the node's lock and pool grants are taken atomically (all or none, in a fixed global order, FIFO among waiters **for that grant**). A waiter is never held behind a waiter for a *different* lock or pool. Nothing else is required: no wave, no level, no sibling. |
 | T2 | *hold*: on `Held(N)` the engine records the `Arc<T>` and the obligation, in the poll that observes the effect completing, before the body's continuation can be polled again. |
 | T3 | *ready*: on the body's `Ok`, `Running → Ready`; dependents re-evaluate T1. |
 | T4 | *fail*: on `Err`/panic/timeout, `Backoff` if attempts remain (and, if `held`, this attempt's release finishes first), else `Failed`. Under `FailFast` the scope enters `Settling`; under `Isolate` transitive dependents become `Skipped`. |
-| T5 | *interrupt*: in `Settling`, every `Running` non-service node is cancelled per its cancel mode (`drop`: abort; `cooperative(g)`: signal, wait `g`, abort); the engine **joins** the aborted task before the node counts as settled. Result `Interrupted{held}`, or `Ambiguous` for an effect not yet held. |
+| T5 | *interrupt*: in `Settling`, every `Running` non-service node is cancelled per its cancel mode (`drop`: abort; `cooperative(g)`: signal, wait `g`, abort); the engine **joins** the aborted task before the node counts as settled. Result `Interrupted{held}`, or `Ambiguous` for an effect not yet held. A **blocking** body is signalled and never aborted — a thread cannot be dropped — so `cx.is_stopping()` is how it learns, and only the budget (T7) bounds the wait; `cooperative` on one is refused at `build` (`V-BLOCKING-CANCEL`) because its grace could never be spent. A component's inner scope settles with it, and nothing starts inside a settled inner scope. |
 | T6 | *cleanup order*: a node's release starts iff every node that needs or imports it — and every live instance of a template that imports it — has finished its cleanup (released, failed, or abandoned). Unrelated nodes run concurrently. |
-| T7 | *bound*: the shutdown budget starts at the transition into `Settling`; on expiry everything still running is aborted (services after their own `stop_within`, if shorter) and recorded `Abandoned`. A blocking body cannot be aborted; it is `Abandoned` while its thread finishes. |
+| T7 | *bound*: the **root**'s shutdown budget starts at the transition into `Settling`; on expiry everything still running is aborted (services after their own `stop_within`, if shorter) and recorded `Abandoned`. A blocking body cannot be aborted; it is `Abandoned` while its thread finishes. |
+| T7a | *nested bound*: a **nested** scope's budget starts when its release graph may open (T6) — not when the inner scope settles, which INV-5 can precede by the parent's whole life — and is capped by the parent's remaining budget, so it never outlives it (`V-BUDGET-ORDER`). Until then the inner scope is bounded by the parent's deadline alone. |
+| T7b | *post-budget releases*: after the budget the remaining gated releases are **started in order to be abandoned**: a driver sees `Release(k)` immediately followed by `Abort(k)`, and the node is `Abandoned` and listed in `incomplete`. |
+| T7c | *a blocking `within`*: the deadline records a `Timeout` fault for the attempt at once, but the thread keeps its grants and the node stays `Running` until it reports; only then are the grants released and the next attempt started. Attempts therefore never overlap (INV-12), the pool is never over-subscribed, and a thread that never returns is `Abandoned` at the budget like any other. |
 | T8 | *end*: `Ended(Report)` when every obligation is discharged or abandoned and every spawned task is joined or recorded. |
 
 ## 4. Invariants
@@ -113,7 +123,7 @@ INV-1…16 are Proposal B's, unchanged. INV-17…20 are this contract's.
 
 | id | invariant |
 |---|---|
-| INV-1 | **Declared edges only.** N starts only after every key in `needs(N) ∪ imports(N)` is Ready; the engine adds no other start ordering except lock and pool arbitration among nodes that declare the same lock or pool. |
+| INV-1 | **Declared edges only.** N starts only after every key in `needs(N) ∪ imports(N)` is Ready; the engine adds no other start ordering except lock and pool arbitration among nodes that declare the same lock or pool — and a lock named through an `import` is the same lock in both scopes, so releasing it re-admits every scope waiting for it. |
 | INV-2 | **Readiness is a return.** `Ready(N)` is recorded only when N's prepare body returned `Ok`. Being spawned never implies readiness. |
 | INV-3 | **Held ⇒ released.** If `Held(N)` occurred, exactly one release or compensation attempt for N occurs before `End`, unless the budget expires first, in which case `N ∈ incomplete`. |
 | INV-4 | **Not held ⇒ no release body.** If `Held(N)` did not occur, no release body runs for N. |
@@ -121,9 +131,9 @@ INV-1…16 are Proposal B's, unchanged. INV-17…20 are this contract's.
 | INV-6 | **Cleanup concurrency is explicit.** Releases unrelated by INV-5 may overlap; `inspect()` marks them unordered; no sequence is promised. |
 | INV-7 | **Shielding.** A cleanup body is never dropped because of a cancel or shutdown request; only the budget can abandon it, and abandonment is recorded. |
 | INV-8 | **Bounded shutdown.** From `Settling` to `End`, at most `Shutdown::within(d)` elapses on the engine clock (unless `unbounded()`). |
-| INV-9 | **No silent loss.** Every fault, cleanup failure, panic, timeout, abandonment and ambiguity the engine observes is in the `Report`; `into_result()` is `Err` unless the report is clean. |
+| INV-9 | **No silent loss.** Every fault, cleanup failure, panic, timeout, abandonment and ambiguity the engine observes is in the `Report` — except a panic in a body the engine had already cancelled, which is in the **trace** and is not a fault (`OD-PANIC-CANCELLED`), and so is recorded nowhere when no observer is attached. `into_result()` is `Err` unless the report is clean. |
 | INV-10 | **Cancelled ≠ failed.** Engine-interrupted nodes are `Interrupted`, never faults; `Outcome::Cancelled` is reported only for an external `cancel()`/drop before `End`. |
-| INV-11 | **Ambiguity.** An effect interrupted after start and before `hold` is `Ambiguous`; it is neither retried nor compensated unless it is `idempotent` with the matching `Ambiguity`. |
+| INV-11 | **Ambiguity.** An effect interrupted after start and before `hold` is `Ambiguous`; it is neither retried nor compensated unless it is `idempotent` with the matching `Ambiguity`. Under `Ambiguity::Retry` the record travels with the attempt's faults: a retry that reaches `Ready` absorbs it and the run can still be clean, while the trace keeps the `Ambiguous`. |
 | INV-12 | **Attempt bracketing.** A retried node's attempts never overlap; if attempt *k* held, its release finishes before attempt *k+1* starts; backoff uses the engine clock and ends immediately on cancel. |
 | INV-13 | **Run isolation.** Two runs of one plan share no slots, no locks and no pools. |
 | INV-14 | **Determinism.** Given a script and a schedule, the machine emits the same effect sequence and the same `Report`. |
@@ -193,7 +203,7 @@ Each is a required argument or a required typestate step.
 | `on_ambiguous` on an effect | **required** (typestate) | — |
 | `.on(pool)` on a blocking step | **required** (typestate) | — |
 | `release` / `compensate` / `persistent` | **required** (typestate) | — |
-| `within` | none; the shutdown budget still bounds cleanup | `within —` |
+| `within` | none; the shutdown budget still bounds cleanup. When declared, the deadline is a **hard abort** whatever the node's cancel mode: a `cooperative` node gets its grace on `cancel()`/`shutdown()`, never at its own deadline, and a blocking node's deadline follows T7c instead. A cleanup body has no `within`, and a *mid-run* one — the between-attempts release of a retried resource — has no budget either until the scope settles (INV-7), so a hung one holds a `Finite` run at `Admitting` until a request arrives | `within —` |
 | `stop_within` | the remaining shutdown budget | `stop_within — (bounded by shutdown 10s)` |
 | `retry` / `restart` | none; re-execution is never implied | `retry —` |
 | cancel mode | `drop` for resource/step/effect; signal-then-deadline for services | `cancel: drop` |
@@ -251,6 +261,8 @@ and within a rule in declaration order.
 | `V-TRY-UNCONSUMED` | every `try_step` has ≥ 1 dependent | P-10 |
 | `V-BUDGET-ORDER` | `stop_within(d) ≤ Shutdown::within(D)`; a child plan's budget ≤ its parent's | P-05 |
 | `V-MODE` | `Mode::Finite` ⇒ no service and no template in this plan (F3, INV-19) | new |
+| `V-BLOCKING-CANCEL` | a `blocking_step` does not declare `cooperative(g)`: it is signalled and never aborted (T5), so the grace can never be spent and `cx.is_stopping()` works without it | new |
+| `V-PERSIST-AMBIG` | `release == persistent` ⇒ `on_ambiguous ≠ Compensate`: a persistent effect has nothing to compensate, and the pair also forces a meaningless `.idempotent()` through `V-IDEMPOTENT-REQUIRED` | new |
 
 ### Load — before any spawn
 
@@ -285,6 +297,10 @@ instance)` pair per nesting level. Lexicographic comparison gives exactly:
 2. a component's or template's own record before its inner records;
 3. an instance's records grouped, instances by ascending id (`None < Some`);
 4. attempts of one node in attempt order.
+
+`Outcome::Ok` means only that every node that started settled without a fault:
+cleanup failures, abandonments and ambiguities do not move it, so a trace can
+end `End(Ok)` while the report is unclean. Read `is_clean()`/`into_result()`.
 
 `Report::sort()` establishes it. `Report::is_clean()` is false unless
 `faults`, `cleanup_failures`, `incomplete` and `ambiguous` are all empty **and**
@@ -343,6 +359,21 @@ split, and D-HOST-SPLIT witnesses it.
 | `TaskHandle` | `abort()` (a request; it lands between polls); `join() -> BoxFuture<'static, Joined>` |
 | `Observer` | `event(&TraceEvent)`; must not block and must not panic |
 
+**What a run driver owes the machine.** Beyond performing the effects in order:
+
+1. A body event (`Started`, `Held`, `NodeOk`, `NodeErr`, `NodeCancelled`,
+   `TaskJoined`) is delivered only for a key the machine asked it to spawn. A
+   `component` and a `join` have **no body**; the machine refuses a body event
+   for one (`Effect::Reject`), and a driver that synthesised one — from a
+   per-node `NeverReady` check, say, or from an inner report — would give a
+   component a fault vector the engine's exit helpers assume is always empty.
+2. An outcome already due when an `Abort` arrives is delivered; a later one is
+   dropped and the join reports the cancellation.
+3. A superseded attempt's outcome is the driver's to drop: the machine credits
+   whatever arrives to the attempt in flight.
+4. A cleanup body is never aborted by the driver (INV-7). The machine refuses a
+   `NodeCancelled` for a node that is `Releasing`, `Compensating` or `Stopping`.
+
 Futures are boxed in every signature: the MSRV predates `async fn` in traits,
 and these must stay `dyn`-usable. The shared `Clock` conformance suite is
 `sdax_testkit::invariants::check_clock`.
@@ -355,7 +386,7 @@ and these must stay `dyn`-usable. The shared `Clock` conformance suite is
 |---|---|---|
 | **0** *(done)* | surface, `validate`, `inspect`/`why`/`diff`/`effects`, the seam, report and engine types, host contracts, `FakeClock`/`TraceRecorder`/static checker, `TokioRuntime` | suite (a) W-*, suite (b) P-01…P-15 |
 | **1** *(done)* | `engine::Machine` (T1–T8, retries, deadlines, policies, components), `Plan::simulate` and the stepping simulator, the testkit's scripted driver, `eol::Eol` and trace-level invariant checker, and a Monte Carlo suite over generated plans | suite (c) on the scripted driver: 41 of B's 46 `C-*` rows; `C-14` is Stage 2 and `C-30`, `C-51`, `C-64`, `C-65` are Stage 3. `S-02` did **not** run. `dev-docs/Stage1Report.md` § 7 |
-| **2** *(done)* | the tokio run driver, `PlanStart::start`, `Running` + drop guard + drainer, blocking pools; `Bodies` moved under `sdax::host` (carrying components' bodies and import copies) so the driver in `sdax-tokio` can reach it; `C-14` | suite (c) re-run on the adapter with paused time — **58 rows green**, and the normalised traces equal the pure machine's; suite (d) `R-01`…`R-07` and `S-01`. `S-02` still did **not** run. `dev-docs/Stage2Report.md` |
+| **2** *(done)* | the tokio run driver, `PlanStart::start`, `Running` + drop guard + drainer, blocking pools; `Bodies` moved under `sdax::host` (carrying components' bodies and import copies) so the driver in `sdax-tokio` can reach it; `C-14` | suite (c) re-run on the adapter with paused time — **72 rows green** (58 at the Stage 2 gate, plus the Stage 1 review's remediation rows), and the normalised traces equal the pure machine's; suite (d) `R-01`…`R-07` and `S-01`. `S-02` still did **not** run. `dev-docs/Stage2Report.md` |
 | 3 | dynamic instances end to end: `cx.spawn`, `Child::ready`, containment; `Effect::SpawnInstance` and `Event::InstanceSpawned`/`InstanceEnded`, which the machine refuses today; `C-30`, `C-51`, `C-64`, `C-65` | C-30, P-07 |
 
 ---
@@ -405,11 +436,15 @@ normative; the question it closes is annotated rather than deleted in
 | **OD-MODE** | `Mode::Finite` and a nested `Resident` component | Allowed: `V-MODE` looks only at the plan's own nodes; the component becomes Ready when its inner run is steady, and its residency ends with the parent's cleanup (§ 2) | 2026-09-05 | A scope owns its own mode. The alternative — forcing a parent to be `Resident` because something inside it is — would make `Mode` a derived property, which F3 exists to remove. |
 | **OD-IMPORTS** | what `Plan::unresolved_imports()` returns | `Vec<NodePath>`, naming this plan's import nodes | 2026-09-05 | `RawKey` is the engine's node address and is now host API; a refusal an author reads should name nodes the way the report, the trace and `inspect()` do. |
 | **OD-PANIC-CANCELLED** | a body the engine had already cancelled panics: INV-9 says every panic the engine observes is in the report; INV-10 says an engine-interrupted node is never a fault | **INV-10 wins.** The node's terminal state is `Interrupted` (or `Ambiguous` for an effect that had not held), the panic is in the trace, and neither is a fault in the report | 2026-09-06 | The engine asked for the cancel; a body that panics on the way out of a cancel it was given is not a failure of the work the plan declared. INV-9's "the engine observes" is satisfied by the trace, which is where the panic is visible. Stage 1 found the two invariants in direct contradiction on this case (MC seed `13115684965286655053`); a machine fix was written and reverted in favour of this reading. `Ambiguous` is the same terminal observation for an effect interrupted before `hold` (INV-11), so the escape names both. |
-| **OD-PERSIST-AMBIG** | `.persistent()` with `.on_ambiguous(Ambiguity::Compensate)`: `on_ambiguous` is required on every effect (INV-18), so the pair is declarable, and it asks for a compensation that does not exist | **Persistent wins.** Nothing runs for the effect at shutdown or on an ambiguity, and no cleanup failure can arise from it; the ambiguity is recorded and nothing is compensated | 2026-09-06 | INV-18 is unconditional: a persistent effect carries no compensation obligation. `Ambiguity` selects *among* the discharges an effect has, and a persistent effect has none, so there is nothing for `Compensate` to select. `build` accepts the pair today; refusing it with a new `V-*` rule would be a clearer surface and is an open question in `dev-docs/Stage1Report.md` § 9. |
+| **OD-PERSIST-AMBIG** | `.persistent()` with `.on_ambiguous(Ambiguity::Compensate)`: `on_ambiguous` is required on every effect (INV-18), so the pair is declarable, and it asks for a compensation that does not exist | **Persistent wins.** Nothing runs for the effect at shutdown or on an ambiguity, and no cleanup failure can arise from it; the ambiguity is recorded and nothing is compensated | 2026-09-06 | INV-18 is unconditional: a persistent effect carries no compensation obligation. `Ambiguity` selects *among* the discharges an effect has, and a persistent effect has none, so there is nothing for `Compensate` to select. The open question — whether to refuse the pair outright — is now closed **yes**: `V-PERSIST-AMBIG` (2026-09-06) refuses it at `build`, so the run-time reading below applies only to a plan built before that rule existed. |
 | **OD-START** | `Plan::start` is named in this contract, but `sdax` has zero dependencies and `sdax-tokio` is the only crate allowed to spawn (A2), so the driver cannot be an inherent method | **An extension trait**: `sdax_tokio::PlanStart` gives `Plan<Out>` the methods `start`, `start_with`, `try_start` and `try_start_with`. The call site reads `use sdax_tokio::PlanStart;` then `plan.start(rt)` | 2026-09-06 | The alternative was a runtime-agnostic driver inside `sdax`, which would have needed a hand-rolled async channel and would have put the run loop in the crate whose whole point is that it executes nothing. The trait keeps the spelling the contract asks for, and `sdax::Start` — the service phase marker — keeps its name. `start` is total: a plan the machine refuses (`L-IMPORTS`, templates) yields a `Failed` report carrying the refusal, and `try_start` is the checked form |
 | **OD-RT-SHUTDOWN** | Stage 0 left open whether `TokioRuntime::close_and_wait` should fold into a `shutdown` | **Folded.** `TokioRuntime::shutdown(budget) -> Result<(), usize>` is the one name; `close_and_wait` is gone | 2026-09-06 | There is one operation — stop accepting, wait, say how many are left — so there is one name. It is the *runtime's* shutdown, not a run's: a run ends by `Running::shutdown()`, by `cancel()`, or by being dropped |
 | **OD-SERVE-ARM** | when does a service's serve future start: on the start body's `Ok`, or on the machine's `Ready`? | **On `Ready`.** The driver takes the serve future out of the body's context when the body returns, holds it, and spawns it only if the machine then says the node is `Ready`; otherwise it is dropped | 2026-09-06 | A start body that returns *after* the engine signalled it is `Interrupted`, not ready (T5). Arming on `Ok` alone left a serve task nobody owned (INV-15) and fed the machine a `ServeEnded` for a node that was not serving (D1). `R-05` found it on a multi-threaded runtime; `r05_regression_a_signalled_start_body_never_starts_its_serve_future` pins it |
 | **OD-REPORT-OBSERVER** | a dropped `Running` has nobody to hand its report to, and INV-9 says nothing is lost | **`Observer::report(&Report<()>)`**, a default-no-op method on the host `Observer` trait, called on every run whether it was awaited or dropped | 2026-09-06 | `C-14` asks for the report of a dropped run to reach the observer, and the trace alone is not the report. A default method leaves an events-only observer untouched |
 | **OD-BODY-SOURCE** | where the driver gets a node's code, given that a component's child plan has its own bodies and a child scope's `import` needs the ancestor's value in *its* slot table | **`host::BodySource`**, with `host::bodies_of(&plan)` as the plan's own. `Bodies` carries `children` (one per component) and an `ErasedImport` per import node, recorded where the type is still known | 2026-09-06 | `PlanBuilder::component` recorded only the child's *declaration*, so before this a component's inner nodes had no runnable bodies at all. The indirection also lets a harness run a `Script` on the real driver, which is what makes suite (c) a differential check rather than a second suite |
 | **OD-INV8-CLOCK** | INV-8 says at most `Shutdown::within(d)` elapses from `Settling` to `End` **on the engine clock**; is that exact on a real clock? | **Exact only on an exact clock.** It is asserted under `start_paused`, where the engine clock is virtual; on a real clock a timer fires at or after its deadline, so the engine's own measurement always overshoots by the scheduler's jitter | 2026-09-06 | `R-05` compresses a real clock by 200×, which multiplies a 7 ms scheduling hiccup into 1.5 engine seconds. The invariant is about the engine not *waiting* longer than the budget, not about the substrate's timer resolution; the honest place to assert it is where the clock is exact |
+| **OD-INNER-POLICY** | a node inside a component faults: does the child plan's declared `Policy` govern, or does any inner fault fail the component? | **The child's policy governs its own scope.** Under a child `FailFast` an inner fault settles the inner scope and faults the component, as before. Under a child `Isolate` the fault skips the failed node's dependents and the inner run continues; the component faults only when the export the parent waits for can no longer arrive — the export itself failed, or was skipped as a dependent of what failed. A child that exports nothing is `Ready` on its inner steady state. The faults are in the report either way | 2026-09-06 | § 1 says a plan is a scope whose nodes "share one fail policy", and `Policy` is one of three arguments to a child's `build`. The machine used to override it: `component_faulted` settled the inner scope on the first inner fault whatever the child declared, so an `Isolate` child's completed work was thrown away and its declaration meant nothing at run time. With `Mode` already inert for a child scope (§ 2), documenting a second argument as inert would have made `build`'s signature a claim the engine does not keep. Found by the Stage 1 semantics review, F-03 |
+| **OD-NESTED-BUDGET** | when does a nested scope's shutdown budget start? T7 was written for the root and said nothing about a component | **When its release graph may open (T6)**, capped by the parent's remaining budget; not when the inner scope settles | 2026-09-06 | An inner scope settles by itself in three ways that do not involve the parent — a `terminal` service finishing, an inner fault under an inner `FailFast`, a `component_faulted` — and INV-5 can hold its releases shut for the parent's whole life afterwards. Arming the clock at the settle spent the entire budget waiting for a gate, and when the parent's cleanup finally reached the component every inner release was emitted and abandoned in the same instant with the parent's budget untouched. `V-BUDGET-ORDER` promises the child's budget nests in the parent's; it now does in time as well as in size. Found by the Stage 1 semantics review, F-02 |
+| **OD-BLOCK-WITHIN** | `within` expires on a blocking step whose thread cannot be aborted: free the pool grant and retry beside the thread, or hold the grant until it returns? | **Hold it.** The deadline records the `Timeout` fault at once; the slot stays `Running` and keeps its grants until the thread reports, and only then is the next attempt started (T7c) | 2026-09-06 | The alternative had to be paid for by weakening two invariants: INV-12 ("a retried node's attempts never overlap") and INV-15 ("every task the engine spawned has been joined or is listed as abandoned") were both false for a timed-out blocking attempt, and a declared `pool(cpu, 1)` ran two threads — measured at 2 by `r05_a_blocking_within_does_not_oversubscribe_its_pool` before the fix. A thread cannot be taken back, so the honest reading of `within` on a blocking step is "fault now, retry when the thread is back". Found by the Stage 1 semantics review, F-05 |
+| **OD-BLOCK-SIGNAL** | a blocking body cannot be aborted; is it told to stop at all? | **Yes: signalled at the settle, always, whatever its cancel mode**, and never aborted. `cooperative(g)` on a blocking step is refused at `build` (`V-BLOCKING-CANCEL`) | 2026-09-06 | § 5 lists `cx.is_stopping()` as available in all phases and T5 says every `Running` non-service node is cancelled per its cancel mode. A blocking body has a `Cx` and could poll `is_stopping()`, and it read `false` until the run ended: the request never reached it, and `.cooperative(g)` was accepted and ignored. Signalling unconditionally makes `is_stopping()` mean the same thing everywhere; the grace has nothing to bound, because no abort follows, so the attribute is refused rather than left as a no-op. Found by the Stage 1 semantics review, F-04 |
 | **OD-BACKSTOP** | a generated `Mode::Resident` plan whose services declare `Restart::on_error` with no `max` never ends by itself; is that a defect to fix or a plan to bound? | **Neither: the plan is correct and the *script* must end it.** The Monte Carlo generator appends a backstop `Request::Shutdown` at 20–25 s, well past the 0–15.5 s window its random requests are drawn from | 2026-09-06 | Unlimited restart on a resident plan is exactly what the author asked for, and an engine that stopped it anyway would be wrong. What was broken was the test: a case with no terminating request is not a hang in the machine, and a walk that treats it as one hides real hangs. The driver's liveness guard (1 000 steps) catches genuine non-termination separately. |

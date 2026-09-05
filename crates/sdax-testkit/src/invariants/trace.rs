@@ -137,12 +137,13 @@ impl<'a> Ctx<'a> {
                     None => true,
                 }
             }
-            Kind::Component => after.iter().any(|e| {
-                matches!(
-                    e.kind,
-                    TraceKind::ReleaseOk | TraceKind::Stopped | TraceKind::Abandoned
-                )
-            }),
+            // A component's inner graph *is* its release: `ReleaseOk`, or an
+            // abandonment. `Stopped` was accepted here for a shape the machine
+            // never emits — every route into an inner cleanup goes through
+            // `open_component`, which sets `Releasing` first.
+            Kind::Component => after
+                .iter()
+                .any(|e| matches!(e.kind, TraceKind::ReleaseOk | TraceKind::Abandoned)),
             _ => true,
         }
     }
@@ -411,6 +412,10 @@ fn expected_steps(view: &PlanView, path: &NodePath) -> Vec<u32> {
 /// INV-20).
 pub fn check_trace<Out>(trace: &Trace, view: &PlanView, report: &Report<Out>) -> Vec<Violation> {
     let mut out = check_trace_prefix(trace, view);
+    // Global over the whole trace, so once at the end rather than at every
+    // prefix: the prefix pass is already quadratic.
+    out.extend(super::check_arbitration(trace, view));
+    out.extend(super::check_scopes(trace, view));
     let c = Ctx { trace, view };
     let evs = &trace.events;
     let ends: Vec<usize> = evs
@@ -518,12 +523,9 @@ pub fn check_trace<Out>(trace: &Trace, view: &PlanView, report: &Report<Out>) ->
                                 | TraceKind::Abandoned
                         )
                     }),
-                    Kind::Component => evk[p..].iter().any(|e| {
-                        matches!(
-                            e.kind,
-                            TraceKind::ReleaseOk | TraceKind::Stopped | TraceKind::Abandoned
-                        )
-                    }),
+                    Kind::Component => evk[p..]
+                        .iter()
+                        .any(|e| matches!(e.kind, TraceKind::ReleaseOk | TraceKind::Abandoned)),
                     _ => true,
                 };
                 if !discharged {
@@ -589,7 +591,15 @@ pub fn check_trace<Out>(trace: &Trace, view: &PlanView, report: &Report<Out>) ->
                         }
                     }
                     TraceKind::Ambiguous => {
-                        if !ambiguous(&n.path) {
+                        // Absorbed by a later attempt that reached `Ready`,
+                        // exactly as a fault is: `Ambiguity::Retry` says the
+                        // effect may simply be done again, and doing it again
+                        // successfully is the answer to the ambiguity. The
+                        // trace still carries it.
+                        let absorbed = mine
+                            .iter()
+                            .any(|(_, x)| attempt(x) > k && matches!(x.kind, TraceKind::Ready));
+                        if !absorbed && !ambiguous(&n.path) {
                             out.push(violation(
                                 "INV-9",
                                 format!("{} is ambiguous and is not in the report", n.path),

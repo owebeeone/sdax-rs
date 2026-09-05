@@ -40,6 +40,8 @@ const DETERMINISM_EVERY: u64 = 16;
 /// The corners the walk must reach, and how often at least. A floor that has
 /// to be lowered is a finding, not a tidy-up.
 const CORNERS: &[(&str, usize)] = &[
+    ("a lock on an imported resource", 10),
+    ("a service holds a pool", 50),
     ("abandon during cleanup", 5),
     ("ambiguity Compensate on an interrupted effect", 1),
     ("ambiguity Report on an interrupted effect", 1),
@@ -52,11 +54,14 @@ const CORNERS: &[(&str, usize)] = &[
     ("exclusive contention", 5),
     ("invalid plan refused", 20),
     ("isolate skip propagation", 5),
+    ("nested component", 5),
     ("pool wait", 5),
+    ("queued behind an earlier waiter", 2),
     ("retry after a held attempt", 5),
     ("second cancel during cleanup", 5),
     ("service restart", 5),
     ("two faults in one tick", 5),
+    ("two locks on one node", 10),
 ];
 
 /// What the walk reached, by corner and by outcome.
@@ -112,6 +117,19 @@ fn node_events<'a>(d: &'a Driven, path: &NodePath) -> Vec<&'a TraceKind> {
         .collect()
 }
 
+/// The scope a path lives in: everything but its last segment.
+fn scope_of(p: &NodePath) -> String {
+    let segs = p.segments();
+    segs[..segs.len().saturating_sub(1)].join("/")
+}
+
+fn scope_of_str(p: &str) -> String {
+    match p.rfind('/') {
+        Some(i) => p[..i].to_string(),
+        None => String::new(),
+    }
+}
+
 fn is_start(k: &TraceKind) -> bool {
     matches!(k, TraceKind::Start(_))
 }
@@ -126,6 +144,29 @@ fn corners(d: &Driven, view: &PlanView, cov: &mut Coverage) {
     let effects = d.effects();
     for n in &view.nodes {
         let evs = node_events(d, &n.path);
+
+        // The plan-shape corners the generator could not reach before the
+        // Stage 1 review (`Review-Stage1-Semantics.md` § 5.2). Each is counted
+        // from the view, so a generator that stops producing one fails the
+        // floor instead of quietly narrowing the walk.
+        let scope = scope_of(&n.path);
+        let locks: Vec<String> = ["exclusive", "shared"]
+            .iter()
+            .filter_map(|a| n.attr(a))
+            .flat_map(|v| v.split(", ").map(|x| x.to_string()).collect::<Vec<_>>())
+            .collect();
+        if locks.len() >= 2 {
+            cov.hit("two locks on one node");
+        }
+        if locks.iter().any(|l| scope_of_str(l) != scope) {
+            cov.hit("a lock on an imported resource");
+        }
+        if n.kind == Kind::Component && n.path.segments().len() >= 2 {
+            cov.hit("nested component");
+        }
+        if n.kind == Kind::Service && n.attr("limit").is_some() {
+            cov.hit("a service holds a pool");
+        }
 
         // A retry after an attempt that had already registered a value.
         if let Some(h) = evs.iter().position(|k| matches!(k, TraceKind::Held)) {
@@ -236,11 +277,19 @@ fn corners(d: &Driven, view: &PlanView, cov: &mut Coverage) {
         cov.hit("second cancel during cleanup");
     }
 
+    // These three read the machine's own `why`, so they are *reachability*
+    // counters — they say the walk got a run into that kind of contention, not
+    // that the arbitration was right. Correctness is the checker's: `MUTEX`
+    // and `POOL` recompute INV-1's exclusion clauses from the view and the
+    // trace, and `WHY` fails any empty `Waiting{on}`.
     if d.waited(|r| matches!(r, Reason::Exclusive)) > 0 {
         cov.hit("exclusive contention");
     }
     if d.waited(|r| matches!(r, Reason::Pool)) > 0 {
         cov.hit("pool wait");
+    }
+    if d.waited(|r| matches!(r, Reason::QueuedBehind)) > 0 {
+        cov.hit("queued behind an earlier waiter");
     }
 
     // Informational tallies: no floor, but a shift in them is visible.

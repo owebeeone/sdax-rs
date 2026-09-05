@@ -30,8 +30,8 @@ pub(crate) struct Attrs {
     pub(crate) within: Option<Duration>,
     pub(crate) retry: Option<Retry>,
     pub(crate) idempotent: bool,
-    pub(crate) exclusive: Option<Key<Unit>>,
-    pub(crate) shared: Option<Key<Unit>>,
+    pub(crate) exclusive: Vec<Key<Unit>>,
+    pub(crate) shared: Vec<Key<Unit>>,
     pub(crate) limit: Option<Pool>,
     pub(crate) cooperative: Option<Duration>,
     pub(crate) stop_within: Option<Duration>,
@@ -49,8 +49,8 @@ impl Default for Attrs {
             within: None,
             retry: None,
             idempotent: false,
-            exclusive: None,
-            shared: None,
+            exclusive: Vec::new(),
+            shared: Vec::new(),
             limit: None,
             cooperative: None,
             stop_within: None,
@@ -75,11 +75,11 @@ impl Attrs {
         if self.idempotent {
             s.push_str(" idempotent");
         }
-        if self.exclusive.is_some() {
-            s.push_str(" exclusive");
+        if !self.exclusive.is_empty() {
+            s.push_str(&format!(" exclusive x{}", self.exclusive.len()));
         }
-        if self.shared.is_some() {
-            s.push_str(" shared");
+        if !self.shared.is_empty() {
+            s.push_str(&format!(" shared x{}", self.shared.len()));
         }
         if self.limit.is_some() || self.pool.is_some() {
             s.push_str(" pool");
@@ -109,11 +109,11 @@ pub(crate) fn common<'p, D: Deps, K>(mut n: Node<'p, D, K>, a: &Attrs) -> Node<'
     if a.idempotent {
         n = n.idempotent();
     }
-    if let Some(k) = a.exclusive {
-        n = n.exclusive(k);
+    for k in &a.exclusive {
+        n = n.exclusive(*k);
     }
-    if let Some(k) = a.shared {
-        n = n.shared(k);
+    for k in &a.shared {
+        n = n.shared(*k);
     }
     if let Some(p) = a.limit {
         n = n.limit(p);

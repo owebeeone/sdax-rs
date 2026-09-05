@@ -1028,3 +1028,81 @@ Each of these is derivable from the code and from nothing an author reads.
 *End of review. No files other than this one were written; no commands other
 than `git show`, `git ls-tree`, `git grep`, `grep`, `sed`, `wc`, `ls` and
 `find` were run.*
+
+---
+
+## Remediation (appended 2026-09-06; the review's own text above is unedited)
+
+Worked on the Stage 2 working tree (the tokio driver, `Plan::start`, `Running`,
+blocking pools), not on `c292c86`. Every finding acted on began with the
+reviewer's predicted-failure case as a test, watched failing. The evidence is in
+`dev-docs/Stage1-Review-Remediation-Log.md`; the contract changes are in
+`dev-docs/SdaxContract-v1.md` § 13, dated 2026-09-06.
+
+| id | disposition | where |
+|---|---|---|
+| F-01 | **fixed** — pool blocking is per pool, exactly as locks already were | `admit.rs`; `review_r1_a_free_pool_is_not_queued_behind_a_full_one` |
+| F-02 | **fixed** — a nested scope's budget starts when its release graph may open, capped by the parent's | `settle.rs`, `cleanup.rs::arm_scope_budget`; contract T7a, `OD-NESTED-BUDGET`; `review_r2_…`, `review_r2b_…` |
+| F-03 | **fixed, contract-changed** — a child plan's declared `Policy` governs its own scope; an `Isolate` child faults its component only when the export can no longer arrive | `table.rs` (scope `export`), `faults.rs::inner_fault_reaches`; contract `OD-INNER-POLICY`; `review_r3_…`, `review_r3b_…` |
+| F-04 | **fixed, contract-changed** — a blocking body is signalled at the settle and never aborted; `cooperative` on one is refused at `build` (`V-BLOCKING-CANCEL`) | `settle.rs`, `validate/rules.rs`; contract T5, `OD-BLOCK-SIGNAL`; `review_r_f04_…`, `v_blocking_cancel_…` ×2 |
+| F-05 | **fixed, contract-changed** — a timed-out blocking attempt keeps its grants and its slot until the thread reports; option (a) was rejected because it needs INV-12 **and** INV-15 weakened | `faults.rs`; contract T7c, `OD-BLOCK-WITHIN`; `r05_a_blocking_within_does_not_oversubscribe_its_pool` (measured 2 in a pool of 1 before the fix) |
+| F-06 | **fixed** — `Reason::QueuedBehind`, recorded on the slot in the grant loop | `view/model.rs`, `admit.rs`, `machine.rs`; `review_r1b_…`, and the `WHY` checker rule |
+| F-07 | **fixed** — a `Panicked` join on a slot that is `cancelling && !signalled` is `Interrupted`, not a fault | `machine.rs::on_joined`; `r4_a_panic_joined_after_a_drop_abort_is_not_a_fault` |
+| F-08 | **fixed** — the ambiguity record is parked on the slot and travels with the faults; INV-9's checker gains the same "absorbed by a later `Ready`" escape a fault has | `exits.rs`, `faults.rs`, `invariants/trace.rs`; contract INV-11; `review_r7_…` |
+| F-09 | **fixed** — `V-PERSIST-AMBIG` | `validate/rules.rs`; contract § 7 and `OD-PERSIST-AMBIG`'s closing sentence; `v_persist_ambig_…` |
+| F-10 | **fixed** — `Machine::body_node` refuses a body event for a `component` or a `join`, and `Held` for a kind that carries no obligation; `debug_assert` in `fail_attempt`; the driver's obligations are written into contract § 10 | `machine.rs`, `faults.rs`; `f10_a_body_outcome_for_a_component_or_a_join_is_refused` |
+| F-11 | **fixed** — a `NodeCancelled` in `Stopping`/`Releasing`/`Compensating`/`RetryRelease` is a `Reject` naming INV-7 | `faults.rs::on_cancelled`; `r8_a_cancelled_cleanup_body_is_refused` |
+| F-12 | **fixed** — `Skipped { because: Option<NodePath> }`, emitted unconditionally | `report.rs`, `settle.rs`, `admit.rs`, `eol.rs`; the new `SKIPPED` checker rule |
+| F-13 | **contract-changed** — the lock extent is stated in § 1 | |
+| F-14 | **contract-changed** — `within` is a hard abort whatever the cancel mode (§ 6) | |
+| F-15 | **contract-changed** — a `terminal` service *finishing* is a serve returning `Ok`; a serve that returned `Err` is a fault (§ 2) | |
+| F-16 | **contract-changed** — a child plan's `Mode` is a declaration only (§ 2) | |
+| F-17 | **contract-changed** — `Outcome::Ok` does not mean clean (§ 8) | |
+| F-18 | **contract-changed** — INV-9 carries its own exception for a cancelled body's panic | |
+| F-19 | **fixed** — the dead `Ready → Finished`/`Stopped` component branch is gone (`debug_assert_eq!(st, Releasing)`), and the checker no longer accepts `Stopped` as a component's discharge | `cleanup.rs::check_end`, `invariants/trace.rs` |
+| F-20 | **contract-changed** — the service row's obligation clause (§ 1) | |
+| F-21 | **contract-changed** — a mid-run retry release has no deadline before `shutdown()` (§ 6) | |
+| F-22 | **contract-changed** — a try-step's panic or timeout is a fault (§ 1) | |
+| F-23 | **contract-changed** — T7b, "started in order to be abandoned" | |
+
+**Two predictions that did not reproduce.**
+
+1. § 2 F-06's failing case (`B` with no needs, "independent of F-01") is
+   **vacuous**: `B` becomes need-ready before `A` does, so T1 starts it at t=0
+   and it is never `Waiting`. The honest FIFO witness needs `B` need-ready in the
+   same instant as `A`; with that shape the empty `on` reproduces exactly.
+2. § 6 R-6's "`WHY` … fails on the first case with two pools and a full one".
+   `WHY` **does** fail the default 3 000-case walk, at case 2127 — but on a
+   different silent wait (a backoff that did not re-admit the grants its attempt
+   had released). With that fixed and F-01/F-06 restored to their `c292c86`
+   form, the 3 000-case walk is clean: the walk could reach the F-01 *shape* and
+   still did not produce it in 3 000 cases.
+
+**Two findings the new rules added.** Both are silent waits of the F-01 class,
+both found by `WHY`, both pinned by hand-written regressions:
+
+- **F-24** — `backoff` re-admitted the scope only on the zero-wait path, so a
+  lock or pool slot a failed attempt had already released sat idle until an
+  unrelated timer fired (`review_f24_…`).
+- **F-25** — `after_settle` re-admitted the releasing node's own scope only, so
+  a child node locking an **imported** resource waited for ever, and with an
+  empty `why`, for a lock the parent had dropped (`review_f25_…`).
+
+**Checker rules added:** `MUTEX`, `POOL`, `WHY`, `SKIPPED`, `TERMINAL`,
+`T5-INNER` (`crates/sdax-testkit/src/invariants/arbitration.rs`). `PoolView`
+gained a `scope` and now covers every scope's pools; a node's lock attributes are
+rendered as resolved paths, all of them, so `MUTEX` is global and sees a
+cross-scope lock.
+
+**Generator corners closed**, each with a floor: nested component (5), two locks
+on one node (10), a lock on an imported resource (10), a service holds a pool
+(50), queued behind an earlier waiter (2). No floor was lowered.
+
+**Walks:** 50 000 and 200 000 cases at `SDAX_MC_SEED=20260906`, 100 000 at
+`SDAX_MC_SEED=8675309`, and 20 000 in debug (`debug_assert`s live) at
+`SDAX_MC_SEED=99` — all clean, every floor cleared.
+
+**Deferred**, with owners, in `dev-docs/Stage1-Review-Remediation-Log.md`
+§ "Not fixed, with the reason": § 4.4's `attempt: u32` on body events (Stage 3),
+§ 5.1's INV-3/4 `held`-flag cross-check and INV-7's abandonment-instant check
+(next checker pass), and the over-long `planner_validate.rs` (housekeeping).

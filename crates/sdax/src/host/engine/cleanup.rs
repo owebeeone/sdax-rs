@@ -185,6 +185,28 @@ impl Machine {
     /// The parent's graph reached a component, or the component settled by
     /// itself with nothing outside depending on it: settle the inner scope
     /// and, once its bodies are joined, run its release graph.
+    /// T7: the scope's shutdown budget, `min`-ed with the parent's so it never
+    /// outlives it (`V-BUDGET-ORDER`). Armed once: for the root at its settle,
+    /// for a nested scope when its release graph opens.
+    pub(super) fn arm_scope_budget(&mut self, scope: usize) {
+        if self.scopes[scope].budget_timer.is_some() || self.scopes[scope].spent {
+            return;
+        }
+        let parent_deadline = self.t.scopes[scope]
+            .parent
+            .and_then(|p| self.scopes[p].deadline);
+        let own = self.t.scopes[scope].shutdown.budget().map(|d| self.now + d);
+        let deadline = match (own, parent_deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        self.scopes[scope].deadline = deadline;
+        if let Some(at) = deadline {
+            let id = self.timer(Purpose::Budget(scope), at);
+            self.scopes[scope].budget_timer = Some(id);
+        }
+    }
+
     fn open_component(&mut self, c: usize) {
         let inner = self.t.nodes[c].inner.expect("component");
         if self.slots[c].st != St::Releasing {
@@ -201,6 +223,9 @@ impl Machine {
             self.emit(c, TraceKind::ReleaseStart);
         }
         self.settle_or_skip_inner(c, None);
+        // T7: the inner scope's own budget starts here — the first instant its
+        // releases are allowed to run — and is capped by the parent's.
+        self.arm_scope_budget(inner);
         if self.scopes[inner].st == RunState::Settling && self.in_flight(inner) == 0 {
             self.scopes[inner].st = RunState::Cleanup;
             self.advance_cleanup(inner);
@@ -225,6 +250,7 @@ impl Machine {
         self.drop_timer(id);
         self.release_grants(n);
         self.slots[n].cancelling = false;
+        self.slots[n].timed_out = false;
         self.slots[n].st = St::Abandoned;
         self.emit(n, TraceKind::Abandoned);
         // The budget running out is not a reason for an observed fault to
@@ -381,13 +407,14 @@ impl Machine {
         match self.t.scopes[scope].component {
             None => self.end_root(),
             Some(c) => {
-                if self.slots[c].st == St::Ready {
-                    self.slots[c].st = St::Finished;
-                    self.emit(c, TraceKind::Stopped);
-                } else {
-                    self.slots[c].st = St::Released;
-                    self.emit(c, TraceKind::ReleaseOk);
-                }
+                // The component is `Releasing`: every route into an inner
+                // `Cleanup` goes through `open_component`, which ends the
+                // component's own attempt and emits its `ReleaseStart` first.
+                // A `Ready → Finished` arm here was unreachable, and the
+                // checker accepted a shape the machine never emits.
+                debug_assert_eq!(self.slots[c].st, St::Releasing);
+                self.slots[c].st = St::Released;
+                self.emit(c, TraceKind::ReleaseOk);
                 self.after_cleanup(c);
             }
         }

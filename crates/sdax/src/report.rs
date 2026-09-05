@@ -168,8 +168,14 @@ pub enum TraceKind {
     Ambiguous,
     /// The node never started.
     Skipped {
-        /// Which node's outcome caused it.
-        because: NodePath,
+        /// Which node's outcome caused it, when one did. `None` when the run
+        /// itself ended the node's eligibility — a `shutdown()`, a `cancel()`,
+        /// a `Finite` scope reaching steady state, a `terminal` service
+        /// finishing. Emitted either way: without the event a reader of a trace
+        /// could not tell "never eligible" from "eligible and skipped by the
+        /// request", and the state is otherwise readable only through
+        /// `Machine::state`, which no report consumer sees.
+        because: Option<NodePath>,
     },
     /// A service was asked to stop.
     StopRequested,

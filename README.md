@@ -134,7 +134,7 @@ Stage 2 adds the part that executes:
 - `host::BodySource` and `host::bodies_of`, with `Bodies` now carrying a
   component plan's own bodies and an import's value copy;
 - suite (c) **re-run against the adapter** with paused time, from the same
-  sources rather than a second copy: 58 rows green, and the traces are equal to
+  sources rather than a second copy: 72 rows green, and the traces are equal to
   the pure machine's once same-instant events are normalised;
 - suite (d): `R-01`…`R-07`, `C-14`, and `S-01` — the research spike, walked
   with random cancellation, drops and panics — plus a Monte Carlo walk of

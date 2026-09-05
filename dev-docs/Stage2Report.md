@@ -122,7 +122,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 exit=0
 ```
 
-**253 passed, 0 failed, 2 ignored** (174 at the end of Stage 1). The two ignored
+**253 passed, 0 failed, 2 ignored** (174 at the end of Stage 1; **280** after the
+Stage 1 semantics review's remediation, `dev-docs/Stage1-Review-Remediation-Log.md`).
+The two ignored
 are unchanged: `planner_view::renders_the_plan` and `monte_carlo_big`.
 
 ```

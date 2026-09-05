@@ -35,5 +35,7 @@ mod faults;
 mod regressions;
 #[path = "../../sdax-testkit/tests/conformance/retry.rs"]
 mod retry;
+#[path = "../../sdax-testkit/tests/conformance/review.rs"]
+mod review;
 #[path = "../../sdax-testkit/tests/conformance/startup.rs"]
 mod startup;

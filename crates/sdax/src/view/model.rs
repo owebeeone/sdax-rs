@@ -68,6 +68,9 @@ pub enum Reason {
     Shared,
     /// A pool grant is not available.
     Pool,
+    /// An earlier waiter for the same lock or pool has not been granted yet,
+    /// so T1's FIFO refuses this one (contract § 1, T1).
+    QueuedBehind,
     /// The scope has stopped admitting starts.
     ScopeNotAdmitting,
 }
@@ -80,6 +83,7 @@ impl std::fmt::Display for Reason {
             Reason::Exclusive => "exclusive conflict",
             Reason::Shared => "shared conflict",
             Reason::Pool => "pool",
+            Reason::QueuedBehind => "queued behind",
             Reason::ScopeNotAdmitting => "scope not admitting",
         })
     }
@@ -136,6 +140,10 @@ impl NodeView {
 /// A declared pool, as the view shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolView {
+    /// The scope that declared it: the empty path for the root plan, the
+    /// component's path for a child plan's own pool. Pools are per plan
+    /// (`V-FOREIGN-KEY`), so a name alone does not identify one.
+    pub scope: NodePath,
     /// The author's name for it.
     pub name: String,
     /// How many nodes may hold it at once.

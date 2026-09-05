@@ -17,4 +17,5 @@ mod corpus;
 mod faults;
 mod regressions;
 mod retry;
+mod review;
 mod startup;

@@ -24,19 +24,21 @@ impl Machine {
         if self.t.scopes[scope].component.is_none() {
             self.emit_run(TraceKind::Settling);
         }
-        // T7: the budget starts now, and never outlives the parent's.
-        let parent_deadline = self.t.scopes[scope]
-            .parent
-            .and_then(|p| self.scopes[p].deadline);
-        let own = self.t.scopes[scope].shutdown.budget().map(|d| self.now + d);
-        let deadline = match (own, parent_deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        self.scopes[scope].deadline = deadline;
-        if let Some(at) = deadline {
-            let id = self.timer(Purpose::Budget(scope), at);
-            self.scopes[scope].budget_timer = Some(id);
+        // T7: the root's budget starts now, and a nested scope's starts when
+        // its release graph may open (`open_component`), never here. An inner
+        // scope can settle long before INV-5 lets its releases run — a
+        // `terminal` service finishing, an inner fault, a parent that reached
+        // it — and arming the clock at the settle spent the whole budget
+        // waiting for a gate, so every inner release was started and abandoned
+        // in the same instant with the parent's budget untouched. Until then
+        // the inner scope is bounded by the parent's deadline alone, which is
+        // what its own in-flight bodies are cancelled against.
+        if self.t.scopes[scope].component.is_none() {
+            self.arm_scope_budget(scope);
+        } else {
+            self.scopes[scope].deadline = self.t.scopes[scope]
+                .parent
+                .and_then(|p| self.scopes[p].deadline);
         }
         let because = match cause {
             Cause::Fault(n) => Some(n),
@@ -49,10 +51,8 @@ impl Machine {
                     self.slots[n].st = St::Skipped;
                     self.slots[n].queued = None;
                     self.slots[n].because = because;
-                    if let Some(b) = because {
-                        let path = self.t.nodes[b].path.clone();
-                        self.emit(n, TraceKind::Skipped { because: path });
-                    }
+                    let path = because.map(|b| self.t.nodes[b].path.clone());
+                    self.emit(n, TraceKind::Skipped { because: path });
                     // A node waiting for its *next* attempt (a zero backoff,
                     // or a grant it never got) still owns the faults of the
                     // attempts that already failed (INV-9).
@@ -95,10 +95,8 @@ impl Machine {
                 self.slots[n].st = St::Skipped;
                 self.slots[n].queued = None;
                 self.slots[n].because = because;
-                if let Some(b) = because {
-                    let path = self.t.nodes[b].path.clone();
-                    self.emit(n, TraceKind::Skipped { because: path });
-                }
+                let path = because.map(|b| self.t.nodes[b].path.clone());
+                self.emit(n, TraceKind::Skipped { because: path });
             }
             if let Some(inner) = self.t.nodes[n].inner {
                 self.skip_scope(inner, because);
@@ -114,7 +112,17 @@ impl Machine {
         }
         let key = self.t.nodes[n].key;
         match self.t.nodes[n].kind {
-            Kind::BlockingStep => {}
+            // T5: a blocking body is told to stop, and never aborted (T7) — a
+            // thread cannot be dropped. `cx.is_stopping()` is how a blocking
+            // body learns the run is ending (contract § 5, "all phases"); with
+            // no `Signal` it read `false` for ever and the request never
+            // reached the body at all. Nothing bounds the wait but the budget,
+            // which abandons the node and leaks the thread (T7).
+            Kind::BlockingStep => {
+                self.slots[n].cancelling = true;
+                self.slots[n].signalled = true;
+                self.fx.push(Effect::Signal(key));
+            }
             Kind::Component => {
                 self.settle_or_skip_inner(n, because);
                 // The component's own attempt ends here: its inner graph was

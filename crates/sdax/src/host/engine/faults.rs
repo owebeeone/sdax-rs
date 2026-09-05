@@ -47,7 +47,7 @@ impl Machine {
         )
     }
 
-    fn body_phase(&self, n: usize) -> Phase {
+    pub(super) fn body_phase(&self, n: usize) -> Phase {
         match self.t.nodes[n].kind {
             Kind::Resource | Kind::Effect | Kind::Component => Phase::Prepare,
             _ => Phase::Run,
@@ -69,8 +69,16 @@ impl Machine {
         Ok(())
     }
 
+    /// A blocking attempt that had already timed out is back. Its fault was
+    /// recorded at the deadline; the grants it kept are released now, and only
+    /// now may the next attempt start (INV-12).
+    fn timed_out_thread_returned(&mut self, n: usize) {
+        self.after_failed_attempt(n, false);
+    }
+
     pub(super) fn on_ok(&mut self, n: usize) -> Result<(), &'static str> {
         match self.slots[n].st {
+            St::Running if self.slots[n].timed_out => self.timed_out_thread_returned(n),
             // After an `Abort` the body's own outcome stands: the abort lands
             // between polls, and this body had already finished. After a
             // `Signal` the return is the answer to the cancel (C-60).
@@ -112,6 +120,7 @@ impl Machine {
         self.slots[n].timing_out = false;
         self.slots[n].st = St::Ready;
         self.slots[n].faults.clear();
+        self.slots[n].ambiguity = None;
         self.emit(n, TraceKind::Ready);
         self.after_settle(n);
     }
@@ -120,6 +129,9 @@ impl Machine {
 
     pub(super) fn on_err(&mut self, n: usize, kind: FaultKind) -> Result<(), &'static str> {
         match self.slots[n].st {
+            // The deadline already failed this attempt (T7); the thread's own
+            // ending is the join, not a second fault.
+            St::Running if self.slots[n].timed_out => self.timed_out_thread_returned(n),
             St::Running if self.slots[n].signalled => {
                 // INV-10: the engine cancelled this body, so whatever it
                 // returns now is not a fault. A panic is still observed.
@@ -186,15 +198,31 @@ impl Machine {
     /// exhaust.
     fn fail_attempt(&mut self, n: usize, phase: Phase, kind: FaultKind) {
         let ambiguous = self.slots[n].st == St::Ambiguous;
+        // A component has no body, so nothing can fault its slot: the report's
+        // component fault is `component_faulted`'s, and the empty-fault-vector
+        // lemma (Stage 1 report § 4.3) says the vector stays empty. A driver
+        // that delivers a body outcome for a component breaks it, which the
+        // kind guards in `Machine::node` now refuse.
+        debug_assert!(
+            self.t.nodes[n].kind != Kind::Component,
+            "a component's slot never holds a fault"
+        );
         self.emit(n, TraceKind::Fail(phase, Self::label(&kind)));
         let fault = self.fault(n, phase, kind);
         self.slots[n].faults.push(fault);
+        self.after_failed_attempt(n, ambiguous);
+    }
+
+    /// The attempt is over and its fault is parked: release what it held and
+    /// decide between a retry and exhaustion.
+    fn after_failed_attempt(&mut self, n: usize, ambiguous: bool) {
         self.release_grants(n);
         let id = self.slots[n].timer.take();
         self.drop_timer(id);
         self.slots[n].cancelling = false;
         self.slots[n].timing_out = false;
         let scope = self.t.nodes[n].scope;
+        self.slots[n].timed_out = false;
         let can_retry =
             self.slots[n].attempt < self.attempts_allowed(n, ambiguous) && self.admitting(scope);
         if !can_retry {
@@ -209,6 +237,7 @@ impl Machine {
                 self.emit(n, TraceKind::ReleaseStart);
                 self.fx.push(Effect::Release(key));
             }
+            self.after_settle(n);
         } else {
             self.slots[n].st = St::Backoff;
             self.schedule_backoff(n);
@@ -244,13 +273,18 @@ impl Machine {
     fn backoff(&mut self, n: usize, wait: Duration) {
         if wait.is_zero() {
             self.slots[n].st = St::Pending;
-            self.after_settle(n);
         } else {
             self.slots[n].st = St::Backoff;
             self.slots[n].backoff_until = self.now + wait;
             let id = self.timer(Purpose::Backoff(n), self.now + wait);
             self.slots[n].timer = Some(id);
         }
+        // The attempt that just ended released its grants, so a waiter for one
+        // of them can start *now* — whatever this node does next. Re-admitting
+        // only on the zero-wait path left a freed lock or pool slot idle until
+        // an unrelated backoff timer fired, which is a start ordering INV-1
+        // does not allow and which nothing in `why` explained.
+        self.after_settle(n);
     }
 
     pub(super) fn on_backoff_timer(&mut self, n: usize) {
@@ -272,13 +306,46 @@ impl Machine {
             Policy::Isolate => self.skip_dependents(n, n),
         }
         if let Some(c) = self.t.scopes[scope].component {
-            self.component_faulted(c, n);
+            if self.inner_fault_reaches(scope) {
+                self.component_faulted(c, n);
+            }
         }
         self.after_settle(n);
     }
 
-    /// An inner node faulted: the component faults in its parent, once, and
-    /// the parent's policy applies (contract § 11: inner fault propagation).
+    /// Whether a fault inside `scope` faults the component that holds it.
+    ///
+    /// The child plan's declared fail policy governs its own scope (contract
+    /// § 1: a plan is a scope whose nodes share one fail policy). Under
+    /// `FailFast` the inner scope has settled and the component's attempt is
+    /// over, so the fault always reaches it. Under `Isolate` the author asked
+    /// for the fault to stay local: the component faults only when the export
+    /// the parent waits for can no longer arrive — the export itself failed, or
+    /// it was skipped as a dependent of what failed. A child that exports
+    /// nothing is `Ready` on its inner steady state, which an isolated fault
+    /// does not prevent; the fault is still in the report.
+    fn inner_fault_reaches(&self, scope: usize) -> bool {
+        match self.t.scopes[scope].policy {
+            Policy::FailFast => true,
+            Policy::Isolate => match self.t.scopes[scope].export {
+                Some(e) => !matches!(
+                    self.slots[e].st,
+                    St::Pending
+                        | St::Waiting
+                        | St::Running
+                        | St::Backoff
+                        | St::RetryRelease
+                        | St::Ready
+                        | St::Finished
+                ),
+                None => false,
+            },
+        }
+    }
+
+    /// An inner node faulted and the child's policy says the component faults
+    /// with it: the component faults in its parent, once, and the parent's
+    /// policy applies (contract § 13, `OD-INNER-POLICY`).
     fn component_faulted(&mut self, c: usize, inner: usize) {
         if !matches!(self.slots[c].st, St::Running | St::Ready) {
             return;
@@ -318,8 +385,16 @@ impl Machine {
         self.slots[n].timer = None;
         if self.t.nodes[n].kind == Kind::BlockingStep {
             // T7: a blocking body cannot be aborted. The deadline is a fault
-            // now; the thread's later outcome is ignored.
-            self.fail_attempt(n, Phase::Run, FaultKind::Timeout);
+            // now, but the thread is still running: it keeps its grants and
+            // the slot stays `Running` until it reports. Freeing the grant
+            // here started the next attempt beside a thread the engine had
+            // stopped counting — attempts overlapped (INV-12), the pool was
+            // over-subscribed, and the thread was neither joined nor listed
+            // as abandoned (INV-15).
+            self.emit(n, TraceKind::Fail(Phase::Run, FaultLabel::Timeout));
+            let fault = self.fault(n, Phase::Run, FaultKind::Timeout);
+            self.slots[n].faults.push(fault);
+            self.slots[n].timed_out = true;
             return;
         }
         self.slots[n].cancelling = true;
@@ -341,7 +416,7 @@ impl Machine {
             if effect && !held {
                 self.emit(n, TraceKind::Ambiguous);
                 let rec = self.record(n);
-                self.ambiguous.push(rec);
+                self.slots[n].ambiguity = Some(rec);
                 self.slots[n].st = St::Ambiguous;
                 self.emit(n, TraceKind::Fail(Phase::Prepare, FaultLabel::Timeout));
                 let fault = self.fault(n, Phase::Prepare, FaultKind::Timeout);
@@ -369,7 +444,7 @@ impl Machine {
             self.slots[n].st = St::Ambiguous;
             self.emit(n, TraceKind::Ambiguous);
             let rec = self.record(n);
-            self.ambiguous.push(rec);
+            self.slots[n].ambiguity = Some(rec);
         } else {
             self.slots[n].st = St::Interrupted;
             self.emit(n, TraceKind::Interrupted { held });
@@ -394,7 +469,9 @@ impl Machine {
             Policy::Isolate => self.skip_dependents(n, n),
         }
         if let Some(c) = self.t.scopes[scope].component {
-            self.component_faulted(c, n);
+            if self.inner_fault_reaches(scope) {
+                self.component_faulted(c, n);
+            }
         }
         self.after_settle(n);
     }
@@ -406,7 +483,17 @@ impl Machine {
                 self.finish_interrupted(n);
                 Ok(())
             }
-            St::Abandoned | St::Stopping | St::Releasing | St::Compensating => Ok(()),
+            // The machine issued the `Abort`.
+            St::Abandoned => Ok(()),
+            // The machine issued none: INV-7 forbids the engine to cancel a
+            // cleanup body, so this can only be the driver dropping one. Taken
+            // silently the node stayed in its cleanup state until the budget —
+            // for ever under `Shutdown::unbounded()` — and the one input that
+            // breaks the strongest shielding claim in the contract was the one
+            // the machine did not flag (D1).
+            St::Stopping | St::Releasing | St::Compensating | St::RetryRelease => {
+                Err("a cleanup body was cancelled; INV-7 forbids the engine to cancel one")
+            }
             _ => Err("NodeCancelled for a node with no body in flight"),
         }
     }

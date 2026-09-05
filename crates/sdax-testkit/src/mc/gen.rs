@@ -66,7 +66,7 @@ fn pick_attrs(
     needs: &Needs,
     keys: &Keys,
     shape: &Shape,
-    pool: &mut dyn FnMut(&mut SplitMix64) -> Pool,
+    pool: &mut dyn FnMut(&mut SplitMix64, bool) -> Pool,
 ) -> Attrs {
     let mut a = Attrs::default();
     if g.chance(0.2) {
@@ -97,16 +97,34 @@ fn pick_attrs(
     if !resources.is_empty() && kind != Kind::Join && g.chance(0.3) {
         let k = *g.pick(&resources);
         if g.chance(0.6) {
-            a.exclusive = Some(k);
+            a.exclusive.push(k);
         } else {
-            a.shared = Some(k);
+            a.shared.push(k);
+        }
+        // T1 takes several grants all or none; one lock per node never asked.
+        // `V-DUP-ATTR` refuses one resource locked twice or in two modes, so
+        // the second lock has to be a different resource.
+        let rest: Vec<Key<Unit>> = resources.iter().copied().filter(|r| *r != k).collect();
+        if !rest.is_empty() && g.chance(0.35) {
+            let k2 = *g.pick(&rest);
+            if g.chance(0.5) {
+                a.exclusive.push(k2);
+            } else {
+                a.shared.push(k2);
+            }
         }
     }
     if matches!(kind, Kind::Step | Kind::Resource | Kind::Effect) && g.chance(0.15) {
-        a.limit = Some(pool(g));
+        a.limit = Some(pool(g, false));
     }
     if kind == Kind::BlockingStep {
-        a.pool = Some(pool(g));
+        a.pool = Some(pool(g, false));
+    }
+    // A *resident* pool holder in a plan `V-POOL-STARVE` accepts: the pool has
+    // room to spare and no second service. Nothing else in the walk reaches a
+    // pool grant that is held for the run's whole life.
+    if kind == Kind::Service && g.chance(0.2) {
+        a.limit = Some(pool(g, true));
     }
     if matches!(
         kind,
@@ -137,6 +155,10 @@ fn pick_attrs(
     if kind == Kind::Effect {
         a.ambiguity = *g.pick(&[Ambiguity::Report, Ambiguity::Compensate, Ambiguity::Retry]);
         a.persistent = g.chance(0.25);
+        // `V-PERSIST-AMBIG`: a persistent effect has nothing to compensate.
+        if a.persistent && a.ambiguity == Ambiguity::Compensate {
+            a.ambiguity = *g.pick(&[Ambiguity::Report, Ambiguity::Retry]);
+        }
         if a.ambiguity != Ambiguity::Report || a.retry.is_some() {
             a.idempotent = true;
         }
@@ -159,7 +181,7 @@ fn fill(
     lines: &mut Vec<String>,
     mutation: &mut Mutation,
     allow_component: bool,
-    parent_units: &[Key<Unit>],
+    parent_units: &[(Key<Unit>, bool)],
 ) -> bool {
     let mut has_service = false;
     let mut pools: Vec<Pool> = Vec::new();
@@ -188,12 +210,13 @@ fn fill(
                 &name,
                 parent_units
                     .iter()
-                    .chain(keys.units.iter().map(|(k, _)| k))
+                    .chain(keys.units.iter())
                     .copied()
                     .collect::<Vec<_>>()
                     .as_slice(),
                 shape.budget,
                 lines,
+                allow_component,
             );
             match child {
                 Ok(plan) => {
@@ -220,10 +243,19 @@ fn fill(
                 }
             }
         }
-        let mut pool_of = |g: &mut SplitMix64| -> Pool {
+        let mut pool_of = |g: &mut SplitMix64, resident: bool| -> Pool {
             // A pool made here is used here: a pool with no user is
             // `V-UNUSED-POOL`, and that mistake belongs to
             // `Mutation::UnusedPool`, not to every case that widened the list.
+            //
+            // A resident holder always gets a fresh pool with room to spare, so
+            // two services never share one and `V-POOL-STARVE` (which refuses a
+            // pool its resident holders can fill) has nothing to say.
+            if resident {
+                let pool = p.pool(&format!("{prefix}rpool{}", pools.len()), 2);
+                pools.push(pool);
+                return pool;
+            }
             if pools.is_empty() || g.chance(0.3) {
                 let pool = p.pool(
                     &format!("{prefix}pool{}", pools.len()),
@@ -251,8 +283,8 @@ fn fill(
                         .map(|(k, _)| *k)
                         .collect();
                     if let Some(k) = outside.first() {
-                        a.exclusive = Some(*k);
-                        a.shared = None;
+                        a.exclusive = vec![*k];
+                        a.shared.clear();
                         mutated = true;
                     }
                 }
@@ -354,19 +386,28 @@ fn fill(
     }
     has_service
 }
+#[allow(clippy::too_many_arguments)]
 fn child_plan(
     g: &mut SplitMix64,
     name: &str,
-    parent_units: &[Key<Unit>],
+    parent_units: &[(Key<Unit>, bool)],
     parent_budget: Option<Duration>,
     lines: &mut Vec<String>,
+    parent_allowed_components: bool,
 ) -> Result<Plan<Unit>, Invalid> {
     let mut p = Plan::builder(name);
     let mut keys = Keys::default();
     for i in g.subset(parent_units.len(), 2) {
-        let k = p.import(parent_units[i]);
-        keys.units.push((k, false));
-        lines.push(format!("{name}/import: parent key {i}"));
+        let (parent, res) = parent_units[i];
+        let k = p.import(parent);
+        // The import stands for the parent's node, so if that is a resource
+        // this child may *lock* it — the cross-scope arbitration `table.rs`
+        // resolves and nothing in the walk used to reach.
+        keys.units.push((k, res));
+        lines.push(format!(
+            "{name}/import: parent key {i}{}",
+            if res { " (resource)" } else { "" }
+        ));
     }
     let span = secs(g.range(1, parent_budget.map(|b| b.as_secs()).unwrap_or(10).max(1)));
     let budget = Some(span);
@@ -377,6 +418,10 @@ fn child_plan(
     };
     let mut none = Mutation::None;
     let count = g.range(1, 3) as usize;
+    // Depth 2: a component inside a component, which is where
+    // `component_faulted`'s grandparent recursion and `abandon_inner` under an
+    // inner `abandon_all` live. Rare, so most children stay flat.
+    let nest = parent_allowed_components && g.chance(0.35);
     let has_service = fill(
         g,
         &mut p,
@@ -386,7 +431,7 @@ fn child_plan(
         &mut keys,
         lines,
         &mut none,
-        false,
+        nest,
         &[],
     );
     let export = match keys
