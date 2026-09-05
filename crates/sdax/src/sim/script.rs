@@ -135,6 +135,47 @@ impl Default for Cleanup {
     }
 }
 
+/// What a body does about a template it declared (F1).
+///
+/// A scripted `cx.spawn`: the start body asks for an instance at `at`,
+/// optionally awaits its readiness before returning (INV-17), and the serve
+/// future asks it to stop at `stop`. Every attempt of the body runs its
+/// directives again, exactly as a real body would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnSpec {
+    /// The template's path, as `inspect()` shows it.
+    pub template: String,
+    /// When the body asks for the instance, measured from the body's start.
+    pub at: At,
+    /// Whether the body awaits `Child::ready()` before it returns.
+    pub await_ready: bool,
+    /// When the serve future asks this instance to stop, measured from the
+    /// start of the serving episode.
+    pub stop: Option<At>,
+}
+
+impl SpawnSpec {
+    /// `spawn Template @+d`.
+    pub fn new(template: &str, at: At) -> SpawnSpec {
+        SpawnSpec {
+            template: template.to_string(),
+            at,
+            await_ready: false,
+            stop: None,
+        }
+    }
+    /// Await `Child::ready()` before the body returns (INV-17).
+    pub fn awaited(mut self) -> SpawnSpec {
+        self.await_ready = true;
+        self
+    }
+    /// Ask this instance to stop, this long into the serving episode.
+    pub fn stopped(mut self, at: At) -> SpawnSpec {
+        self.stop = Some(at);
+        self
+    }
+}
+
 /// An external request to the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
@@ -171,6 +212,7 @@ impl Schedule {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Script {
     pub(crate) bodies: Vec<(String, Vec<Body>)>,
+    pub(crate) spawns: Vec<(String, Vec<SpawnSpec>)>,
     pub(crate) serves: Vec<(String, Vec<Serve>)>,
     pub(crate) cleanups: Vec<(String, Cleanup)>,
     pub(crate) requests: Vec<(Duration, Request)>,
@@ -196,6 +238,23 @@ impl Script {
     /// One attempt outcome for a node's body.
     pub fn prepare(self, node: &str, body: Body) -> Script {
         self.body(node, [body])
+    }
+
+    /// The instances a node's body creates (F1). A later call for the same
+    /// node replaces the earlier one.
+    pub fn spawns(mut self, node: &str, specs: impl IntoIterator<Item = SpawnSpec>) -> Script {
+        self.spawns.retain(|(n, _)| n != node);
+        self.spawns
+            .push((node.to_string(), specs.into_iter().collect()));
+        self
+    }
+
+    /// What this script says a node's body spawns.
+    pub fn spawns_of(&self, node: &str) -> Option<&[SpawnSpec]> {
+        self.spawns
+            .iter()
+            .find(|(n, _)| n == node)
+            .map(|(_, s)| s.as_slice())
     }
 
     /// A service's serve behaviour, episode by episode (restarts are later
@@ -273,6 +332,7 @@ impl Script {
             .map(|(n, _)| n.as_str())
             .chain(self.serves.iter().map(|(n, _)| n.as_str()))
             .chain(self.cleanups.iter().map(|(n, _)| n.as_str()))
+            .chain(self.spawns.iter().map(|(n, _)| n.as_str()))
             .collect()
     }
 }

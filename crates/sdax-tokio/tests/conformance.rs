@@ -31,6 +31,8 @@ mod cleanup;
 mod components;
 #[path = "../../sdax-testkit/tests/conformance/faults.rs"]
 mod faults;
+#[path = "../../sdax-testkit/tests/conformance/instances.rs"]
+mod instances;
 #[path = "../../sdax-testkit/tests/conformance/regressions.rs"]
 mod regressions;
 #[path = "../../sdax-testkit/tests/conformance/retry.rs"]

@@ -116,7 +116,7 @@ so a broken intra-doc link is a real defect.
 | 0 *(done)* | surface, validator, inspection, seam, host contracts, testkit clock/recorder/static checker, `TokioRuntime` | suite (a) W-*, suite (b) P-* |
 | 1 *(done)* | `engine::Machine`, `Plan::simulate`, the scripted driver, trace-level invariants | suite (c) C-* green on the scripted driver |
 | 2 *(done)* | `PlanStart::start`, `Running`, the tokio run driver, drop guard, drainer | suite (c) re-run on the adapter with paused time; suite (d) R-* |
-| 3 | dynamic instances end to end | C-30, P-07 |
+| 3 *(done)* | dynamic instances end to end: `cx.spawn`, `Child::{ready, stop, id}`, per-instance scopes and slot tables, INV-16 containment | suite (c) on both drivers, `C-30`/`C-51`/`C-64`/`C-65`/`C-14`/`I-34`; the instance-aware checker; a Monte Carlo walk over templates |
 
 Do not start a stage's work before the previous stage's gate is green.
 

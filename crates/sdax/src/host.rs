@@ -42,7 +42,7 @@ pub mod engine;
 /// The stepping simulator behind `Plan::simulate`, for a harness that
 /// watches every event and effect.
 pub mod sim {
-    pub use crate::sim::{ScriptError, SimStep, Simulator};
+    pub use crate::sim::{ScriptError, SimStep, Simulator, SpawnOutcome, FOREIGN};
 }
 
 /// The per-run slot table.

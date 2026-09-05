@@ -163,6 +163,22 @@ impl CxInner {
         self.serve.lock().expect("cx poisoned").take()
     }
 
+    /// Instantiate a template by its declaration key.
+    ///
+    /// Host API: [`Cx::spawn`](crate::Cx::spawn) is the typed form an author
+    /// writes; a harness that supplies erased bodies has only the key, and
+    /// this is how it reaches the same seam.
+    pub fn spawn_instance(
+        &self,
+        template: RawKey,
+        input: Box<dyn std::any::Any + Send + Sync>,
+    ) -> Result<Child, SpawnError> {
+        match &self.scope {
+            Some(scope) => scope.spawn_instance(self.node, template, input),
+            None => Err(SpawnError::NotRunning),
+        }
+    }
+
     fn register<T: ?Sized + Send + Sync + 'static>(&self, arc: Arc<T>) {
         *self.held.lock().expect("cx poisoned") = Some(Box::new(arc));
         self.holds.fetch_add(1, Ordering::SeqCst);
@@ -281,12 +297,9 @@ impl<P> Cx<P> {
     pub(crate) fn spawn_raw(
         &self,
         template: RawKey,
-        input: Box<dyn std::any::Any + Send>,
+        input: Box<dyn std::any::Any + Send + Sync>,
     ) -> Result<Child, SpawnError> {
-        match &self.inner.scope {
-            Some(scope) => scope.spawn_instance(self.inner.node, template, input),
-            None => Err(SpawnError::NotRunning),
-        }
+        self.inner.spawn_instance(template, input)
     }
 }
 

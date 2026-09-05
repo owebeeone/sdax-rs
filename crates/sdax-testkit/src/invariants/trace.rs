@@ -7,9 +7,14 @@
 //! [`check_trace_prefix`] holds at every prefix of a run and is what the
 //! scripted driver runs after every step; [`check_trace`] adds what only
 //! holds at `End` and cross-checks the report.
+//!
+//! Every rule groups events by **[`Occ`]** — the copy of a declaration, path
+//! plus instance chain — and never by path alone, so a template's instances
+//! are as thoroughly checked as the static graph and never merged into it.
 
+use super::occ::{label, occ_of, occ_of_target, occurrences, static_occ, Occ};
 use super::{violation, Violation};
-use sdax::{Kind, NodePath, NodeView, Phase, PlanView, Report, Trace, TraceEvent, TraceKind};
+use sdax::{Kind, NodePath, NodeView, Phase, PlanView, Trace, TraceEvent, TraceKind};
 
 pub(super) struct Ctx<'a> {
     pub trace: &'a Trace,
@@ -20,7 +25,7 @@ pub(super) fn attempt(e: &TraceEvent) -> u32 {
     e.order.as_ref().map(|o| o.attempt).unwrap_or(0)
 }
 
-fn is_body_end(k: &TraceKind) -> bool {
+pub(super) fn is_body_end(k: &TraceKind) -> bool {
     matches!(
         k,
         TraceKind::Ready
@@ -31,14 +36,14 @@ fn is_body_end(k: &TraceKind) -> bool {
     )
 }
 
-fn is_cleanup_start(k: &TraceKind) -> bool {
+pub(super) fn is_cleanup_start(k: &TraceKind) -> bool {
     matches!(
         k,
         TraceKind::ReleaseStart | TraceKind::CompensateStart | TraceKind::StopRequested
     )
 }
 
-fn is_cleanup_end(k: &TraceKind) -> bool {
+pub(super) fn is_cleanup_end(k: &TraceKind) -> bool {
     matches!(
         k,
         TraceKind::ReleaseOk
@@ -56,14 +61,29 @@ impl<'a> Ctx<'a> {
         self.view.nodes.iter().find(|n| n.path == *path)
     }
 
-    /// `(index, event)` for one node, in trace order.
-    pub fn of(&self, path: &NodePath) -> Vec<(usize, &'a TraceEvent)> {
+    /// `(index, event)` for one **copy** of a node, in trace order.
+    pub fn of(&self, path: &NodePath, occ: &Occ) -> Vec<(usize, &'a TraceEvent)> {
         self.trace
             .events
             .iter()
             .enumerate()
-            .filter(|(_, e)| e.node.as_ref() == Some(path))
+            .filter(|(_, e)| e.node.as_ref() == Some(path) && occ_of(e) == *occ)
             .collect()
+    }
+
+    /// Every copy of `path` the trace observed, plus its static one.
+    pub fn copies(&self, path: &NodePath) -> Vec<Occ> {
+        let mut out = vec![static_occ(path)];
+        for e in &self.trace.events {
+            if e.node.as_ref() != Some(path) {
+                continue;
+            }
+            let occ = occ_of(e);
+            if !out.contains(&occ) {
+                out.push(occ);
+            }
+        }
+        out
     }
 
     pub fn persistent(n: &NodeView) -> bool {
@@ -74,15 +94,16 @@ impl<'a> Ctx<'a> {
         matches!(n.kind, Kind::Resource | Kind::Effect) && !Self::persistent(n)
     }
 
-    /// Whether `path` is finished with everything before index `r`: its last
-    /// attempt ended and, if it held or served or ran an inner scope, that
-    /// obligation ended too (the INV-5 clause "M's cleanup has ended").
-    pub fn cleanup_ended_by(&self, path: &NodePath, r: usize) -> bool {
+    /// Whether this copy of `path` is finished with everything before index
+    /// `r`: its last attempt ended and, if it held or served or ran an inner
+    /// scope, that obligation ended too (the INV-5 clause "M's cleanup has
+    /// ended").
+    pub fn cleanup_ended_by(&self, path: &NodePath, occ: &Occ, r: usize) -> bool {
         let Some(n) = self.node(path) else {
             return true;
         };
         let evs: Vec<&TraceEvent> = self
-            .of(path)
+            .of(path, occ)
             .into_iter()
             .filter(|(i, _)| *i < r)
             .map(|(_, e)| e)
@@ -182,8 +203,10 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
             ));
             continue;
         };
+        let occ = occ_of(e);
+        let me = label(path, &occ);
         let k = attempt(e);
-        let mine = c.of(path);
+        let mine = c.of(path, &occ);
         let before: Vec<&TraceEvent> = mine
             .iter()
             .filter(|(j, _)| *j < i)
@@ -193,12 +216,30 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
             TraceKind::Start(_) => {
                 // INV-1: every need is Ready now, and nothing else ordered it.
                 for need in &n.needs {
-                    let last = c.of(need).into_iter().rfind(|(j, _)| *j < i);
+                    let nocc = occ_of_target(path, &occ, need);
+                    // A need on a **template** is the per-instance input: it is
+                    // available from the spawn of *this* instance and from no
+                    // earlier moment (INV-16, INV-17).
+                    if c.node(need).map(|m| m.kind) == Some(Kind::Template) {
+                        let id = occ.get(need.segments().len() - 1).copied().flatten();
+                        let spawned = c.of(need, &nocc).into_iter().any(|(j, x)| {
+                            j < i
+                                && matches!(x.kind, TraceKind::InstanceSpawned(s) if Some(s) == id)
+                        });
+                        if !spawned {
+                            out.push(violation(
+                                "INV-16",
+                                format!("{me} started at #{i} before its instance was spawned"),
+                            ));
+                        }
+                        continue;
+                    }
+                    let last = c.of(need, &nocc).into_iter().rfind(|(j, _)| *j < i);
                     let ready_now = match last {
                         Some((_, le)) => match le.kind {
                             TraceKind::Ready => true,
                             TraceKind::Stopped => !c
-                                .of(need)
+                                .of(need, &nocc)
                                 .iter()
                                 .any(|(j, x)| *j < i && matches!(x.kind, TraceKind::StopRequested)),
                             _ => false,
@@ -208,7 +249,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     if !ready_now {
                         out.push(violation(
                             "INV-1",
-                            format!("{path} started at #{i} while its need {need} is not Ready"),
+                            format!("{me} started at #{i} while its need {need} is not Ready"),
                         ));
                     }
                 }
@@ -216,7 +257,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     if i > s {
                         out.push(violation(
                             "T5",
-                            format!("{path} started at #{i} after the run settled"),
+                            format!("{me} started at #{i} after the run settled"),
                         ));
                     }
                 }
@@ -224,10 +265,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     .iter()
                     .any(|x| matches!(x.kind, TraceKind::Skipped { .. }))
                 {
-                    out.push(violation(
-                        "T4",
-                        format!("{path} started after being skipped"),
-                    ));
+                    out.push(violation("T4", format!("{me} started after being skipped")));
                 }
                 // INV-12: attempts are 1, 2, 3… and never overlap; a held
                 // attempt is released before the next starts.
@@ -240,7 +278,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 if k != expected {
                     out.push(violation(
                         "INV-12",
-                        format!("{path} attempt {k} started where attempt {expected} was expected"),
+                        format!("{me} attempt {k} started where attempt {expected} was expected"),
                     ));
                 }
                 if let Some(last) = prev.last() {
@@ -251,7 +289,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     if !ended {
                         out.push(violation(
                             "INV-12",
-                            format!("{path} attempt {k} started while attempt {pk} was in flight"),
+                            format!("{me} attempt {k} started while attempt {pk} was in flight"),
                         ));
                     }
                     let held = before
@@ -263,9 +301,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     if held && Ctx::owes_when_held(n) && !released {
                         out.push(violation(
                             "INV-12",
-                            format!(
-                                "{path} attempt {k} started before attempt {pk}'s release ended"
-                            ),
+                            format!("{me} attempt {k} started before attempt {pk}'s release ended"),
                         ));
                     }
                 }
@@ -284,7 +320,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     if !started || ended_already {
                         out.push(violation(
                             "INV-2",
-                            format!("{path} is Ready at #{i} without a live attempt {k}"),
+                            format!("{me} is Ready at #{i} without a live attempt {k}"),
                         ));
                     }
                 }
@@ -294,7 +330,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 if Ctx::persistent(n) {
                     out.push(violation(
                         "INV-18",
-                        format!("persistent effect {path} ran a compensation"),
+                        format!("persistent effect {me} ran a compensation"),
                     ));
                 }
                 if matches!(n.kind, Kind::Resource | Kind::Effect) {
@@ -308,7 +344,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     if !held && !ambiguous_ok {
                         out.push(violation(
                             "INV-4",
-                            format!("{path} attempt {k} ran a release body without a Held"),
+                            format!("{me} attempt {k} ran a release body without a Held"),
                         ));
                     }
                 }
@@ -323,7 +359,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     if is_cleanup_start(&x.kind) {
                         out.push(violation(
                             "INV-7",
-                            format!("{path}'s cleanup was interrupted"),
+                            format!("{me}'s cleanup was interrupted"),
                         ));
                     }
                 }
@@ -333,7 +369,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 if n.kind != Kind::Effect {
                     out.push(violation(
                         "INV-11",
-                        format!("{path} is not an effect but is Ambiguous"),
+                        format!("{me} is not an effect but is Ambiguous"),
                     ));
                 }
                 if before
@@ -342,7 +378,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 {
                     out.push(violation(
                         "INV-11",
-                        format!("{path} held and is still Ambiguous"),
+                        format!("{me} held and is still Ambiguous"),
                     ));
                 }
             }
@@ -358,7 +394,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
         {
             out.push(violation(
                 "INV-11",
-                format!("{path} was retried after an ambiguous attempt"),
+                format!("{me} was retried after an ambiguous attempt"),
             ));
         }
         if matches!(e.kind, TraceKind::CompensateStart)
@@ -369,30 +405,55 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
         {
             out.push(violation(
                 "INV-11",
-                format!("{path} was compensated after an ambiguous attempt"),
+                format!("{me} was compensated after an ambiguous attempt"),
             ));
         }
-        // INV-5: a release of N never before a dependent's cleanup ended.
+        // INV-5 and INV-16: a release of N never before a dependent's cleanup
+        // ended — and every *copy* of that dependent counts, so a live
+        // instance holds the key it imports shut.
         if is_cleanup_start(&e.kind) {
             for m in view.nodes.iter().filter(|m| m.needs.contains(path)) {
-                if !c.cleanup_ended_by(&m.path, i) {
-                    out.push(violation(
-                        "INV-5",
-                        format!(
-                            "{path}'s cleanup started at #{i} while dependent {} had not finished",
-                            m.path
-                        ),
-                    ));
+                // A **template** node has no lifetime of its own: what has to
+                // outlive `path` is its live *instances*, and each of their
+                // nodes is a dependent here in its own right. Counting the
+                // template node too made a retried effect's between-attempts
+                // release (INV-12, and no dependent can ever have started from
+                // an attempt that failed) look like an INV-5 breach. The
+                // instance-level clause is `INSTANCE-RELEASE` in
+                // `containment.rs`, which asks the question of the release
+                // that discharges the obligation rather than of every attempt.
+                if m.kind == Kind::Template {
+                    continue;
+                }
+                for mocc in c.copies(&m.path) {
+                    if occ_of_target(&m.path, &mocc, path) != occ {
+                        continue;
+                    }
+                    if !c.cleanup_ended_by(&m.path, &mocc, i) {
+                        let rule = if mocc.iter().any(|x| x.is_some()) {
+                            "INV-16"
+                        } else {
+                            "INV-5"
+                        };
+                        out.push(violation(
+                            rule,
+                            format!(
+                                "{me}'s cleanup started at #{i} while dependent {} had not finished",
+                                label(&m.path, &mocc)
+                            ),
+                        ));
+                    }
                 }
             }
         }
     }
+    out.extend(super::check_containment(trace, view));
     out
 }
 
 /// The declaration path of a node as the report orders it: the position of
 /// each segment among its siblings in the view, which is declaration order.
-fn expected_steps(view: &PlanView, path: &NodePath) -> Vec<u32> {
+pub(super) fn expected_steps(view: &PlanView, path: &NodePath) -> Vec<u32> {
     let segs = path.segments();
     let mut out = Vec::new();
     for depth in 1..=segs.len() {
@@ -410,337 +471,18 @@ fn expected_steps(view: &PlanView, path: &NodePath) -> Vec<u32> {
 /// Everything [`check_trace_prefix`] checks, plus what only holds at `End`,
 /// plus the report against the trace (INV-3, INV-8, INV-9, INV-10, INV-15,
 /// INV-20).
-pub fn check_trace<Out>(trace: &Trace, view: &PlanView, report: &Report<Out>) -> Vec<Violation> {
+pub fn check_trace<Out>(
+    trace: &Trace,
+    view: &PlanView,
+    report: &sdax::Report<Out>,
+) -> Vec<Violation> {
     let mut out = check_trace_prefix(trace, view);
     // Global over the whole trace, so once at the end rather than at every
     // prefix: the prefix pass is already quadratic.
     out.extend(super::check_arbitration(trace, view));
     out.extend(super::check_scopes(trace, view));
-    let c = Ctx { trace, view };
-    let evs = &trace.events;
-    let ends: Vec<usize> = evs
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| matches!(e.kind, TraceKind::End(_)))
-        .map(|(i, _)| i)
-        .collect();
-    match ends.as_slice() {
-        [last] if *last + 1 == evs.len() => {}
-        [] => out.push(violation("T8", "the trace has no End".into())),
-        _ => out.push(violation("T8", "End is not the single last event".into())),
-    }
-    if let Some(TraceKind::End(o)) = evs.last().map(|e| &e.kind) {
-        if *o != report.outcome {
-            out.push(violation(
-                "INV-9",
-                format!("the trace ends {o} but the report says {}", report.outcome),
-            ));
-        }
-    }
-    // INV-8: bounded shutdown.
-    if let (Some(budget), Some(end)) = (view.shutdown.budget(), evs.last()) {
-        if let Some(s) = evs.iter().find(|e| matches!(e.kind, TraceKind::Settling)) {
-            let elapsed = end.at.checked_duration_since(s.at).unwrap_or_default();
-            if elapsed > budget {
-                out.push(violation(
-                    "INV-8",
-                    format!("{elapsed:?} elapsed from Settling to End, over the budget {budget:?}"),
-                ));
-            }
-        }
-    }
-    let incomplete = |p: &NodePath| report.incomplete.iter().any(|r| r.node == *p);
-    let ambiguous = |p: &NodePath| report.ambiguous.iter().any(|r| r.node == *p);
-    for n in &view.nodes {
-        let mine = c.of(&n.path);
-        let attempts: Vec<u32> = {
-            let mut v: Vec<u32> = mine.iter().map(|(_, e)| attempt(e)).collect();
-            v.sort();
-            v.dedup();
-            v
-        };
-        for k in attempts {
-            let evk: Vec<&TraceEvent> = mine
-                .iter()
-                .filter(|(_, e)| attempt(e) == k)
-                .map(|(_, e)| *e)
-                .collect();
-            let started = evk.iter().any(|e| matches!(e.kind, TraceKind::Start(_)));
-            let ended = evk.iter().any(|e| is_body_end(&e.kind));
-            // INV-15: every spawned body was joined or recorded abandoned.
-            if started && !ended {
-                out.push(violation(
-                    "INV-15",
-                    format!("{} attempt {k} started and never ended (orphan)", n.path),
-                ));
-            }
-            let held = evk.iter().any(|e| matches!(e.kind, TraceKind::Held));
-            let starts = evk.iter().filter(|e| is_cleanup_start(&e.kind)).count();
-            let cleanup_ended = evk.iter().any(|e| is_cleanup_end(&e.kind));
-            // INV-3: held ⇒ exactly one release attempt, unless abandoned first.
-            if held && Ctx::owes_when_held(n) {
-                match starts {
-                    1 => {
-                        if !cleanup_ended {
-                            out.push(violation(
-                                "INV-15",
-                                format!("{} attempt {k}: its release never ended", n.path),
-                            ));
-                        }
-                    }
-                    0 => {
-                        if !incomplete(&n.path) {
-                            out.push(violation(
-                                "INV-3",
-                                format!(
-                                    "{} attempt {k} held and was never released nor abandoned",
-                                    n.path
-                                ),
-                            ));
-                        }
-                    }
-                    _ => out.push(violation(
-                        "INV-3",
-                        format!("{} attempt {k} was released {starts} times", n.path),
-                    )),
-                }
-            }
-            if starts > 0 && !cleanup_ended {
-                out.push(violation(
-                    "INV-15",
-                    format!("{} attempt {k}: a cleanup started and never ended", n.path),
-                ));
-            }
-            // A ready service's or component's obligation is discharged.
-            let ready_pos = evk.iter().position(|e| matches!(e.kind, TraceKind::Ready));
-            if let Some(p) = ready_pos {
-                let discharged = match n.kind {
-                    Kind::Service => evk[p..].iter().any(|e| {
-                        matches!(
-                            e.kind,
-                            TraceKind::Stopped
-                                | TraceKind::Fail(Phase::Stop | Phase::Serve, _)
-                                | TraceKind::Abandoned
-                        )
-                    }),
-                    Kind::Component => evk[p..]
-                        .iter()
-                        .any(|e| matches!(e.kind, TraceKind::ReleaseOk | TraceKind::Abandoned)),
-                    _ => true,
-                };
-                if !discharged {
-                    out.push(violation(
-                        "INV-3",
-                        format!(
-                            "{} attempt {k} was ready and its obligation never ended",
-                            n.path
-                        ),
-                    ));
-                }
-            }
-            for e in &evk {
-                match &e.kind {
-                    TraceKind::Fail(
-                        phase @ (Phase::Prepare | Phase::Run | Phase::Serve),
-                        label,
-                    ) => {
-                        let absorbed = mine
-                            .iter()
-                            .any(|(_, x)| attempt(x) > k && matches!(x.kind, TraceKind::Ready));
-                        // The engine cancelled this attempt, so whatever the
-                        // body returned is not a fault (INV-10) — a panic is
-                        // observed in the trace and nowhere else. For an
-                        // effect that had not held, `Ambiguous` *is* that
-                        // terminal observation (INV-11), not `Interrupted`.
-                        let interrupted = evk.iter().any(|x| {
-                            matches!(x.kind, TraceKind::Interrupted { .. } | TraceKind::Ambiguous)
-                        });
-                        let recorded = report.faults.iter().any(|f| {
-                            f.node == n.path
-                                && f.order.attempt == k
-                                && f.phase == *phase
-                                && f.kind.label() == *label
-                        });
-                        if !absorbed && !interrupted && !recorded {
-                            out.push(violation("INV-9", format!("{} attempt {k} failed ({phase}, {label:?}) and the report does not say so", n.path)));
-                        }
-                    }
-                    TraceKind::ReleaseFail(label)
-                    | TraceKind::CompensateFail(label)
-                    | TraceKind::Fail(Phase::Stop, label) => {
-                        let recorded = report
-                            .cleanup_failures
-                            .iter()
-                            .any(|f| f.node == n.path && f.kind.label() == *label);
-                        if !recorded {
-                            out.push(violation(
-                                "INV-9",
-                                format!(
-                                    "{}'s cleanup failed and the report does not say so",
-                                    n.path
-                                ),
-                            ));
-                        }
-                    }
-                    TraceKind::Abandoned => {
-                        if !incomplete(&n.path) {
-                            out.push(violation(
-                                "INV-9",
-                                format!("{} was abandoned and is not in incomplete", n.path),
-                            ));
-                        }
-                    }
-                    TraceKind::Ambiguous => {
-                        // Absorbed by a later attempt that reached `Ready`,
-                        // exactly as a fault is: `Ambiguity::Retry` says the
-                        // effect may simply be done again, and doing it again
-                        // successfully is the answer to the ambiguity. The
-                        // trace still carries it.
-                        let absorbed = mine
-                            .iter()
-                            .any(|(_, x)| attempt(x) > k && matches!(x.kind, TraceKind::Ready));
-                        if !absorbed && !ambiguous(&n.path) {
-                            out.push(violation(
-                                "INV-9",
-                                format!("{} is ambiguous and is not in the report", n.path),
-                            ));
-                        }
-                    }
-                    TraceKind::Interrupted { .. }
-                        if report
-                            .faults
-                            .iter()
-                            .any(|f| f.node == n.path && f.order.attempt == k) =>
-                    {
-                        // INV-10.
-                        out.push(violation(
-                            "INV-10",
-                            format!(
-                                "{} attempt {k} was interrupted and is reported as a fault",
-                                n.path
-                            ),
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if Ctx::persistent(n) && report.cleanup_failures.iter().any(|f| f.node == n.path) {
-            out.push(violation(
-                "INV-18",
-                format!("persistent effect {} has a cleanup failure", n.path),
-            ));
-        }
-    }
-    // The report names nothing the trace did not observe, in F4 order.
-    let orders: Vec<(&str, Vec<(&NodePath, &sdax::RecordOrder)>)> = vec![
-        (
-            "faults",
-            report.faults.iter().map(|f| (&f.node, &f.order)).collect(),
-        ),
-        (
-            "cleanup_failures",
-            report
-                .cleanup_failures
-                .iter()
-                .map(|f| (&f.node, &f.order))
-                .collect(),
-        ),
-        (
-            "incomplete",
-            report
-                .incomplete
-                .iter()
-                .map(|r| (&r.node, &r.order))
-                .collect(),
-        ),
-        (
-            "ambiguous",
-            report
-                .ambiguous
-                .iter()
-                .map(|r| (&r.node, &r.order))
-                .collect(),
-        ),
-    ];
-    for (name, list) in orders {
-        for w in list.windows(2) {
-            if w[1].1 < w[0].1 {
-                out.push(violation(
-                    "INV-20",
-                    format!("{name} is not in record order at {}", w[1].0),
-                ));
-            }
-        }
-        for (path, order) in list {
-            if c.node(path).is_none() {
-                out.push(violation(
-                    "INV-9",
-                    format!("{name} names {path}, which the plan does not declare"),
-                ));
-                continue;
-            }
-            let steps: Vec<u32> = order.steps.iter().map(|(i, _)| *i).collect();
-            if steps != expected_steps(view, path) {
-                out.push(violation(
-                    "INV-20",
-                    format!(
-                        "{name}: {path} has record steps {steps:?}, declaration says {:?}",
-                        expected_steps(view, path)
-                    ),
-                ));
-            }
-        }
-    }
-    for f in &report.faults {
-        let seen = c.of(&f.node).iter().any(|(_, e)| {
-            attempt(e) == f.order.attempt
-                && matches!(&e.kind, TraceKind::Fail(p, l) if *p == f.phase && *l == f.kind.label())
-        });
-        if !seen {
-            out.push(violation(
-                "INV-9",
-                format!(
-                    "the report lists a fault the trace never observed: {} attempt {} ({})",
-                    f.node, f.order.attempt, f.phase
-                ),
-            ));
-        }
-    }
-    for r in &report.incomplete {
-        if !c
-            .of(&r.node)
-            .iter()
-            .any(|(_, e)| matches!(e.kind, TraceKind::Abandoned))
-        {
-            out.push(violation(
-                "INV-9",
-                format!("incomplete lists {} but nothing was abandoned", r.node),
-            ));
-        }
-    }
-    for r in &report.ambiguous {
-        if !c
-            .of(&r.node)
-            .iter()
-            .any(|(_, e)| matches!(e.kind, TraceKind::Ambiguous))
-        {
-            out.push(violation(
-                "INV-9",
-                format!("ambiguous lists {} but the trace never said so", r.node),
-            ));
-        }
-    }
-    let clean = report.faults.is_empty()
-        && report.cleanup_failures.is_empty()
-        && report.incomplete.is_empty()
-        && report.ambiguous.is_empty()
-        && report.outcome == sdax::Outcome::Ok;
-    if clean != report.is_clean() {
-        out.push(violation(
-            "INV-9",
-            "is_clean disagrees with the lists".into(),
-        ));
-    }
+    out.extend(super::check_instance_releases(trace, view));
+    out.extend(super::check_report(trace, view, report));
+    let _ = occurrences(trace, view);
     out
 }

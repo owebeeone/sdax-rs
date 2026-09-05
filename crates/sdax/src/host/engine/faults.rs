@@ -301,6 +301,9 @@ impl Machine {
         self.slots[n].st = St::Failed;
         self.flush_faults(n);
         let scope = self.t.nodes[n].scope;
+        // An instance's own outcome is read from its scope: the report's fault
+        // list is the whole run's and cannot say which instance failed.
+        self.scopes[scope].faulted = true;
         match self.t.scopes[scope].policy {
             Policy::FailFast => self.settle(scope, Cause::Fault(n)),
             Policy::Isolate => self.skip_dependents(n, n),
@@ -351,6 +354,7 @@ impl Machine {
             return;
         }
         self.slots[c].st = St::Failed;
+        self.scopes[self.t.nodes[c].scope].faulted = true;
         self.emit(c, TraceKind::Fail(Phase::Prepare, FaultLabel::Error));
         let fault = self.fault(
             c,
@@ -464,6 +468,7 @@ impl Machine {
     fn ambiguous_failed(&mut self, n: usize) {
         self.flush_faults(n);
         let scope = self.t.nodes[n].scope;
+        self.scopes[scope].faulted = true;
         match self.t.scopes[scope].policy {
             Policy::FailFast => self.settle(scope, Cause::Fault(n)),
             Policy::Isolate => self.skip_dependents(n, n),

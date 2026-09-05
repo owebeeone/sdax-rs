@@ -355,7 +355,7 @@ impl<Out> Drop for Running<Out> {
 /// `plan.start(rt)`.
 pub trait PlanStart<Out> {
     /// Start a run, refusing a plan the machine cannot run before anything is
-    /// spawned (`L-IMPORTS`, and templates until Stage 3).
+    /// spawned (`L-IMPORTS`, a template plan used as a root).
     fn try_start<R: Runtime>(&self, rt: Arc<R>) -> Result<Running<Out>, EngineError>;
 
     /// Start a run with options: another body source, a record sink, a
@@ -405,7 +405,18 @@ impl<Out: Send + Sync + 'static> PlanStart<Out> for Plan<Out> {
             record: record.clone(),
         });
         let launch: Launch = Box::new(move |ctl: Arc<Control>| {
-            let driver = Driver::new(rt.clone(), machine, src, tx, rx, ctl, record, done_tx);
+            let scope = crate::scope::RunScope::new(tx.clone());
+            let driver = Driver::new(
+                rt.clone(),
+                machine,
+                src,
+                tx,
+                rx,
+                ctl,
+                record,
+                done_tx,
+                scope,
+            );
             rt.spawn(Box::pin(driver.run()));
             done_rx
         });

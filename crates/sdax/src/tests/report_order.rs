@@ -172,13 +172,11 @@ fn engine_events_and_effects_are_public_named_types() {
         Event::ShutdownRequested,
         Event::CancelRequested,
         Event::InstanceSpawned {
+            spawner: node,
             template: node,
             id: InstanceId(1),
         },
-        Event::InstanceEnded {
-            id: InstanceId(1),
-            outcome: Outcome::Ok,
-        },
+        Event::StopInstance(InstanceId(1)),
         Event::TaskJoined {
             node,
             joined: JoinedLabel::Panicked,
@@ -199,6 +197,7 @@ fn engine_events_and_effects_are_public_named_types() {
         },
         Effect::SpawnInstance {
             template: node,
+            parent: None,
             id: InstanceId(1),
         },
         Effect::End(Outcome::Ok),

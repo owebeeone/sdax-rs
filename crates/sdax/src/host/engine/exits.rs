@@ -81,9 +81,16 @@ impl Machine {
     /// would wait for a component that is waiting for the run. A scope that
     /// is already `Settling | Cleanup | Ended` is left alone.
     ///
-    /// A node with no inner scope is a no-op, so every ramp can call this
-    /// without asking whether it is holding a component.
+    /// A **template** is the same rule over its live instances: each is a
+    /// scope of its own, and each stops admitting with the node.
+    ///
+    /// A node with neither an inner scope nor instances is a no-op, so every
+    /// ramp can call this without asking what it is holding.
     pub(super) fn settle_or_skip_inner(&mut self, n: usize, because: Option<usize>) {
+        if self.t.nodes[n].kind == crate::plan::Kind::Template {
+            self.settle_instances(n, because);
+            return;
+        }
         let Some(inner) = self.t.nodes[n].inner else {
             return;
         };

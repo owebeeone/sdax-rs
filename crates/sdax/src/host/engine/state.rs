@@ -4,6 +4,7 @@
 use super::table::Table;
 use super::{Effect, TimerId};
 use crate::contracts::Time;
+use crate::cx::InstanceId;
 use crate::plan::Kind;
 use crate::plan::ReleaseStyle;
 use crate::policy::Ambiguity;
@@ -15,9 +16,10 @@ use crate::view::{NodePath, Reason};
 /// Why a plan cannot be run by this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
-    /// The plan declares templates; dynamic instances are Stage 3 and are not
-    /// stubbed. Names every template and input node found.
-    Templates(Vec<NodePath>),
+    /// A template plan — one with a per-instance input — was used as a root
+    /// run or as a component. Only `cx.spawn` instantiates a template, and
+    /// only `cx.spawn` can supply the input. Names the input node.
+    TemplateAsScope(NodePath),
     /// A root run cannot resolve these import nodes (`L-IMPORTS`).
     UnresolvedImports(Vec<NodePath>),
     /// One child plan is registered as two components. The engine addresses
@@ -41,11 +43,10 @@ impl std::fmt::Display for EngineError {
                 .join(", ")
         };
         match self {
-            EngineError::Templates(v) => write!(
+            EngineError::TemplateAsScope(p) => write!(
                 f,
-                "the plan declares template(s) {}; dynamic instances are Stage 3 and this \
-                 machine has no stub of them",
-                names(v)
+                "this plan is a template: its per-instance input {p} has a value only when \
+                 cx.spawn supplies one, so it cannot be a root run or a component"
             ),
             EngineError::UnresolvedImports(v) => write!(
                 f,
@@ -110,6 +111,10 @@ pub enum NodeState {
     },
     /// The body returned `Ok` (a service: serving; a component: inner steady).
     Ready,
+    /// A template, admitting instances. A template has no body and never
+    /// becomes `Ready` (contract § 1); it is live from the moment its imports
+    /// are ready until its obligation — stopping every live instance — opens.
+    Live,
     /// A service's serve future, or a component's inner run, ended on its own.
     Finished,
     /// Attempts exhausted.
@@ -157,6 +162,10 @@ pub(super) enum St {
     /// A held attempt failed; its release runs before the next attempt.
     RetryRelease,
     Ready,
+    /// A template that admits instances.
+    Live,
+    /// A template whose instances are being stopped.
+    StoppingInstances,
     Finished,
     Failed,
     Interrupted,
@@ -263,6 +272,24 @@ pub(super) struct ScopeRun {
     /// The budget expired: anything still running is abandoned at once.
     pub spent: bool,
     pub pools: Vec<usize>,
+    /// A node of this scope faulted, which is what an instance's own outcome
+    /// is read from (the report's fault list is the whole run's).
+    pub faulted: bool,
+}
+
+/// One template instance of a run.
+pub(super) struct Instance {
+    /// Its identity, minted by the host and echoed in every record.
+    pub id: InstanceId,
+    /// The template node it is an instance of.
+    pub template: usize,
+    /// The scope its nodes form.
+    pub scope: usize,
+    /// The instance the spawning body itself belongs to, if any: what the host
+    /// needs to find the right slot table for a nested template.
+    pub parent: Option<InstanceId>,
+    /// `InstanceEnded` has been observed for it.
+    pub ended: bool,
 }
 
 /// What a timer the machine set is for.
@@ -283,6 +310,10 @@ pub struct Machine {
     pub(super) locks: Vec<Lock>,
     pub(super) scopes: Vec<ScopeRun>,
     pub(super) rank: Vec<u32>,
+    /// The schedule preference, kept so an instance's nodes are ranked the way
+    /// the static graph's are (INV-14).
+    pub(super) schedule: Vec<String>,
+    pub(super) instances: Vec<Instance>,
     pub(super) now: Time,
     pub(super) timers: Vec<(TimerId, Purpose, Time)>,
     pub(super) next_timer: u64,
@@ -312,6 +343,7 @@ impl Machine {
                 zero_timer: None,
                 spent: false,
                 pools: vec![0; s.pools.len()],
+                faulted: false,
             })
             .collect();
         Machine {
@@ -320,6 +352,8 @@ impl Machine {
             locks: (0..n).map(|_| Lock::default()).collect(),
             scopes,
             rank: vec![u32::MAX; n],
+            schedule: Vec::new(),
+            instances: Vec::new(),
             now: Time::ZERO,
             timers: Vec::new(),
             next_timer: 1,

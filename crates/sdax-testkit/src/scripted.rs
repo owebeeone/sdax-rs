@@ -11,9 +11,11 @@
 //! (LBT-008).
 
 use sdax::host::engine::{EngineError, Machine};
-use sdax::host::{BodySource, CxInner, RawKey, Task, Time};
+use sdax::host::sim::{SpawnOutcome, FOREIGN};
+use sdax::host::{BodySource, CxInner, InstanceId, RawKey, Task, Time};
 use sdax::{
-    Acquire, At, Body, Cleanup, Cx, Ending, Error, Kind, Plan, Run, Script, Serve, Serving, Start,
+    Acquire, At, Body, Child, Cleanup, Cx, Ending, Error, Kind, Plan, Run, Script, Serve, Serving,
+    SpawnSpec, Start,
 };
 use std::any::Any;
 use std::collections::HashMap;
@@ -58,15 +60,31 @@ pub fn quiet_scripted_panics() {
 
 struct NodeScript {
     kind: Kind,
+    path: String,
     bodies: Vec<Body>,
     serves: Vec<Serve>,
     cleanup: Cleanup,
+    spawns: Vec<SpawnSpec>,
+}
+
+/// What one scripted body needs to perform its `cx.spawn` directives.
+struct Spawning {
+    node: String,
+    specs: Vec<SpawnSpec>,
+    templates: Arc<Vec<(String, RawKey)>>,
+    log: Arc<Mutex<Vec<SpawnOutcome>>>,
 }
 
 /// A plan's bodies, replaced by what a [`Script`] says they do.
+///
+/// Nodes are keyed by their **declaration** key, so one script line covers
+/// every instance of a template; the serving-episode counter is per instance,
+/// because two instances of one service are two services.
 pub struct ScriptedBodies {
     nodes: HashMap<RawKey, NodeScript>,
-    episodes: Mutex<HashMap<RawKey, usize>>,
+    templates: Arc<Vec<(String, RawKey)>>,
+    episodes: Mutex<HashMap<(RawKey, Option<InstanceId>), usize>>,
+    spawns: Arc<Mutex<Vec<SpawnOutcome>>>,
 }
 
 impl ScriptedBodies {
@@ -78,14 +96,15 @@ impl ScriptedBodies {
         plan: &Plan<Out>,
         script: &Script,
     ) -> Result<Arc<ScriptedBodies>, EngineError> {
-        let machine = Machine::new(plan)?;
+        Machine::new(plan)?;
+        let declared = Machine::declarations(plan);
         let mut nodes = HashMap::new();
-        for (key, path, kind) in machine.nodes() {
+        for (key, path, kind) in &declared {
             let p = path.to_string();
             nodes.insert(
-                key,
+                *key,
                 NodeScript {
-                    kind,
+                    kind: *kind,
                     bodies: script
                         .body_of(&p)
                         .map(|b| b.to_vec())
@@ -95,13 +114,27 @@ impl ScriptedBodies {
                         .map(|s| s.to_vec())
                         .unwrap_or_else(|| vec![Serve::default()]),
                     cleanup: script.cleanup_of(&p).cloned().unwrap_or_default(),
+                    spawns: script.spawns_of(&p).map(|s| s.to_vec()).unwrap_or_default(),
+                    path: p,
                 },
             );
         }
+        let templates = declared
+            .iter()
+            .filter(|(_, _, k)| *k == Kind::Template)
+            .map(|(key, path, _)| (path.to_string(), *key))
+            .collect();
         Ok(Arc::new(ScriptedBodies {
             nodes,
+            templates: Arc::new(templates),
             episodes: Mutex::new(HashMap::new()),
+            spawns: Arc::new(Mutex::new(Vec::new())),
         }))
+    }
+
+    /// Every scripted `cx.spawn` and what it answered, in order.
+    pub fn spawns(&self) -> Vec<SpawnOutcome> {
+        self.spawns.lock().expect("spawns poisoned").clone()
     }
 }
 
@@ -125,12 +158,58 @@ async fn wait_until<P>(cx: &Cx<P>, when: Time) {
 /// scripted run exercises the machine, not the author's dataflow.
 struct Registered;
 
+/// Perform this attempt's `cx.spawn` directives, in time order.
+///
+/// A directive whose time falls after the body's own ending is dropped: a body
+/// that has returned cannot spawn, and the simulator drops it the same way.
+/// A template path this plan does not declare stands for a handle from another
+/// plan, and is presented as [`FOREIGN`] so the run really answers
+/// `SpawnError::ForeignTemplate` (`C-51`).
+async fn do_spawns(
+    cx: &Cx<Run>,
+    inner: &Arc<CxInner>,
+    sp: &Spawning,
+    start: Time,
+    end: Option<Time>,
+) -> Vec<(Child, Option<At>, bool)> {
+    let mut order: Vec<(Time, usize)> = sp
+        .specs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (target(s.at, start), i))
+        .filter(|(t, _)| end.map(|e| *t <= e).unwrap_or(true))
+        .collect();
+    order.sort();
+    let mut out = Vec::new();
+    for (t, i) in order {
+        wait_until(cx, t).await;
+        let spec = &sp.specs[i];
+        let key = sp
+            .templates
+            .iter()
+            .find(|(p, _)| *p == spec.template)
+            .map(|(_, k)| *k)
+            .unwrap_or(FOREIGN);
+        let result = inner.spawn_instance(key, Box::new(()));
+        sp.log.lock().expect("spawns poisoned").push(SpawnOutcome {
+            node: sp.node.clone(),
+            template: spec.template.clone(),
+            result: result.as_ref().map(|c| c.id()).map_err(|e| *e),
+        });
+        if let Ok(child) = result {
+            out.push((child, spec.stop, spec.await_ready));
+        }
+    }
+    out
+}
+
 /// One attempt of a scripted prepare, run or start body.
 async fn scripted_body(
     inner: Arc<CxInner>,
     kind: Kind,
     spec: Body,
     serve: Option<Serve>,
+    spawning: Spawning,
 ) -> Result<(), Error> {
     let cx: Cx<Run> = Cx::new(inner.clone());
     let start = cx.now();
@@ -138,6 +217,7 @@ async fn scripted_body(
         Ending::Ok(at) | Ending::Fail(at, _) | Ending::Panic(at) => Some(target(*at, start)),
         Ending::Pending => None,
     };
+    let children = do_spawns(&cx, &inner, &spawning, start, end).await;
     if kind.can_hold() {
         let held = match (spec.held, &spec.ending) {
             (Some(at), _) => Some(target(at, start)),
@@ -160,6 +240,14 @@ async fn scripted_body(
         None => std::future::pending::<()>().await,
         Some(t) => wait_until(&cx, t).await,
     }
+    // INV-17: a body that awaits `Child::ready()` returns only once the
+    // instances it awaits have answered. An instance that ended before it was
+    // ready answers `Err`, which is an answer and not a fault of this body.
+    for (child, _, awaited) in &children {
+        if *awaited {
+            let _ = child.ready().await;
+        }
+    }
     match spec.ending {
         Ending::Ok(_) => {}
         // A try-step's `Err` is its value, not a fault (OD-5): the body the
@@ -172,7 +260,11 @@ async fn scripted_body(
     if kind == Kind::Service {
         let s = serve.unwrap_or_default();
         let start_cx: Cx<Start> = Cx::new(inner.clone());
-        let serving = Serving::new((), scripted_serve(inner.clone(), s));
+        let stops: Vec<(Child, At)> = children
+            .into_iter()
+            .filter_map(|(c, at, _)| at.map(|a| (c, a)))
+            .collect();
+        let serving = Serving::new((), scripted_serve(inner.clone(), s, stops));
         let (handle, fut) = serving.into_parts();
         inner.put_output(Box::new(Arc::new(handle)));
         inner.put_serve(fut);
@@ -183,8 +275,44 @@ async fn scripted_body(
     Ok(())
 }
 
-/// One serving episode.
-async fn scripted_serve(inner: Arc<CxInner>, spec: Serve) -> Result<(), Error> {
+/// One serving episode, with the instance stops the start body's directives
+/// asked for running beside it.
+async fn scripted_serve(
+    inner: Arc<CxInner>,
+    spec: Serve,
+    stops: Vec<(Child, At)>,
+) -> Result<(), Error> {
+    let cx: Cx<Run> = Cx::new(inner.clone());
+    let start = cx.now();
+    if stops.is_empty() {
+        return serve_body(inner, spec).await;
+    }
+    let stopper = async move {
+        let mut order: Vec<(Time, Child)> = stops
+            .into_iter()
+            .map(|(c, at)| (target(at, start), c))
+            .collect();
+        order.sort_by_key(|(t, _)| *t);
+        for (t, child) in order {
+            wait_until(&cx, t).await;
+            child.stop();
+        }
+        std::future::pending::<Result<(), Error>>().await
+    };
+    let serve = serve_body(inner, spec);
+    // The serve future decides the episode; the stopper only ever runs
+    // beside it, so the first of the two to finish is always the serve.
+    let mut stopper = std::pin::pin!(stopper);
+    let mut serve = std::pin::pin!(serve);
+    std::future::poll_fn(move |cx| {
+        let _ = std::future::Future::poll(stopper.as_mut(), cx);
+        std::future::Future::poll(serve.as_mut(), cx)
+    })
+    .await
+}
+
+/// The serve behaviour itself.
+async fn serve_body(inner: Arc<CxInner>, spec: Serve) -> Result<(), Error> {
     let cx: Cx<Run> = Cx::new(inner);
     let start = cx.now();
     match spec {
@@ -234,18 +362,24 @@ async fn scripted_cleanup(inner: Arc<CxInner>, spec: Cleanup) -> Result<(), Erro
 }
 
 impl BodySource for ScriptedBodies {
-    fn body(&self, node: RawKey, cx: &Arc<CxInner>) -> Option<Task> {
+    fn body(&self, node: RawKey, instance: Option<InstanceId>, cx: &Arc<CxInner>) -> Option<Task> {
         let ns = self.nodes.get(&node)?;
         let attempt = Cx::<Run>::new(cx.clone()).attempt() as usize;
         let spec = ns.bodies[(attempt - 1).min(ns.bodies.len() - 1)].clone();
         let serve = if ns.kind == Kind::Service {
             let mut eps = self.episodes.lock().expect("episodes poisoned");
-            let e = eps.entry(node).or_insert(0);
+            let e = eps.entry((node, instance)).or_insert(0);
             let s = ns.serves[(*e).min(ns.serves.len() - 1)].clone();
             *e += 1;
             Some(s)
         } else {
             None
+        };
+        let spawning = Spawning {
+            node: ns.path.clone(),
+            specs: ns.spawns.clone(),
+            templates: self.templates.clone(),
+            log: self.spawns.clone(),
         };
         // Always async, even for a blocking step: a scripted body's whole
         // behaviour is a wait on the engine clock, and a pool thread cannot
@@ -255,10 +389,16 @@ impl BodySource for ScriptedBodies {
             ns.kind,
             spec,
             serve,
+            spawning,
         ))))
     }
 
-    fn cleanup(&self, node: RawKey, cx: &Arc<CxInner>) -> Option<Task> {
+    fn cleanup(
+        &self,
+        node: RawKey,
+        _instance: Option<InstanceId>,
+        cx: &Arc<CxInner>,
+    ) -> Option<Task> {
         let ns = self.nodes.get(&node)?;
         Some(Task::Async(Box::pin(scripted_cleanup(
             cx.clone(),
@@ -267,7 +407,26 @@ impl BodySource for ScriptedBodies {
     }
 
     /// Nothing reads a scripted node's value, so nothing is kept.
-    fn store(&self, _node: RawKey, _value: Box<dyn Any + Send + Sync>) {}
+    fn store(
+        &self,
+        _node: RawKey,
+        _instance: Option<InstanceId>,
+        _value: Box<dyn Any + Send + Sync>,
+    ) {
+    }
+
+    /// A scripted instance has no slots of its own: its bodies read nothing
+    /// and the per-instance input is never looked at.
+    fn open_instance(
+        &self,
+        _template: RawKey,
+        _parent: Option<InstanceId>,
+        _id: InstanceId,
+        _input: Box<dyn Any + Send + Sync>,
+    ) {
+    }
+
+    fn close_instance(&self, _id: InstanceId) {}
 
     /// A scripted run has no typed output: its values are placeholders, so a
     /// report from one carries `output: None` rather than a fabricated value.

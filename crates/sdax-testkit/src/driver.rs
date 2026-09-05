@@ -4,7 +4,7 @@
 
 use crate::eol::Eol;
 use crate::invariants::{check_trace, check_trace_prefix, check_whys, Violation};
-use sdax::host::sim::{ScriptError, SimStep, Simulator};
+use sdax::host::sim::{ScriptError, SimStep, Simulator, SpawnOutcome};
 use sdax::host::{RawKey, Time};
 use sdax::{Plan, PlanView, Reason, Report, Script, Trace};
 
@@ -32,6 +32,8 @@ pub struct Driven<Out = ()> {
     pub violations: Vec<Violation>,
     /// Every event the machine refused.
     pub rejections: Vec<String>,
+    /// Every `cx.spawn` a body made and what it answered, in order.
+    pub spawns: Vec<SpawnOutcome>,
     /// The run stopped short of `End` with nothing left to deliver.
     pub stuck: bool,
     /// Where the first violation was seen: how many steps had been fed, and
@@ -84,6 +86,7 @@ impl ScriptedDriver {
         }
         let stuck = sim.stuck();
         let rejections = sim.rejections().to_vec();
+        let spawns = sim.spawns().to_vec();
         let trace = sim.trace().clone();
         let mut report: Report<Out> = match sim.take_report() {
             Some(r) => r,
@@ -121,13 +124,14 @@ impl ScriptedDriver {
                 }
             }
         }
-        let keys = view
-            .nodes
-            .iter()
-            .filter_map(|n| {
-                let p = n.path.to_string();
-                sim.machine().key_of(&p).map(|k| (p, k))
-            })
+        // Every node of the run, instances included: a template's inner node
+        // has one key per instance, and a harness that reads an effect back
+        // has to be able to name all of them.
+        let keys = sim
+            .machine()
+            .nodes()
+            .into_iter()
+            .map(|(k, p, _)| (p.to_string(), k))
             .collect();
         Ok(Driven {
             report,
@@ -136,6 +140,7 @@ impl ScriptedDriver {
             steps: sim.steps().to_vec(),
             violations,
             rejections,
+            spawns,
             stuck,
             first_violation,
             whys,
@@ -161,6 +166,8 @@ pub struct Recorded<Out> {
     pub whys: Vec<WhyAt>,
     /// Every event the machine refused.
     pub rejections: Vec<String>,
+    /// Every `cx.spawn` a body made and what it answered, in order.
+    pub spawns: Vec<SpawnOutcome>,
     /// The run stopped short of `End`.
     pub stuck: bool,
     /// The key behind each node path.
@@ -210,6 +217,7 @@ impl<Out> Driven<Out> {
             steps: r.steps,
             violations,
             rejections: r.rejections,
+            spawns: r.spawns,
             stuck: r.stuck,
             first_violation,
             whys: r.whys,
@@ -227,13 +235,24 @@ impl<Out> Driven<Out> {
         self.steps.iter().flat_map(|s| s.effects.clone()).collect()
     }
 
-    /// The key behind a path.
+    /// The key behind a path. A template's inner node has one per live
+    /// instance, and this is the first of them.
     pub fn key(&self, path: &str) -> RawKey {
         self.keys
             .iter()
             .find(|(p, _)| p == path)
             .map(|(_, k)| *k)
             .unwrap_or_else(|| panic!("no node {path}"))
+    }
+
+    /// Every run key behind a path: one per copy. A node the run never
+    /// instantiated has none, which is an answer and not a failure.
+    pub fn keys_of(&self, path: &str) -> Vec<RawKey> {
+        self.keys
+            .iter()
+            .filter(|(p, _)| p == path)
+            .map(|(_, k)| *k)
+            .collect()
     }
 
     /// The last recorded `why` for a node at or before `secs`.

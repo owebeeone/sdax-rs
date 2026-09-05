@@ -18,3 +18,4 @@ mod keys;
 mod mutate;
 pub mod prng;
 pub mod script;
+mod templates;

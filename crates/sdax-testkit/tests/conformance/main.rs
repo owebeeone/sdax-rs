@@ -15,6 +15,7 @@ mod cleanup;
 mod components;
 mod corpus;
 mod faults;
+mod instances;
 mod regressions;
 mod retry;
 mod review;

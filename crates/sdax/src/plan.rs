@@ -369,12 +369,17 @@ impl<I> std::fmt::Debug for Template<I> {
 impl<P> Cx<P> {
     /// Ask the scope to instantiate a template with a per-instance input.
     ///
+    /// The input lands in the instance's own slot table, which every body of
+    /// the instance reads, so `I` is `Send + Sync` — which
+    /// `Plan::template::<In>` already requires, so no `Template` that can be
+    /// built is excluded (`OD-SPAWN-INPUT`).
+    ///
     /// Only a node that declared `spawns(&template)` may do this, and only
     /// while the scope is still admitting starts. From a `Cx<Start>` body the
     /// returned [`Child`] can be awaited with
     /// [`Child::ready`](crate::Child::ready), so a service's readiness can
     /// include its instances (F1).
-    pub fn spawn<I: Send + 'static>(
+    pub fn spawn<I: Send + Sync + 'static>(
         &self,
         template: &Template<I>,
         input: I,

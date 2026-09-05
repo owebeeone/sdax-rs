@@ -16,9 +16,10 @@ use crate::report::{Report, TraceKind};
 impl Machine {
     /// In-flight bodies that must be joined before the scope's cleanup may
     /// begin (P-17: no release before the joins). A component counts while
-    /// its inner scope still has in-flight bodies.
+    /// its inner scope still has in-flight bodies, and a template counts for
+    /// every live instance the same way.
     pub(super) fn in_flight(&self, scope: usize) -> usize {
-        self.t.scopes[scope]
+        let own = self.t.scopes[scope]
             .nodes
             .iter()
             .filter(|&&n| {
@@ -33,13 +34,41 @@ impl Machine {
                         None => true,
                     }
             })
-            .count()
+            .count();
+        let instances: usize = self.t.scopes[scope]
+            .nodes
+            .iter()
+            .filter(|&&n| self.t.nodes[n].kind == Kind::Template)
+            .map(|&n| self.instances_in_flight(n))
+            .sum();
+        own + instances
     }
 
     /// An obligation exists and has not started.
     pub(super) fn owes(&self, n: usize) -> bool {
         let s = &self.slots[n];
         let kind = self.t.nodes[n].kind;
+        if kind == Kind::Template {
+            // A template's obligation is stopping every live instance
+            // (contract § 1). It is owed while the node is live — so a
+            // template that reached `Live` always closes its record, and a
+            // reader can tell "done with its instances" from "still holding
+            // them" — and also while any instance is live whatever state the
+            // node itself reached, because a template an isolated fault had
+            // already `Skipped` still holds the instances a body spawned
+            // before the fault (Monte Carlo seed 10566988825915931949: the run
+            // ended with one still running, against INV-16).
+            return match s.st {
+                // The obligation has started, ended, or been abandoned by the
+                // budget. Leaving `Abandoned` out let `advance_cleanup` open
+                // the obligation a second time, so a template got both an
+                // `Abandoned` and a `Stopped` (`monte_carlo_big` seed
+                // 12339652235566683353).
+                St::StoppingInstances | St::Stopped | St::Abandoned => false,
+                St::Live => true,
+                _ => self.ever_spawned(n),
+            };
+        }
         let inner_live = self.t.nodes[n]
             .inner
             .is_some_and(|i| self.scopes[i].st != RunState::Ended && s.started);
@@ -72,7 +101,16 @@ impl Machine {
                 | St::Releasing
                 | St::Compensating
                 | St::Stopping
+                | St::StoppingInstances
         ) || self.owes(d)
+            // A template blocks while any instance of it is still live, even
+            // once the budget has abandoned the template itself: an instance
+            // is a scope of its own and its release graph is still running.
+            // Without this the root ended while an instance was mid-cleanup
+            // (`monte_carlo_big` seed 1520897640266743839); the scope's zero
+            // timer (T7b) is what then abandons whatever is left, so the run
+            // still terminates.
+            || (self.t.nodes[d].kind == Kind::Template && !self.live_instances(d).is_empty())
     }
 
     pub(super) fn gate_open(&self, n: usize) -> bool {
@@ -98,6 +136,18 @@ impl Machine {
                     }
                 }
                 if self.in_flight(scope) > 0 {
+                    return;
+                }
+                // An instance's release graph is gated by nothing in the
+                // parent: INV-16 forbids a parent node to name an instance
+                // node, so an instance is only ever a *dependent*. It cleans
+                // up as soon as its own bodies are joined, which is what lets
+                // the keys it imports be released afterwards.
+                if self.t.scopes[scope].instance.is_some() {
+                    self.scopes[scope].st = RunState::Cleanup;
+                    self.arm_scope_budget(scope);
+                    self.advance_cleanup(scope);
+                    self.check_end(scope);
                     return;
                 }
                 match self.t.scopes[scope].component {
@@ -178,6 +228,7 @@ impl Machine {
                 }
             }
             Kind::Component => self.open_component(n),
+            Kind::Template => self.start_template_stop(n),
             _ => {}
         }
     }
@@ -243,7 +294,10 @@ impl Machine {
     }
 
     fn abandon(&mut self, n: usize) {
-        if self.t.nodes[n].kind != Kind::BlockingStep {
+        // A blocking body cannot be aborted (T7); a template has no task at
+        // all, so an `Abort` for one would name a node the driver never
+        // spawned.
+        if !matches!(self.t.nodes[n].kind, Kind::BlockingStep | Kind::Template) {
             self.fx.push(Effect::Abort(self.t.nodes[n].key));
         }
         let id = self.slots[n].timer.take();
@@ -276,6 +330,9 @@ impl Machine {
             if self.t.nodes[n].inner.is_some() {
                 continue;
             }
+            if self.t.nodes[n].kind == Kind::Template {
+                continue;
+            }
             match self.slots[n].st {
                 St::Running if bodies => self.abandon(n),
                 St::Releasing | St::Compensating | St::Stopping | St::RetryRelease => {
@@ -284,7 +341,25 @@ impl Machine {
                 _ => {}
             }
         }
+        // A template's instances are abandoned with it, in reverse declaration
+        // order for the same reason: an instance is a cleanup unit, and its
+        // `Stopped` is a cleanup end that INV-5 orders after its dependents'.
         for n in self.t.scopes[scope].nodes.clone().into_iter().rev() {
+            if self.t.nodes[n].kind == Kind::Template {
+                if !self.live_instances(n).is_empty() || self.slots[n].st == St::StoppingInstances {
+                    self.settle_instances(n, None);
+                    for x in self.live_instances(n) {
+                        let inst = self.instances[x].scope;
+                        self.abandon_all(inst, true);
+                        self.scopes[inst].spent = true;
+                        self.arm_zero(inst);
+                    }
+                    if self.slots[n].st == St::StoppingInstances {
+                        self.abandon(n);
+                    }
+                }
+                continue;
+            }
             let Some(inner) = self.t.nodes[n].inner else {
                 continue;
             };
@@ -342,7 +417,7 @@ impl Machine {
         self.sweep();
     }
 
-    fn arm_zero(&mut self, scope: usize) {
+    pub(super) fn arm_zero(&mut self, scope: usize) {
         let running = self.t.scopes[scope].nodes.iter().any(|&n| {
             matches!(
                 self.slots[n].st,
@@ -404,6 +479,10 @@ impl Machine {
         self.drop_timer(id);
         let id = self.scopes[scope].zero_timer.take();
         self.drop_timer(id);
+        if self.t.scopes[scope].instance.is_some() {
+            self.end_instance(scope);
+            return;
+        }
         match self.t.scopes[scope].component {
             None => self.end_root(),
             Some(c) => {

@@ -21,10 +21,20 @@ pub struct Generated {
     pub lines: Vec<String>,
 }
 /// What the generator decided for one scope before building it.
-struct Shape {
-    policy: Policy,
-    shutdown: Shutdown,
-    budget: Option<Duration>,
+pub(crate) struct Shape {
+    pub(crate) policy: Policy,
+    pub(crate) shutdown: Shutdown,
+    pub(crate) budget: Option<Duration>,
+    /// Whether the **root**'s shutdown budget is bounded. Until a nested
+    /// scope's release graph opens it is bounded by the root's deadline alone
+    /// (T7a), so a service with no `stop_within` anywhere inside an unbounded
+    /// run has nothing to end its stop — which is what `V-SERVICE-UNBOUNDED`
+    /// refuses for the root's own services and does not reach for a child's.
+    pub(crate) bounded_root: bool,
+    /// How many template plans enclose this scope. A template's own plan may
+    /// declare one — nested instances are a real shape — but the walk stops
+    /// at two so a case stays small enough to print.
+    pub(crate) depth: usize,
 }
 fn pick_kind(g: &mut SplitMix64, allow_component: bool) -> Kind {
     let r = g.below(100);
@@ -137,7 +147,7 @@ fn pick_attrs(
         let stop = shape
             .budget
             .map(|b| secs(g.range(0, b.as_secs().max(1)).min(b.as_secs())));
-        a.stop_within = if shape.budget.is_none() || g.chance(0.6) {
+        a.stop_within = if shape.budget.is_none() || !shape.bounded_root || g.chance(0.6) {
             stop.or(Some(secs(g.range(1, 3))))
         } else {
             None
@@ -171,9 +181,9 @@ fn pick_attrs(
 /// One scope's worth of nodes into `p`. Returns the unit keys declared, and
 /// whether a service was declared.
 #[allow(clippy::too_many_arguments)]
-fn fill(
+pub(crate) fn fill<In>(
     g: &mut SplitMix64,
-    p: &mut PlanBuilder,
+    p: &mut PlanBuilder<(), In>,
     prefix: &str,
     count: usize,
     shape: &Shape,
@@ -184,6 +194,7 @@ fn fill(
     parent_units: &[(Key<Unit>, bool)],
 ) -> bool {
     let mut has_service = false;
+    let mut has_template = false;
     let mut pools: Vec<Pool> = Vec::new();
     let mut mutated = false;
     // The names declared *in this scope*: `Mutation::DupName` must reuse one of
@@ -214,7 +225,7 @@ fn fill(
                     .copied()
                     .collect::<Vec<_>>()
                     .as_slice(),
-                shape.budget,
+                shape,
                 lines,
                 allow_component,
             );
@@ -351,6 +362,15 @@ fn fill(
         p.pool(&format!("{prefix}unused"), 1);
         mutated = true;
     }
+    // A template, if this scope has a service to spawn it. Declared after the
+    // scope's own nodes so it can import any of them; the late
+    // `PlanBuilder::spawns` is what wires it, and it is also the only form
+    // that can record `V-SPAWN-KIND` and `V-SPAWN-SELF-IMPORT`.
+    let templated =
+        super::templates::add_template(g, p, prefix, keys, shape, lines, mutation, &mut mutated);
+    if templated {
+        has_template = true;
+    }
     // Every try-step gets a consumer, unless that is the mistake.
     let unconsumed: Vec<Key<Result<Unit, Error>>> = keys
         .trys
@@ -384,17 +404,20 @@ fn fill(
     if !mutated {
         *mutation = Mutation::None;
     }
-    has_service
+    // `V-MODE` refuses `Finite` with a service **or a template**, and the
+    // caller picks the mode.
+    has_service || has_template
 }
 #[allow(clippy::too_many_arguments)]
 fn child_plan(
     g: &mut SplitMix64,
     name: &str,
     parent_units: &[(Key<Unit>, bool)],
-    parent_budget: Option<Duration>,
+    parent: &Shape,
     lines: &mut Vec<String>,
     parent_allowed_components: bool,
 ) -> Result<Plan<Unit>, Invalid> {
+    let parent_budget = parent.budget;
     let mut p = Plan::builder(name);
     let mut keys = Keys::default();
     for i in g.subset(parent_units.len(), 2) {
@@ -415,6 +438,11 @@ fn child_plan(
         policy: *g.pick(&[Policy::FailFast, Policy::Isolate]),
         shutdown: Shutdown::within(span),
         budget,
+        bounded_root: parent.bounded_root,
+        // A component of a template's plan is still inside that template, so
+        // the nesting bound has to travel with it. Resetting it here let the
+        // walk build `Tpl/Tpl/Tpl/Tpl/Tpl/…`.
+        depth: parent.depth,
     };
     let mut none = Mutation::None;
     let count = g.range(1, 3) as usize;
@@ -469,6 +497,8 @@ pub fn generate(g: &mut SplitMix64) -> Generated {
             Mutation::UnusedPool,
             Mutation::ServiceUnbounded,
             Mutation::PoolStarve,
+            Mutation::SpawnKind,
+            Mutation::SpawnSelfImport,
         ])
     } else {
         Mutation::None
@@ -485,6 +515,8 @@ pub fn generate(g: &mut SplitMix64) -> Generated {
             .map(Shutdown::within)
             .unwrap_or_else(Shutdown::unbounded),
         budget,
+        bounded_root: budget.is_some(),
+        depth: 0,
     };
     let mut p = Plan::builder("Mc");
     let mut keys = Keys::default();

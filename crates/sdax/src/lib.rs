@@ -125,7 +125,7 @@ pub use report::{
     Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
     TraceEvent, TraceKind,
 };
-pub use sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve};
+pub use sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve, SpawnSpec};
 pub use terminals::{NeedsCompensate, NeedsRelease};
 pub use validate::{Finding, Invalid, Rule};
 pub use view::{
@@ -160,7 +160,7 @@ pub mod prelude {
         Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
         TraceEvent, TraceKind,
     };
-    pub use crate::sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve};
+    pub use crate::sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve, SpawnSpec};
     pub use crate::terminals::{NeedsCompensate, NeedsRelease};
     pub use crate::validate::{Finding, Invalid, Rule};
     pub use crate::view::{

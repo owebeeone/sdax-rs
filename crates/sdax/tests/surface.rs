@@ -104,7 +104,9 @@ mod prelude_only {
 
 // ---------------------------------------------------------------- the host
 
-use sdax::host::engine::{Effect as EngineEffect, Event, JoinedLabel, Machine, TimerId};
+use sdax::host::engine::{
+    Effect as EngineEffect, Event, JoinedLabel, Machine, NodeState, RunState, SpawnTable, TimerId,
+};
 use sdax::host::{
     bodies_of, Bodies, BodySource, BoxFuture, ChildControl, Clock, CxInner, InstanceId, Joined,
     NoObserver, Observer, RawKey, Runtime, Scope, StopSignal, Task, TaskHandle, Time, SEMANTICS,
@@ -321,9 +323,57 @@ fn the_run_drivers_hand_offs_are_reachable_from_another_crate() {
     );
 
     let inner = CxInner::new(key, std::sync::Arc::new(Frozen));
-    assert!(matches!(src.body(key, &inner), Some(Task::Async(_))));
+    assert!(matches!(src.body(key, None, &inner), Some(Task::Async(_))));
     // Nothing has been stored, so the release body has no value to discharge.
-    assert!(src.cleanup(key, &inner).is_none());
+    assert!(src.cleanup(key, None, &inner).is_none());
+}
+
+#[test]
+fn the_instance_hand_offs_are_reachable_from_another_crate() {
+    // Stage 3: a driver has to open and close an instance's slot tables, ask
+    // the machine what `cx.spawn` may do, and read an instance's nodes back.
+    let plan = prelude_only::build().expect("valid");
+    let src: std::sync::Arc<dyn BodySource> = bodies_of(&plan);
+    let id = InstanceId(1);
+    // This plan declares no template, so opening one is a no-op — the witness
+    // is that the signature resolves and the call is total.
+    src.open_instance(RawKey { plan: 1, idx: 0 }, None, id, Box::new(7u8));
+    src.close_instance(id);
+
+    let machine = Machine::new(&plan).expect("a static plan");
+    let key = machine.nodes()[0].0;
+    assert!(machine.instances().is_empty());
+    assert!(machine.instance_nodes(id).is_empty());
+    assert_eq!(machine.origin(key), Some((key, None)));
+    assert_eq!(machine.instance_parent(id), None);
+    assert!(matches!(machine.state(key), Some(NodeState::Pending)));
+    assert_eq!(machine.run_state(), RunState::Planned);
+    // No template anywhere, so every handle is foreign — from the machine and
+    // from the snapshot a driver publishes for the body tasks, alike.
+    let foreign = RawKey { plan: 1, idx: 0 };
+    assert_eq!(
+        machine.spawn_check(key, foreign),
+        Err(SpawnError::ForeignTemplate)
+    );
+    let table: SpawnTable = machine.spawn_table();
+    assert_eq!(table.check(key, foreign), Err(SpawnError::ForeignTemplate));
+    assert_eq!(
+        SpawnTable::default().check(key, foreign).unwrap_err(),
+        SpawnError::ForeignTemplate
+    );
+
+    // Every declared node, a template's inner ones included: what a harness
+    // that supplies bodies needs before any instance exists.
+    let declared = Machine::declarations(&plan);
+    assert_eq!(declared.len(), machine.nodes().len());
+
+    // `CxInner::spawn_instance` is the erased form of `Cx::spawn`: with no run
+    // attached it says so rather than pretending.
+    let inner = CxInner::new(key, std::sync::Arc::new(Frozen));
+    assert_eq!(
+        inner.spawn_instance(foreign, Box::new(())).unwrap_err(),
+        SpawnError::NotRunning
+    );
 }
 
 /// `Bodies` names a plan's erased code and the bodies of its components.

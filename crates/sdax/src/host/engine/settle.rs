@@ -10,6 +10,14 @@ use crate::policy::CancelMode;
 use crate::report::TraceKind;
 
 impl Machine {
+    /// Whether this scope is the run's own: not a component's inner scope and
+    /// not a template instance. Only the root emits `Settling` and only the
+    /// root arms its budget at the settle (T7; a nested scope arms it when its
+    /// release graph may open, T7a).
+    pub(super) fn is_root(&self, scope: usize) -> bool {
+        self.t.scopes[scope].component.is_none() && self.t.scopes[scope].instance.is_none()
+    }
+
     /// `Admitting | Steady → Settling` for one scope. Idempotent: a scope
     /// that is already settling or cleaning up is left alone.
     pub(super) fn settle(&mut self, scope: usize, cause: Cause) {
@@ -21,7 +29,8 @@ impl Machine {
         }
         self.scopes[scope].st = RunState::Settling;
         self.scopes[scope].cause = Some(cause);
-        if self.t.scopes[scope].component.is_none() {
+        let root = self.is_root(scope);
+        if root {
             self.emit_run(TraceKind::Settling);
         }
         // T7: the root's budget starts now, and a nested scope's starts when
@@ -33,7 +42,7 @@ impl Machine {
         // in the same instant with the parent's budget untouched. Until then
         // the inner scope is bounded by the parent's deadline alone, which is
         // what its own in-flight bodies are cancelled against.
-        if self.t.scopes[scope].component.is_none() {
+        if root {
             self.arm_scope_budget(scope);
         } else {
             self.scopes[scope].deadline = self.t.scopes[scope]
@@ -46,6 +55,7 @@ impl Machine {
             _ => None,
         };
         for n in self.t.scopes[scope].nodes.clone() {
+            self.keep_template_live(n);
             match self.slots[n].st {
                 St::Pending | St::Waiting => {
                     self.slots[n].st = St::Skipped;
@@ -91,6 +101,7 @@ impl Machine {
         }
         self.scopes[scope].st = RunState::Ended;
         for n in self.t.scopes[scope].nodes.clone() {
+            self.keep_template_live(n);
             if matches!(self.slots[n].st, St::Pending | St::Waiting) {
                 self.slots[n].st = St::Skipped;
                 self.slots[n].queued = None;

@@ -7,15 +7,14 @@ Base: `sdax-v1/B/Proposal.md` (Designer B), adopted by
 `sdax-v1/reviews/Comparison.md` § 1, with the adoptions and fixes in § 12 below.
 Where this document and the proposal disagree, this document governs.
 
-**Implementation scope.** This document states the whole contract. The crate
-today implements the authoring surface, the validator, inspection, the seam, the
-host contracts, `host::engine::Machine` (T1–T8 for static plans and components),
-`Plan::simulate`, and — from Stage 2 — the tokio run driver: `plan.start(rt)`,
-`Running` with its drop guard and drainer, and blocking pools. The driver is in
-`sdax-tokio`, because that is the only crate allowed to spawn (A2); `start` is
-the extension trait `sdax_tokio::PlanStart` for the same reason (OD-START).
-Rows marked *(Stage 3)* are specified and not implemented, and the crate says so
-where they are named.
+**Implementation scope.** This document states the whole contract, and from
+Stage 3 the crate implements all of it: the authoring surface, the validator,
+inspection, the seam, the host contracts, `host::engine::Machine` (T1–T8,
+components **and** template instances), `Plan::simulate`, the tokio run driver
+(`plan.start(rt)`, `Running` with its drop guard and drainer, blocking pools),
+and `cx.spawn` with `Child::{ready, stop, id}`. The driver is in `sdax-tokio`,
+because that is the only crate allowed to spawn (A2); `start` is the extension
+trait `sdax_tokio::PlanStart` for the same reason (OD-START).
 
 ---
 
@@ -168,8 +167,8 @@ body does is ordinary Rust and is not the engine's business.
 | `cx.stop()`, `cx.until_stop(f)`, `cx.is_stopping()` | all phases | observe the stop request |
 | `cx.sleep(d)`, `cx.timeout(d, f)`, `cx.now()`, `cx.deadline()` | all phases | the injected clock |
 | `cx.attempt()` | all phases | the attempt number, from 1 |
-| `cx.spawn(&template, input)` | all phases | instantiate a declared template; refused while settling *(engine side: Stage 3)* |
-| `child.ready()`, `child.stop()`, `child.id()` | on a `Child` | await an instance's readiness (INV-17); ask it to stop *(Stage 3)* |
+| `cx.spawn(&template, input)` | all phases | instantiate a declared template; refused with `ForeignTemplate`, `UndeclaredTemplate` or `ScopeStopping`. `input` is `Send + Sync` (OD-SPAWN-INPUT) |
+| `child.ready()`, `child.stop()`, `child.id()` | on a `Child` | await an instance's readiness (INV-17); ask it to stop |
 
 **The one rule of the body contract.** Perform external effects *inside*
 `cx.hold(..)`. A body that performs the effect itself, awaits something else and
@@ -284,7 +283,7 @@ Of these, Stage 1's machine emits `TraceKind::RequestDuringCleanup` (a
 cleaning up — INV-7: it never interrupts a cleanup). The rest belong to the run
 driver (`DoubleHold` from `CxInner::hold_count > 1`, `NeverReady`,
 `DroppedWhileRunning`, `RuntimeDroppedWithLiveRuns`) or to `cx.spawn`
-(`SpawnError`, Stage 3 except `NotRunning`, which the seam answers today).
+(`SpawnError`; `NotRunning` is the seam's answer when no run is attached).
 
 ---
 
@@ -341,16 +340,21 @@ read back against. The **host** surface is `sdax::host`: what a runtime adapter,
 a run driver or the engine needs and an author does not — the four traits below,
 plus `Joined`, `NoObserver`, `BoxFuture`, `Time`, `Scope`, `ChildControl`,
 `InstanceId`, `StopSignal`, `RawKey`, `SEMANTICS`, the driver-facing `CxInner`
-(`take_held`, `put_output`, `take_serve`, `hold_count`, and `Cx::new` /
-`Cx::inner`), and `sdax::host::engine::{Event, Effect, TimerId, JoinedLabel}`.
+(`take_held`, `put_output`, `take_serve`, `hold_count`, `spawn_instance`, and
+`Cx::new` / `Cx::inner`), and
+`sdax::host::engine::{Event, Effect, TimerId, JoinedLabel, SpawnTable}`.
 
 **Stability.** Only the author surface carries the crate's stability promise.
-`sdax::host` may change in a minor version before 1.0: the run driver is in
-`sdax-tokio` and is still to be written, so these signatures are still being
-learned — Stage 1 already changed four of them (`Event::NodeErr` and
+`sdax::host` may change in a minor version before 1.0: these signatures are
+still being learned — Stage 1 changed four of them (`Event::NodeErr` and
 `Event::ServeEnded` carry their fault; `Effect::CancelTimer` and
-`Effect::Reject` are new). A host item that stops resolving at the crate root is the point of the
-split, and D-HOST-SPLIT witnesses it.
+`Effect::Reject` are new), and Stage 3 changed six more for instances (every
+`BodySource` method takes an `Option<InstanceId>` and two are new;
+`Event::InstanceSpawned` carries the spawner; `Event::InstanceEnded` became
+`Event::StopInstance`, `OD-INSTANCE-EVENTS`; `Effect::SpawnInstance` carries
+the parent instance; `EngineError::Templates` became
+`EngineError::TemplateAsScope`). A host item that stops resolving at the crate
+root is the point of the split, and D-HOST-SPLIT witnesses it.
 
 | trait | required operations |
 |---|---|
@@ -373,6 +377,12 @@ split, and D-HOST-SPLIT witnesses it.
    whatever arrives to the attempt in flight.
 4. A cleanup body is never aborted by the driver (INV-7). The machine refuses a
    `NodeCancelled` for a node that is `Releasing`, `Compensating` or `Stopping`.
+5. `cx.spawn` is answered from the `SpawnTable` the driver publishes after
+   every step, not from the driver's own opinion, so both drivers refuse
+   alike. The instance's slots are opened by `Effect::SpawnInstance` **before**
+   the effects that spawn its bodies, and dropped when the trace says the
+   instance ended. A `Child` handed out before a settle is still valid: the
+   machine ends that instance at once, so `Child::ready()` answers.
 
 Futures are boxed in every signature: the MSRV predates `async fn` in traits,
 and these must stay `dyn`-usable. The shared `Clock` conformance suite is
@@ -387,7 +397,7 @@ and these must stay `dyn`-usable. The shared `Clock` conformance suite is
 | **0** *(done)* | surface, `validate`, `inspect`/`why`/`diff`/`effects`, the seam, report and engine types, host contracts, `FakeClock`/`TraceRecorder`/static checker, `TokioRuntime` | suite (a) W-*, suite (b) P-01…P-15 |
 | **1** *(done)* | `engine::Machine` (T1–T8, retries, deadlines, policies, components), `Plan::simulate` and the stepping simulator, the testkit's scripted driver, `eol::Eol` and trace-level invariant checker, and a Monte Carlo suite over generated plans | suite (c) on the scripted driver: 41 of B's 46 `C-*` rows; `C-14` is Stage 2 and `C-30`, `C-51`, `C-64`, `C-65` are Stage 3. `S-02` did **not** run. `dev-docs/Stage1Report.md` § 7 |
 | **2** *(done)* | the tokio run driver, `PlanStart::start`, `Running` + drop guard + drainer, blocking pools; `Bodies` moved under `sdax::host` (carrying components' bodies and import copies) so the driver in `sdax-tokio` can reach it; `C-14` | suite (c) re-run on the adapter with paused time — **72 rows green** (58 at the Stage 2 gate, plus the Stage 1 review's remediation rows), and the normalised traces equal the pure machine's; suite (d) `R-01`…`R-07` and `S-01`. `S-02` still did **not** run. `dev-docs/Stage2Report.md` |
-| 3 | dynamic instances end to end: `cx.spawn`, `Child::ready`, containment; `Effect::SpawnInstance` and `Event::InstanceSpawned`/`InstanceEnded`, which the machine refuses today; `C-30`, `C-51`, `C-64`, `C-65` | C-30, P-07 |
+| **3** *(done)* | dynamic instances end to end: `cx.spawn`, `Child::{ready, stop, id}`, per-instance scopes and slot tables, INV-16 containment, `Effect::SpawnInstance` and `Event::InstanceSpawned`/`StopInstance`; the instance-aware invariant checker and a Monte Carlo walk over templates | suite (c) on both drivers — **74 rows on the scripted driver, 78 on the adapter** — including `C-30`, `C-51`, `C-64`, `C-65`, `C-14`'s INV-16 half and `I-34`; 200 000 pure and 20 000 adapter Monte Carlo cases. `dev-docs/Stage3Report.md` |
 
 ---
 
@@ -448,3 +458,7 @@ normative; the question it closes is annotated rather than deleted in
 | **OD-BLOCK-WITHIN** | `within` expires on a blocking step whose thread cannot be aborted: free the pool grant and retry beside the thread, or hold the grant until it returns? | **Hold it.** The deadline records the `Timeout` fault at once; the slot stays `Running` and keeps its grants until the thread reports, and only then is the next attempt started (T7c) | 2026-09-06 | The alternative had to be paid for by weakening two invariants: INV-12 ("a retried node's attempts never overlap") and INV-15 ("every task the engine spawned has been joined or is listed as abandoned") were both false for a timed-out blocking attempt, and a declared `pool(cpu, 1)` ran two threads — measured at 2 by `r05_a_blocking_within_does_not_oversubscribe_its_pool` before the fix. A thread cannot be taken back, so the honest reading of `within` on a blocking step is "fault now, retry when the thread is back". Found by the Stage 1 semantics review, F-05 |
 | **OD-BLOCK-SIGNAL** | a blocking body cannot be aborted; is it told to stop at all? | **Yes: signalled at the settle, always, whatever its cancel mode**, and never aborted. `cooperative(g)` on a blocking step is refused at `build` (`V-BLOCKING-CANCEL`) | 2026-09-06 | § 5 lists `cx.is_stopping()` as available in all phases and T5 says every `Running` non-service node is cancelled per its cancel mode. A blocking body has a `Cx` and could poll `is_stopping()`, and it read `false` until the run ended: the request never reached it, and `.cooperative(g)` was accepted and ignored. Signalling unconditionally makes `is_stopping()` mean the same thing everywhere; the grace has nothing to bound, because no abort follows, so the attribute is refused rather than left as a no-op. Found by the Stage 1 semantics review, F-04 |
 | **OD-BACKSTOP** | a generated `Mode::Resident` plan whose services declare `Restart::on_error` with no `max` never ends by itself; is that a defect to fix or a plan to bound? | **Neither: the plan is correct and the *script* must end it.** The Monte Carlo generator appends a backstop `Request::Shutdown` at 20–25 s, well past the 0–15.5 s window its random requests are drawn from | 2026-09-06 | Unlimited restart on a resident plan is exactly what the author asked for, and an engine that stopped it anyway would be wrong. What was broken was the test: a case with no terminating request is not a hang in the machine, and a walk that treats it as one hides real hangs. The driver's liveness guard (1 000 steps) catches genuine non-termination separately. |
+| **OD-INSTANCE-EVENTS** | `Event::InstanceEnded` was in the vocabulary: is "the instance ended" something the host tells the machine? | **No.** The machine owns an instance's lifecycle, so its end is the machine's own observation (`TraceKind::InstanceEnded`) and never an input. The event the host needs is the *request*: `Event::StopInstance(id)`, which is what `Child::stop()` sends. `Event::InstanceSpawned` gains the **spawner**, so the template handle is resolved in the scope that declared it | 2026-09-06 | A host that could say "this instance ended" could end one whose release graph was still running, which is the one thing INV-16 exists to prevent. The spawner is needed because a `Template` handle carries a *declaration* key: a template declared inside a template's plan has one node per instance, and only the spawning node says which |
+| **OD-SPAWN-INPUT** | `Cx::spawn<I>` required `I: Send`; the input has to live somewhere every body of the instance can read | **`I: Send + Sync`**, and `Scope::spawn_instance` takes `Box<dyn Any + Send + Sync>` | 2026-09-06 | The per-instance input is stored in the instance's own slot table like any other node's value, and a slot holds `Arc<T>` shared across the instance's bodies. `Plan::template::<In>` already requires `In: Send + Sync`, and `Template<I>` has no other constructor, so no handle that can be built is excluded — the bound was simply missing from the call site |
+| **OD-SPAWN-EARLY** | may a body instantiate a template whose own `import`s are not `Ready` yet? | **Yes.** The instance is created and its nodes wait under T1 like any other node; only a settling scope (`ScopeStopping`), an undeclared template or a foreign handle is refused | 2026-09-06 | The alternative is a fourth refusal for a state that resolves itself, and it would make `cx.spawn` depend on an ordering the author did not declare: `V-SPAWN-SELF-IMPORT` already rules out the one case that could never resolve. A template that admitted an instance before its own imports were ready is `Live` from that moment, so its obligation — stopping that instance — is owed however the node itself ends |
+| **OD-INSTANCE-FAULT** | does a fault inside an instance fail the parent? | **No.** The instance's own `Policy` governs its scope; the instance ends `Failed`, its faults are in the run's report in F4 order, and the parent is untouched | 2026-09-06 | § 1 gives a template's obligation as "stop every live instance" and nothing else, and INV-16 forbids a parent node to name an instance node — so there is no edge along which the fault could travel. A component is the opposite case and says so (`OD-INNER-POLICY`): a component *is* one node of the parent, and its export is what the parent waits for. "Unless the declaration says so" has no spelling today; a `spawns(..).propagate()` attribute is the shape it would take |

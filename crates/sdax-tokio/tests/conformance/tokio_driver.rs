@@ -33,8 +33,15 @@ impl TokioDriver {
     ) -> Result<Driven<Out>, ScriptError> {
         quiet_scripted_panics();
         let machine = Machine::new(plan).map_err(ScriptError::Engine)?;
+        // A template's inner nodes are declared but exist only per instance,
+        // so the script is checked against the *declarations*, exactly as the
+        // stepping simulator checks it.
+        let declared: Vec<String> = Machine::declarations(plan)
+            .iter()
+            .map(|(_, p, _)| p.to_string())
+            .collect();
         for name in script.named_nodes() {
-            if machine.key_of(name).is_none() {
+            if !declared.iter().any(|p| p == name) {
                 return Err(ScriptError::UnknownNode(name.to_string()));
             }
         }
@@ -48,6 +55,7 @@ impl TokioDriver {
             })
             .collect();
         let src = ScriptedBodies::new(plan, script).map_err(ScriptError::Engine)?;
+        let bodies = src.clone();
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .start_paused(true)
@@ -97,6 +105,7 @@ impl TokioDriver {
             steps: rec.steps,
             whys: rec.whys,
             rejections: rec.rejections,
+            spawns: bodies.spawns(),
             stuck,
             keys,
         }))

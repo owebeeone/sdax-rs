@@ -110,6 +110,7 @@ fn parallel<Out: Send + Sync + 'static>(what: &str, plan: &Plan<Out>, script: &S
         }
     };
     let driven = Driven::from_recorded(Recorded {
+        spawns: Vec::new(),
         report,
         view,
         steps: rec.steps,

@@ -1,18 +1,19 @@
-//! The stepping simulator: executes the machine's effects per a [`Script`]
-//! on a virtual clock and feeds the events back, one queue item at a time.
+//! The stepping simulator: executes the machine's effects per a [`Script`] on
+//! a virtual clock and feeds the events back, one queue item at a time.
 //!
 //! Ordering within one instant is FIFO in scheduling order, so an outcome
 //! already due when an `Abort` arrives is delivered — the body had finished
 //! before the abort could land, as it can on a real runtime — while anything
 //! due later is dropped by the abort. No sleeping, no runtime, no bodies.
 
-use super::script::{At, Body, Cleanup, Ending, Request, Script, Serve};
+use super::instances::{Awaiting, SpawnOutcome};
+use super::script::{At, Body, Cleanup, Script, Serve, SpawnSpec};
 use crate::contracts::Time;
-use crate::host::engine::{Effect, Event, Machine};
+use crate::cx::InstanceId;
+use crate::host::engine::{Event, Machine};
 use crate::key::RawKey;
 use crate::plan::{Kind, Plan};
-use crate::report::{FaultKind, Report, Trace, TraceEvent};
-use crate::view::NodePath;
+use crate::report::{Report, Trace};
 
 /// A script that does not fit the plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +50,7 @@ pub struct SimStep {
 
 /// A body error with the scripted message.
 #[derive(Debug)]
-struct Scripted(String);
+pub(super) struct Scripted(pub String);
 impl std::fmt::Display for Scripted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -58,44 +59,60 @@ impl std::fmt::Display for Scripted {
 impl std::error::Error for Scripted {}
 
 #[derive(Debug)]
-enum Item {
+pub(super) enum Item {
     Begin,
     Event(Event),
     /// A body event for a node, dropped by an abort if still due later.
     Body(RawKey, Event),
+    /// A scripted `cx.spawn` from this node's body: which directive.
+    Spawn(RawKey, usize),
 }
 
-struct Queued {
-    at: Time,
-    seq: u64,
-    item: Item,
+pub(super) struct Queued {
+    pub at: Time,
+    pub seq: u64,
+    pub item: Item,
 }
 
-struct NodeScript {
-    key: RawKey,
-    kind: Kind,
-    bodies: Vec<Body>,
-    serves: Vec<Serve>,
-    cleanup: Cleanup,
+pub(super) struct NodeScript {
+    pub key: RawKey,
+    pub kind: Kind,
+    /// The path the script names this node by. Every instance of a template
+    /// shares it, so one script line covers them all.
+    pub path: String,
+    pub bodies: Vec<Body>,
+    pub serves: Vec<Serve>,
+    pub cleanup: Cleanup,
+    pub spawns: Vec<SpawnSpec>,
     /// Attempts spawned so far.
-    attempts: usize,
+    pub attempts: usize,
     /// Serving episodes so far.
-    episodes: usize,
-    held: bool,
-    stopped: bool,
+    pub episodes: usize,
+    pub held: bool,
+    pub stopped: bool,
+    /// The instances this body created, in directive order.
+    pub children: Vec<InstanceId>,
+    /// Those whose readiness it awaits before returning (INV-17).
+    pub awaited: Vec<InstanceId>,
 }
 
 /// The pure machine, driven by a script on a virtual clock.
 pub struct Simulator {
-    machine: Machine,
-    nodes: Vec<NodeScript>,
-    queue: Vec<Queued>,
-    seq: u64,
-    now: Time,
-    trace: Trace,
-    steps: Vec<SimStep>,
-    rejections: Vec<String>,
-    ended: bool,
+    pub(super) machine: Machine,
+    pub(super) nodes: Vec<NodeScript>,
+    pub(super) queue: Vec<Queued>,
+    pub(super) seq: u64,
+    pub(super) now: Time,
+    pub(super) trace: Trace,
+    pub(super) steps: Vec<SimStep>,
+    pub(super) rejections: Vec<String>,
+    pub(super) ended: bool,
+    pub(super) script: Script,
+    /// Every template of the plan tree, by the path the view shows it at.
+    pub(super) templates: Vec<(String, RawKey)>,
+    pub(super) next_id: u64,
+    pub(super) spawns: Vec<SpawnOutcome>,
+    pub(super) parked: Vec<(RawKey, Awaiting)>,
 }
 
 impl Simulator {
@@ -104,51 +121,21 @@ impl Simulator {
         let machine = Machine::new(plan)
             .map_err(ScriptError::Engine)?
             .with_schedule(&script.schedule);
-        let view = plan.inspect();
-        let mut nodes = Vec::new();
-        for n in &view.nodes {
-            let path = n.path.to_string();
-            let key = machine
-                .key_of(&path)
-                .expect("every viewed node is in the table");
-            let bodies = script
-                .bodies
-                .iter()
-                .find(|(p, _)| *p == path)
-                .map(|(_, b)| b.clone())
-                .unwrap_or_else(|| vec![Body::default()]);
-            let serves = script
-                .serves
-                .iter()
-                .find(|(p, _)| *p == path)
-                .map(|(_, s)| s.clone())
-                .unwrap_or_else(|| vec![Serve::default()]);
-            let cleanup = script
-                .cleanups
-                .iter()
-                .find(|(p, _)| *p == path)
-                .map(|(_, c)| c.clone())
-                .unwrap_or_default();
-            nodes.push(NodeScript {
-                key,
-                kind: n.kind,
-                bodies,
-                serves,
-                cleanup,
-                attempts: 0,
-                episodes: 0,
-                held: false,
-                stopped: false,
-            });
-        }
+        let declared = Machine::declarations(plan);
+        let templates: Vec<(String, RawKey)> = declared
+            .iter()
+            .filter(|(_, _, k)| *k == Kind::Template)
+            .map(|(key, path, _)| (path.to_string(), *key))
+            .collect();
+        let named: Vec<String> = declared.iter().map(|(_, p, _)| p.to_string()).collect();
         for name in script.named_nodes() {
-            if machine.key_of(name).is_none() {
+            if !named.iter().any(|p| p == name) {
                 return Err(ScriptError::UnknownNode(name.to_string()));
             }
         }
         let mut sim = Simulator {
             machine,
-            nodes,
+            nodes: Vec::new(),
             queue: Vec::new(),
             seq: 0,
             now: Time::ZERO,
@@ -156,12 +143,21 @@ impl Simulator {
             steps: Vec::new(),
             rejections: Vec::new(),
             ended: false,
+            script: script.clone(),
+            templates,
+            next_id: 0,
+            spawns: Vec::new(),
+            parked: Vec::new(),
         };
+        for (key, path, kind) in sim.machine.nodes() {
+            let ns = sim.node_script(key, kind, path.to_string());
+            sim.nodes.push(ns);
+        }
         // Requests at the origin precede the first poll (`@0 cancel`).
         for (t, r) in &script.requests {
             let ev = match r {
-                Request::Shutdown => Event::ShutdownRequested,
-                Request::Cancel => Event::CancelRequested,
+                super::script::Request::Shutdown => Event::ShutdownRequested,
+                super::script::Request::Cancel => Event::CancelRequested,
             };
             sim.push(Time::ZERO + *t, Item::Event(ev));
         }
@@ -169,7 +165,38 @@ impl Simulator {
         Ok(sim)
     }
 
-    fn push(&mut self, at: Time, item: Item) {
+    /// The script lines for one node, by the path it is named at.
+    pub(super) fn node_script(&self, key: RawKey, kind: Kind, path: String) -> NodeScript {
+        NodeScript {
+            key,
+            kind,
+            bodies: self
+                .script
+                .body_of(&path)
+                .map(|b| b.to_vec())
+                .unwrap_or_else(|| vec![Body::default()]),
+            serves: self
+                .script
+                .serve_of(&path)
+                .map(|s| s.to_vec())
+                .unwrap_or_else(|| vec![Serve::default()]),
+            cleanup: self.script.cleanup_of(&path).cloned().unwrap_or_default(),
+            spawns: self
+                .script
+                .spawns_of(&path)
+                .map(|s| s.to_vec())
+                .unwrap_or_default(),
+            path,
+            attempts: 0,
+            episodes: 0,
+            held: false,
+            stopped: false,
+            children: Vec::new(),
+            awaited: Vec::new(),
+        }
+    }
+
+    pub(super) fn push(&mut self, at: Time, item: Item) {
         self.seq += 1;
         self.queue.push(Queued {
             at,
@@ -178,210 +205,18 @@ impl Simulator {
         });
     }
 
-    fn resolve(&self, at: At, start: Time) -> Time {
+    pub(super) fn resolve(&self, at: At, start: Time) -> Time {
         match at {
             At::Tick(d) => (Time::ZERO + d).max(start),
             At::After(d) => start + d,
         }
     }
 
-    fn node_mut(&mut self, key: RawKey) -> &mut NodeScript {
+    pub(super) fn node_mut(&mut self, key: RawKey) -> &mut NodeScript {
         self.nodes
             .iter_mut()
             .find(|n| n.key == key)
             .expect("effects name known nodes")
-    }
-
-    /// Perform one effect.
-    fn perform(&mut self, effect: Effect) {
-        let now = self.now;
-        match effect {
-            Effect::Spawn { node, .. } | Effect::SpawnBlocking { node, .. } => {
-                // A run driver holds one task handle per node: when the
-                // machine gives up on an attempt and starts the next, the old
-                // handle's result no longer maps to anything and the driver
-                // drops it. The simulator stands in for one, so it drops the
-                // superseded attempt's queued events here. A blocking body is
-                // the case that needs it — it cannot be aborted (T7), so
-                // `on_within_timer` fails the attempt and says the thread's
-                // later outcome is ignored — and nothing else did, so the
-                // stale outcome ended the attempt that had just started, which
-                // then reached `Ready` before its own `Started` arrived.
-                // A cleanup outcome is never pending here: INV-12 finishes a
-                // held attempt's release before attempt k+1 starts. A serve
-                // episode is not an attempt and is left alone.
-                self.queue.retain(|q| match &q.item {
-                    Item::Body(k, ev) if *k == node => !matches!(
-                        ev,
-                        Event::Started(_)
-                            | Event::Held(_)
-                            | Event::NodeOk(_)
-                            | Event::NodeErr(..)
-                            | Event::NodeCancelled { .. }
-                    ),
-                    _ => true,
-                });
-                let ns = self.node_mut(node);
-                let body = ns.bodies[ns.attempts.min(ns.bodies.len() - 1)].clone();
-                ns.attempts += 1;
-                ns.held = false;
-                ns.stopped = false;
-                let kind = ns.kind;
-                self.push(now, Item::Body(node, Event::Started(node)));
-                let holds = matches!(kind, Kind::Resource | Kind::Effect);
-                let end_at = match &body.ending {
-                    Ending::Ok(at) | Ending::Fail(at, _) | Ending::Panic(at) => {
-                        Some(self.resolve(*at, now))
-                    }
-                    Ending::Pending => None,
-                };
-                if holds {
-                    let held_at = match (body.held, &body.ending) {
-                        (Some(at), _) => Some(self.resolve(at, now)),
-                        (None, Ending::Ok(_)) => end_at,
-                        _ => None,
-                    };
-                    if let Some(t) = held_at {
-                        // A body registers its value *inside* itself, so a
-                        // hold can never be later than the body's own ending.
-                        // A script that says otherwise holds at the ending
-                        // instant instead, and is delivered first (it was
-                        // queued first, so its sequence number is lower).
-                        // Without this the machine is fed a `Held` for a body
-                        // that has already returned, and rejects it.
-                        let t = match end_at {
-                            Some(e) => t.min(e),
-                            None => t,
-                        };
-                        self.push(t, Item::Body(node, Event::Held(node)));
-                    }
-                }
-                if let Some(t) = end_at {
-                    let ev = match body.ending {
-                        Ending::Ok(_) => Event::NodeOk(node),
-                        // A try-step's `Err` is its value, not a fault
-                        // (OD-5): the body the engine sees returns `Ok`.
-                        Ending::Fail(_, _) if kind == Kind::TryStep => Event::NodeOk(node),
-                        Ending::Fail(_, msg) => {
-                            Event::NodeErr(node, FaultKind::Error(Box::new(Scripted(msg))))
-                        }
-                        Ending::Panic(_) => {
-                            Event::NodeErr(node, FaultKind::Panic(Box::new("scripted panic")))
-                        }
-                        Ending::Pending => unreachable!(),
-                    };
-                    self.push(t, Item::Body(node, ev));
-                }
-            }
-            Effect::Abort(node) => {
-                // Outcomes already due stand; later ones are dropped, and the
-                // join reports the cancellation.
-                let due_now = self.queue.iter().any(|q| {
-                    q.at <= now && matches!(&q.item, Item::Body(k, ev) if *k == node && matches!(ev, Event::NodeOk(_) | Event::NodeErr(..)))
-                });
-                self.queue
-                    .retain(|q| !(q.at > now && matches!(&q.item, Item::Body(k, _) if *k == node)));
-                if !due_now {
-                    let held = self.node_mut(node).held;
-                    self.push(now, Item::Body(node, Event::NodeCancelled { node, held }));
-                }
-            }
-            Effect::Signal(node) | Effect::StopService(node) => {
-                let ns = self.node_mut(node);
-                if ns.kind == Kind::Service && ns.episodes > 0 && !ns.stopped {
-                    ns.stopped = true;
-                    let serve = ns.serves[(ns.episodes - 1).min(ns.serves.len() - 1)].clone();
-                    if let Serve::StopsAfter(d) = serve {
-                        self.push(
-                            now + d,
-                            Item::Body(node, Event::ServeEnded { node, fault: None }),
-                        );
-                    }
-                }
-            }
-            Effect::Release(node) | Effect::Compensate(node) => {
-                let cleanup = self.node_mut(node).cleanup.clone();
-                match cleanup {
-                    Cleanup::Ok(d) => self.push(now + d, Item::Body(node, Event::NodeOk(node))),
-                    Cleanup::Fail(d, msg) => self.push(
-                        now + d,
-                        Item::Body(
-                            node,
-                            Event::NodeErr(node, FaultKind::Error(Box::new(Scripted(msg)))),
-                        ),
-                    ),
-                    Cleanup::Panic(d) => self.push(
-                        now + d,
-                        Item::Body(
-                            node,
-                            Event::NodeErr(node, FaultKind::Panic(Box::new("scripted panic"))),
-                        ),
-                    ),
-                    Cleanup::IgnoreStop => {}
-                }
-            }
-            Effect::Timer { id, at } => self.push(at, Item::Event(Event::Timer(id))),
-            Effect::CancelTimer(id) => self
-                .queue
-                .retain(|q| !matches!(&q.item, Item::Event(Event::Timer(t)) if *t == id)),
-            Effect::Emit(ev) => self.observe(*ev),
-            Effect::End(_) => self.ended = true,
-            Effect::Reject(r) => self.rejections.push(format!("{} — {}", r.reason, r.event)),
-            Effect::SpawnInstance { .. } => self.rejections.push("SpawnInstance is Stage 3".into()),
-        }
-    }
-
-    fn observe(&mut self, ev: TraceEvent) {
-        // A service's readiness starts its serving episode.
-        if let (crate::report::TraceKind::Ready, Some(path)) = (&ev.kind, &ev.node) {
-            self.serve_begins(path.clone());
-        }
-        if let (crate::report::TraceKind::Held, Some(path)) = (&ev.kind, &ev.node) {
-            let key = self.machine.key_of(&path.to_string()).expect("known");
-            self.node_mut(key).held = true;
-        }
-        self.trace.events.push(ev);
-    }
-
-    fn serve_begins(&mut self, path: NodePath) {
-        let key = self.machine.key_of(&path.to_string()).expect("known");
-        let now = self.now;
-        let ns = self.node_mut(key);
-        if ns.kind != Kind::Service {
-            return;
-        }
-        let serve = ns.serves[ns.episodes.min(ns.serves.len() - 1)].clone();
-        ns.episodes += 1;
-        ns.stopped = false;
-        match serve {
-            Serve::Ok(at) => {
-                let t = self.resolve(at, now);
-                self.push(
-                    t,
-                    Item::Body(
-                        key,
-                        Event::ServeEnded {
-                            node: key,
-                            fault: None,
-                        },
-                    ),
-                );
-            }
-            Serve::Err(at, msg) => {
-                let t = self.resolve(at, now);
-                self.push(
-                    t,
-                    Item::Body(
-                        key,
-                        Event::ServeEnded {
-                            node: key,
-                            fault: Some(FaultKind::Error(Box::new(Scripted(msg)))),
-                        },
-                    ),
-                );
-            }
-            Serve::IgnoreStop | Serve::StopsAfter(_) => {}
-        }
     }
 
     /// Feed the next queue item. `None` once the run has ended or nothing is
@@ -399,7 +234,26 @@ impl Simulator {
         self.machine.advance(self.now);
         let (event, effects) = match q.item {
             Item::Begin => ("begin".to_string(), self.machine.begin()),
-            Item::Event(ev) | Item::Body(_, ev) => {
+            Item::Spawn(node, which) => match self.do_spawn(node, which) {
+                Some(ev) => {
+                    let described = format!("{ev:?}");
+                    (described, self.machine.step(ev))
+                }
+                // A refused `cx.spawn` is the body's answer, not the run's:
+                // nothing is fed to the machine and the outcome is recorded.
+                None => ("spawn refused".to_string(), Vec::new()),
+            },
+            Item::Body(node, ev) => {
+                // INV-17: a start body that awaits `Child::ready()` returns
+                // only once the instances it awaits have answered.
+                if self.hold_for_ready(node, &ev) {
+                    ("awaiting an instance".to_string(), Vec::new())
+                } else {
+                    let described = format!("{ev:?}");
+                    (described, self.machine.step(ev))
+                }
+            }
+            Item::Event(ev) => {
                 let described = format!("{ev:?}");
                 (described, self.machine.step(ev))
             }
@@ -408,6 +262,7 @@ impl Simulator {
         for e in effects {
             self.perform(e);
         }
+        self.release_awaits();
         self.steps.push(SimStep {
             at: self.now,
             event,
@@ -456,6 +311,11 @@ impl Simulator {
         &self.rejections
     }
 
+    /// Every scripted `cx.spawn` and what it answered, in order.
+    pub fn spawns(&self) -> &[SpawnOutcome] {
+        &self.spawns
+    }
+
     /// The report, once, after `End`, with the trace attached.
     pub fn take_report<Out>(&mut self) -> Option<Report<Out>> {
         let r = self.machine.take_report()?;
@@ -472,7 +332,7 @@ impl Simulator {
 
     /// Items still queued after `End`, fed to the machine so a harness can
     /// check they are refused rather than acted on (D1).
-    pub fn drain_after_end(&mut self) -> Vec<Vec<Effect>> {
+    pub fn drain_after_end(&mut self) -> Vec<Vec<crate::host::engine::Effect>> {
         let mut out = Vec::new();
         while let Some(q) = self.queue.pop() {
             if let Item::Event(ev) | Item::Body(_, ev) = q.item {
@@ -488,8 +348,8 @@ impl<Out> Plan<Out> {
     /// body run and no effect: the counterfactual answered pre-ship with the
     /// code that drives production (contract § 9, adoption A3).
     ///
-    /// Refuses a plan the machine cannot run (templates are Stage 3) and a
-    /// script that names an unknown node.
+    /// Refuses a plan the machine cannot run and a script that names an
+    /// unknown node.
     pub fn simulate(&self, script: &Script) -> Result<Trace, ScriptError> {
         let mut sim = Simulator::new(self, script)?;
         sim.run();

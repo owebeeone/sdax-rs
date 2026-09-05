@@ -7,8 +7,11 @@
 //! [`host::sim`](crate::host::sim), where a test harness can watch every event
 //! and every effect.
 
+mod effects;
+mod instances;
 mod script;
 mod simulator;
 
-pub use script::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve};
+pub use instances::{SpawnOutcome, FOREIGN};
+pub use script::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve, SpawnSpec};
 pub use simulator::{ScriptError, SimStep, Simulator};

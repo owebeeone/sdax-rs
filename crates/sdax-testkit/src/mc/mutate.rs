@@ -17,6 +17,8 @@ pub(crate) enum Mutation {
     UnusedPool,
     ServiceUnbounded,
     PoolStarve,
+    SpawnKind,
+    SpawnSelfImport,
 }
 
 impl Mutation {
@@ -32,6 +34,8 @@ impl Mutation {
             Mutation::UnusedPool => Rule::UnusedPool,
             Mutation::ServiceUnbounded => Rule::ServiceUnbounded,
             Mutation::PoolStarve => Rule::PoolStarve,
+            Mutation::SpawnKind => Rule::SpawnKind,
+            Mutation::SpawnSelfImport => Rule::SpawnSelfImport,
         })
     }
 
@@ -47,6 +51,8 @@ impl Mutation {
             Mutation::UnusedPool => "unused pool",
             Mutation::ServiceUnbounded => "unbounded without stop_within",
             Mutation::PoolStarve => "pool starved by a resident holder",
+            Mutation::SpawnKind => "spawns on a node that is not a service",
+            Mutation::SpawnSelfImport => "a template importing the service that spawns it",
         }
     }
 }

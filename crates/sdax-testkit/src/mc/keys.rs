@@ -17,6 +17,9 @@ pub(crate) struct Keys {
     pub(crate) units: Vec<(Key<Unit>, bool)>,
     pub(crate) trys: Vec<(Key<Result<Unit, Error>>, bool)>,
     pub(crate) joins: Vec<Key<()>>,
+    /// The services declared so far: only a service may `spawns` a template
+    /// (`V-SPAWN-KIND`).
+    pub(crate) services: Vec<Key<Unit>>,
 }
 /// The needs chosen for one node.
 pub(crate) struct Needs {
@@ -123,8 +126,8 @@ pub(crate) fn common<'p, D: Deps, K>(mut n: Node<'p, D, K>, a: &Attrs) -> Node<'
     }
     n
 }
-fn add_one<D: Deps>(
-    p: &mut PlanBuilder,
+fn add_one<D: Deps, In>(
+    p: &mut PlanBuilder<(), In>,
     kind: Kind,
     name: &str,
     deps: D,
@@ -169,6 +172,7 @@ fn add_one<D: Deps>(
             }
             let k = n.start(|_cx, _d| async move { Ok(Serving::new(Unit, async { Ok(()) })) });
             keys.units.push((k, false));
+            keys.services.push(k);
         }
         Kind::Effect => {
             let n = common(p.effect(name).needs(deps), a)
@@ -185,8 +189,8 @@ fn add_one<D: Deps>(
         _ => unreachable!("components are added by the caller"),
     }
 }
-pub(crate) fn add_node(
-    p: &mut PlanBuilder,
+pub(crate) fn add_node<In>(
+    p: &mut PlanBuilder<(), In>,
     kind: Kind,
     name: &str,
     needs: &Needs,

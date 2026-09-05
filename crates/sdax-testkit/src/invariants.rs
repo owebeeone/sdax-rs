@@ -17,6 +17,13 @@
 //! when `dev-docs/Review-Stage1-Semantics.md` § 5.1 was written, and each is
 //! run over every case of suite (d).
 //!
+//! **Instances.** Every per-node rule groups by [`occ::Occ`] — the copy of a
+//! declaration, path plus instance chain — so a template's instances are
+//! checked exactly as the static graph is and are never merged into it.
+//! [`check_containment`] adds INV-16's two declaration clauses and the
+//! instance lifecycle (`INSTANCE`, `T5-INSTANCE`); INV-16's run-time clause is
+//! INV-5 applied per copy.
+//!
 //! **Honest limit.** INV-1 has a negative fixture (an edge no node declared).
 //! INV-5 and INV-6 do not: the core derives the release order *from* the edge
 //! set, so today the two computations cannot disagree unless the core's
@@ -25,9 +32,14 @@
 //! independently falsified checks, and this crate does not claim otherwise.
 
 mod arbitration;
+mod containment;
+pub mod occ;
+mod report;
 mod trace;
 
 pub use arbitration::{check_arbitration, check_scopes, check_whys};
+pub use containment::{check_containment, check_instance_releases};
+pub use report::check_report;
 pub use trace::{check_trace, check_trace_prefix};
 
 use sdax::host::{Clock, Time};

@@ -70,6 +70,39 @@ fn cleanup(g: &mut SplitMix64, bounded: bool) -> Cleanup {
     }
 }
 
+/// The instances one service's body creates: several per run, at random
+/// ticks, some awaited before the body returns (INV-17), some closed again
+/// while the run keeps going, some naming a template of another plan, and
+/// some scheduled so late that the body has returned or the scope has settled
+/// before they land.
+fn spawns(g: &mut SplitMix64, templates: &[NodePath]) -> Vec<SpawnSpec> {
+    let n = g.range(0, 3) as usize;
+    let mut out = Vec::new();
+    for _ in 0..n {
+        // A name no plan declares is a handle from another plan, and
+        // `SpawnError::ForeignTemplate` is the answer.
+        let template = if g.chance(0.12) || templates.is_empty() {
+            "Elsewhere".to_string()
+        } else {
+            g.pick(templates).to_string()
+        };
+        let at = if g.chance(0.55) {
+            At::After(secs(g, 0, 2))
+        } else {
+            At::Tick(secs(g, 0, 14))
+        };
+        let mut spec = SpawnSpec::new(&template, at);
+        if g.chance(0.3) {
+            spec = spec.awaited();
+        }
+        if g.chance(0.4) {
+            spec = spec.stopped(At::After(secs(g, 0, 6)));
+        }
+        out.push(spec);
+    }
+    out
+}
+
 /// A random script for `view`. `bounded` says whether the root budget is
 /// bounded; an unbounded run never gets a body that can neither complete nor
 /// be aborted, so it cannot get stuck.
@@ -78,7 +111,7 @@ pub fn generate(g: &mut SplitMix64, view: &PlanView, bounded: bool) -> Script {
     for n in &view.nodes {
         let path = n.path.to_string();
         match n.kind {
-            Kind::Join | Kind::Component => {}
+            Kind::Join | Kind::Component | Kind::Template => {}
             Kind::Service => {
                 let attempts = g.range(1, 3) as usize;
                 let bodies: Vec<Body> = (0..attempts).map(|_| body(g, n.kind, bounded)).collect();
@@ -86,6 +119,12 @@ pub fn generate(g: &mut SplitMix64, view: &PlanView, bounded: bool) -> Script {
                 let episodes = g.range(1, 3) as usize;
                 let serves: Vec<Serve> = (0..episodes).map(|_| serve(g)).collect();
                 s = s.serve(&path, serves);
+                if !n.spawns.is_empty() {
+                    let specs = spawns(g, &n.spawns);
+                    if !specs.is_empty() {
+                        s = s.spawns(&path, specs);
+                    }
+                }
             }
             _ => {
                 let attempts = g.range(1, 3) as usize;

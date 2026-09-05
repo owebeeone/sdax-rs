@@ -237,6 +237,11 @@ impl<Out, In> PlanBuilder<Out, In> {
         decl.needs = plan.ir.imports();
         decl.child = Some(plan.ir.clone());
         decl.attrs.release = crate::plan::ReleaseStyle::Instances;
+        // A template's plan is a child plan like a component's: its nodes have
+        // their own key space and their own bodies, which this plan's
+        // declaration alone does not carry. `Bodies::children` holds both, in
+        // the declaration order of the component and template nodes together.
+        self.b.children.push(plan.bodies.clone());
         let key: Key<()> = self.b.commit(decl, None, None, None);
         Template {
             node: key.raw(),

@@ -185,6 +185,6 @@ pub trait Scope: Send + Sync {
         &self,
         spawner: RawKey,
         template: RawKey,
-        input: Box<dyn std::any::Any + Send>,
+        input: Box<dyn std::any::Any + Send + Sync>,
     ) -> Result<Child, SpawnError>;
 }

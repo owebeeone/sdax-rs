@@ -206,6 +206,15 @@ impl Machine {
                 self.slots[n].st = St::Ready;
                 self.emit(n, TraceKind::Ready);
             }
+            // A template has no body and never becomes `Ready` (contract § 1):
+            // it is live, admitting instances, from the moment its imports are
+            // ready until its obligation opens. No grant is taken and nothing
+            // is observed — an instance's `InstanceSpawned` on this node is
+            // what the trace records instead.
+            Kind::Template => {
+                self.release_grants(n);
+                self.slots[n].st = St::Live;
+            }
             Kind::Component => {
                 self.emit(n, TraceKind::Start(Phase::Prepare));
                 let inner = self.t.nodes[n].inner.expect("a component has a scope");
@@ -238,6 +247,10 @@ impl Machine {
     }
 
     /// Whether the scope has anything left to admit or settle.
+    ///
+    /// A `Live` template is settled: it has no body to wait for, and an
+    /// instance of it is a scope of its own whose readiness a body awaits
+    /// through `Child::ready` (INV-17), never the scope's steady state.
     fn unsettled(&self, scope: usize) -> bool {
         self.t.scopes[scope].nodes.iter().any(|&n| {
             matches!(
@@ -254,6 +267,12 @@ impl Machine {
             return;
         }
         self.scopes[scope].st = RunState::Steady;
+        // A child plan's `Mode` is a declaration only: an inner scope — a
+        // component's or an instance's — stays `Steady` whatever its mode
+        // until something opens it (contract § 2).
+        if self.t.scopes[scope].instance.is_some() {
+            return;
+        }
         match self.t.scopes[scope].component {
             None => {
                 if self.t.scopes[scope].mode == crate::policy::Mode::Finite {
@@ -278,6 +297,7 @@ impl Machine {
         let mut stack = vec![n];
         while let Some(x) = stack.pop() {
             for d in self.t.nodes[x].dependents.clone() {
+                self.keep_template_live(d);
                 if matches!(self.slots[d].st, St::Pending | St::Waiting) {
                     self.slots[d].st = St::Skipped;
                     self.slots[d].queued = None;

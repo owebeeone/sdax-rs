@@ -7,19 +7,34 @@
 //! imports `Endpoint` simply *needs* the parent's `Endpoint`, and `Endpoint`'s
 //! dependents include that child node (contract § 1, `import`).
 //!
+//! **Instances grow the table.** A template's nodes exist once per instance,
+//! so [`Table::instantiate`] appends a scope and its nodes at run time. Their
+//! [`RawKey`]s are minted fresh (one plan identity per instance scope) so that
+//! every node of a run has a unique key and an `Event` can name it; the
+//! declaration key each was made from is kept in [`Node::decl`], which is what
+//! a [`BodySource`](crate::host::BodySource) is addressed by.
+//!
 //! Everything the machine derives comes from this table and from nothing
 //! else (INV-1).
 
 use super::state::EngineError;
 use crate::cx::InstanceId;
 use crate::key::RawKey;
-use crate::plan::{Attrs, Kind, NodeDecl, PlanIr, PoolDecl};
+use crate::plan::{next_plan_id, Attrs, Kind, NodeDecl, PlanIr, PoolDecl};
 use crate::policy::{Mode, Policy, Shutdown};
 use crate::view::NodePath;
+use std::sync::Arc;
 
 /// One node of the run.
 pub(super) struct Node {
+    /// This node's identity within the run. Unique: an instance's nodes are
+    /// re-keyed, so two instances of one template never share a key.
     pub key: RawKey,
+    /// The key the declaration gave it, which addresses its body.
+    pub decl: RawKey,
+    /// The instance this node belongs to, if it is not part of the static
+    /// graph.
+    pub instance: Option<InstanceId>,
     pub path: NodePath,
     /// The report-order prefix: one `(declaration index, instance)` per level.
     pub steps: Vec<(u32, Option<InstanceId>)>,
@@ -28,6 +43,12 @@ pub(super) struct Node {
     pub scope: usize,
     /// For a component: the scope its inner nodes form.
     pub inner: Option<usize>,
+    /// For a template: the plan an instance of it runs.
+    pub child: Option<Arc<PlanIr>>,
+    /// Templates this node declared it may instantiate, as declaration keys
+    /// (F1). Resolved against the scope's map, so a template declared after
+    /// the service that spawns it still resolves.
+    pub spawns: Vec<RawKey>,
     /// Flat indices of everything this node needs, imports resolved.
     pub needs: Vec<usize>,
     /// Flat indices of everything that needs or imports this node.
@@ -41,7 +62,8 @@ pub(super) struct Node {
     pub attrs: Attrs,
 }
 
-/// One scope of the run: the root plan or a component's inner plan.
+/// One scope of the run: the root plan, a component's inner plan, or one
+/// instance of a template.
 pub(super) struct Scope {
     pub name: String,
     pub policy: Policy,
@@ -53,32 +75,36 @@ pub(super) struct Scope {
     pub parent: Option<usize>,
     /// The component node (in the parent scope) this scope runs for.
     pub component: Option<usize>,
+    /// The template node and instance identity this scope runs for.
+    pub instance: Option<(usize, InstanceId)>,
     /// The node this scope exports, if it exports one. A component becomes
     /// `Ready` on its export, so an inner fault that kills the export kills the
     /// component whatever the child's fail policy.
     pub export: Option<usize>,
+    /// The key lookup an instance of a template declared *here* resolves
+    /// against. `None` on a static scope, which uses the table's own.
+    pub map: Option<Vec<(RawKey, usize)>>,
 }
 
 /// The whole run, flattened.
 pub(super) struct Table {
     pub nodes: Vec<Node>,
     pub scopes: Vec<Scope>,
+    /// The static graph's key lookup, in flatten order.
+    pub map: Vec<(RawKey, usize)>,
 }
 
-/// Every template node anywhere in the tree, by path.
-fn templates(ir: &PlanIr, prefix: &NodePath, out: &mut Vec<NodePath>) {
-    for n in &ir.nodes {
-        let path = path_of(prefix, n);
-        match n.kind {
-            Kind::Template | Kind::Input => out.push(path),
-            Kind::Component => {
-                if let Some(child) = &n.child {
-                    templates(child, &path, out);
-                }
-            }
-            _ => {}
-        }
-    }
+/// The state one flatten pass threads through the tree.
+struct Pass<'a> {
+    /// Key lookup, searched from the end.
+    map: Vec<(RawKey, usize)>,
+    /// Plans already flattened, so one child plan used twice is refused.
+    seen: Vec<(u64, NodePath)>,
+    /// `Some(id)` while flattening an instance: every scope made is that
+    /// instance's, and every key is re-minted.
+    instance: Option<InstanceId>,
+    /// The nodes this pass appended.
+    added: &'a mut Vec<usize>,
 }
 
 fn path_of(prefix: &NodePath, n: &NodeDecl) -> NodePath {
@@ -89,16 +115,19 @@ fn path_of(prefix: &NodePath, n: &NodeDecl) -> NodePath {
     }
 }
 
+fn lookup(map: &[(RawKey, usize)], k: RawKey) -> Option<usize> {
+    map.iter().rev().find(|(key, _)| *key == k).map(|(_, i)| *i)
+}
+
 impl Table {
-    /// Flatten a root plan. Refuses templates (Stage 3), a root with
+    /// Flatten a root plan. Refuses a plan that is itself a template (a
+    /// per-instance input has no value outside `cx.spawn`), a root with
     /// unresolved imports (`L-IMPORTS`), and one child plan used as two
-    /// components: the engine addresses nodes by [`RawKey`], which a plan
-    /// used twice cannot keep unique.
+    /// components: the engine addresses a *declaration* by [`RawKey`], which a
+    /// plan used twice cannot keep unique.
     pub fn build(ir: &PlanIr) -> Result<Table, EngineError> {
-        let mut tpl = Vec::new();
-        templates(ir, &NodePath::default(), &mut tpl);
-        if !tpl.is_empty() {
-            return Err(EngineError::Templates(tpl));
+        if let Some(n) = ir.nodes.iter().find(|n| n.kind == Kind::Input) {
+            return Err(EngineError::TemplateAsScope(NodePath::root(&n.name)));
         }
         let imports: Vec<NodePath> = ir
             .nodes
@@ -112,30 +141,92 @@ impl Table {
         let mut t = Table {
             nodes: Vec::new(),
             scopes: Vec::new(),
+            map: Vec::new(),
         };
-        let mut seen: Vec<(u64, NodePath)> = Vec::new();
-        let mut map: Vec<(RawKey, usize)> = Vec::new();
-        t.flatten(
-            ir,
-            None,
-            None,
-            NodePath::default(),
-            Vec::new(),
-            &mut seen,
-            &mut map,
-        )?;
-        for i in 0..t.nodes.len() {
-            for j in 0..t.nodes[i].needs.len() {
-                let need = t.nodes[i].needs[j];
-                if !t.nodes[need].dependents.contains(&i) {
-                    t.nodes[need].dependents.push(i);
-                }
-            }
-        }
+        let mut added = Vec::new();
+        let mut pass = Pass {
+            map: Vec::new(),
+            seen: Vec::new(),
+            instance: None,
+            added: &mut added,
+        };
+        t.flatten(ir, None, None, NodePath::default(), Vec::new(), &mut pass)?;
+        t.map = std::mem::take(&mut pass.map);
+        t.link(&added);
         Ok(t)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Fill in `dependents` for the nodes just added.
+    ///
+    /// A template's own instances are **not** its dependents: the template's
+    /// obligation *is* stopping them (contract § 1), so gating its start on
+    /// their end would be a cycle. An instance node that needs the per-instance
+    /// input therefore has no edge at all — the input exists from the spawn.
+    fn link(&mut self, added: &[usize]) {
+        for &i in added {
+            for j in 0..self.nodes[i].needs.len() {
+                let need = self.nodes[i].needs[j];
+                if !self.nodes[need].dependents.contains(&i) {
+                    self.nodes[need].dependents.push(i);
+                }
+            }
+        }
+    }
+
+    /// The key lookup a template declared in `scope` resolves against: the
+    /// nearest enclosing instance's, or the static graph's.
+    pub fn map_of(&self, scope: usize) -> &[(RawKey, usize)] {
+        let mut s = scope;
+        loop {
+            if let Some(m) = &self.scopes[s].map {
+                return m;
+            }
+            match self.scopes[s].parent {
+                Some(p) => s = p,
+                None => return &self.map,
+            }
+        }
+    }
+
+    /// The flat index of a template a node named, resolved in its own scope.
+    pub fn template_in(&self, scope: usize, decl: RawKey) -> Option<usize> {
+        lookup(self.map_of(scope), decl).filter(|&i| self.nodes[i].kind == Kind::Template)
+    }
+
+    /// One instance of the template at `t`: a scope of its own, its nodes
+    /// appended to the table with fresh keys, and the indices of both.
+    ///
+    /// Only the caller knows whether the instance may be created; this is the
+    /// table's half of it.
+    pub fn instantiate(&mut self, t: usize, id: InstanceId) -> Result<(usize, Vec<usize>), ()> {
+        let Some(child) = self.nodes[t].child.clone() else {
+            return Err(());
+        };
+        let parent = self.nodes[t].scope;
+        let prefix = self.nodes[t].path.clone();
+        let mut steps = self.nodes[t].steps.clone();
+        if let Some(last) = steps.last_mut() {
+            last.1 = Some(id);
+        }
+        let scope = self.scopes.len();
+        let mut added = Vec::new();
+        let mut pass = Pass {
+            map: self.map_of(parent).to_vec(),
+            seen: Vec::new(),
+            instance: Some(id),
+            added: &mut added,
+        };
+        let flattened = self.flatten(&child, Some(parent), None, prefix, steps, &mut pass);
+        let map = std::mem::take(&mut pass.map);
+        if flattened.is_err() {
+            return Err(());
+        }
+        self.scopes[scope].instance = Some((t, id));
+        self.scopes[scope].map = Some(map);
+        self.link(&added);
+        Ok((scope, added))
+    }
+
     fn flatten(
         &mut self,
         ir: &PlanIr,
@@ -143,18 +234,23 @@ impl Table {
         component: Option<usize>,
         prefix: NodePath,
         steps: Vec<(u32, Option<InstanceId>)>,
-        seen: &mut Vec<(u64, NodePath)>,
-        map: &mut Vec<(RawKey, usize)>,
+        pass: &mut Pass<'_>,
     ) -> Result<(), EngineError> {
-        if let Some((_, first)) = seen.iter().find(|(id, _)| *id == ir.id) {
+        if let Some((_, first)) = pass.seen.iter().find(|(id, _)| *id == ir.id) {
             return Err(EngineError::DuplicateComponent {
                 plan: ir.name.clone(),
                 first: first.clone(),
                 second: prefix,
             });
         }
-        seen.push((ir.id, prefix.clone()));
+        pass.seen.push((ir.id, prefix.clone()));
         let scope = self.scopes.len();
+        // An instance re-keys its nodes, so one plan identity per scope keeps
+        // every key of the run unique without touching the declaration.
+        let plan_id = match pass.instance {
+            Some(_) => next_plan_id(),
+            None => ir.id,
+        };
         self.scopes.push(Scope {
             name: ir.name.clone(),
             policy: ir.policy,
@@ -164,22 +260,28 @@ impl Table {
             pools: ir.pools.clone(),
             parent,
             component,
+            instance: None,
             export: None,
+            map: None,
         });
-        let lookup = |map: &Vec<(RawKey, usize)>, k: RawKey| -> Option<usize> {
-            map.iter().rev().find(|(key, _)| *key == k).map(|(_, i)| *i)
-        };
         // The record's step is the node's position among the nodes the plan
-        // *shows* — `PlanView` skips imports, and F4 order is the order an
-        // author can read off the view (`RecordOrder`, `RawKey`). The
-        // builder's own `key.idx` counts imports too, so it is not it.
+        // *shows* — `PlanView` skips imports and the per-instance input, and F4
+        // order is the order an author can read off the view (`RecordOrder`,
+        // `RawKey`). The builder's own `key.idx` counts them too, so it is not
+        // it.
         let mut pos: u32 = 0;
         for n in &ir.nodes {
             if n.kind == Kind::Import {
                 // The parent key this import stands for is already flat.
-                if let Some(src) = n.source.and_then(|s| lookup(map, s)) {
-                    map.push((n.key, src));
+                if let Some(src) = n.source.and_then(|s| lookup(&pass.map, s)) {
+                    pass.map.push((n.key, src));
                 }
+                continue;
+            }
+            if n.kind == Kind::Input {
+                // The per-instance input is not a node of the run: its value is
+                // in the instance's slots from the moment of the spawn, so a
+                // need on it is already satisfied and is dropped here.
                 continue;
             }
             let idx = self.nodes.len();
@@ -187,17 +289,28 @@ impl Table {
             node_steps.push((pos, None));
             pos += 1;
             let resolve = |keys: &[RawKey]| -> Vec<usize> {
-                keys.iter().filter_map(|k| lookup(map, *k)).collect()
+                keys.iter().filter_map(|k| lookup(&pass.map, *k)).collect()
             };
             let mut needs = resolve(&n.needs);
             needs.dedup();
             self.nodes.push(Node {
-                key: n.key,
+                key: RawKey {
+                    plan: plan_id,
+                    idx: n.key.idx,
+                },
+                decl: n.key,
+                instance: pass.instance,
                 path: path_of(&prefix, n),
                 steps: node_steps.clone(),
                 kind: n.kind,
                 scope,
                 inner: None,
+                child: if n.kind == Kind::Template {
+                    n.child.clone()
+                } else {
+                    None
+                },
+                spawns: n.spawns.clone(),
                 needs,
                 dependents: Vec::new(),
                 exclusive: resolve(&n.attrs.exclusive),
@@ -206,7 +319,8 @@ impl Table {
                 attrs: n.attrs.clone(),
             });
             self.scopes[scope].nodes.push(idx);
-            map.push((n.key, idx));
+            pass.added.push(idx);
+            pass.map.push((n.key, idx));
             if n.kind == Kind::Component {
                 if let Some(child) = &n.child {
                     let inner = self.scopes.len();
@@ -217,25 +331,29 @@ impl Table {
                         Some(idx),
                         path_of(&prefix, n),
                         node_steps,
-                        seen,
-                        map,
+                        pass,
                     )?;
                 }
             }
         }
         // Resolved last: an export names a node of this scope, which is flat
         // by now (and, for a component, so is its whole subtree).
-        self.scopes[scope].export = ir.export.and_then(|k| lookup(map, k));
+        self.scopes[scope].export = ir.export.and_then(|k| lookup(&pass.map, k));
         Ok(())
     }
 
-    /// The flat index behind a key.
+    /// The flat index behind a run key.
     pub fn index_of(&self, key: RawKey) -> Option<usize> {
         self.nodes.iter().position(|n| n.key == key)
     }
 
-    /// The flat index behind a path.
+    /// The flat index behind a path, in the static graph.
+    ///
+    /// Several live instances share one path, so this answers for the
+    /// declaration a path names and never for an instance's copy of it.
     pub fn index_of_path(&self, path: &str) -> Option<usize> {
-        self.nodes.iter().position(|n| n.path == *path)
+        self.nodes
+            .iter()
+            .position(|n| n.instance.is_none() && n.path == *path)
     }
 }

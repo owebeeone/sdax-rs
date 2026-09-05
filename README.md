@@ -41,7 +41,7 @@ cargo build -p sdax-tokio
 # Dev-only harness.
 cargo build -p sdax-testkit
 
-# Whole workspace (the fast loop: ~2.5 s of execution, ~11.7 s with a rebuild).
+# Whole workspace (the fast loop: ~3.8 s of execution, ~17 s with a rebuild).
 cargo test --workspace --locked --offline
 cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 cargo fmt --check
@@ -63,8 +63,9 @@ Release tags are immutable. Details in [`RELEASE.md`](RELEASE.md).
 
 ## Status
 
-**Stage 2 — the engine, running on tokio.** Version `0.1.0` is unreleased and
-nothing is frozen. Dynamic template instances are Stage 3 and are not stubbed.
+**Stage 3 — dynamic instances, end to end.** Version `0.1.0` is unreleased and
+nothing is frozen. Every kind the authoring surface offers now runs, templates
+included; `S-02` (exhaustive schedule enumeration) still did not run.
 
 **Two surfaces.** The crate root and `sdax::prelude` are the **author** API:
 what a plan is written, validated, inspected and read back against. `sdax::host`
@@ -72,12 +73,17 @@ is the **host** API: what a runtime adapter, a run driver or the engine needs an
 an author does not — `Runtime`, `TaskHandle`, `Joined`, `Clock`, `Time`,
 `Observer`, `NoObserver`, `BoxFuture`, `Scope`, `ChildControl`, `InstanceId`,
 `StopSignal`, `CxInner`, `RawKey`, `SEMANTICS`, `Bodies`, `BodySource`, `Task`,
-`bodies_of` and `host::engine::{Event, Effect, TimerId, JoinedLabel}`. **Only
-the author surface carries the stability promise**; `sdax::host` may change in a
-minor version before 1.0 — Stage 1 changed four of its signatures
+`bodies_of` and `host::engine::{Event, Effect, TimerId, JoinedLabel, SpawnTable}`.
+**Only the author surface carries the stability promise**; `sdax::host` may
+change in a minor version before 1.0 — Stage 1 changed four of its signatures
 (`Event::NodeErr` and `Event::ServeEnded` carry their fault, `Effect::CancelTimer`
-and `Effect::Reject` are new) and Stage 2 added `Observer::report`,
-`Machine::{kind_of, deadline_for, nodes}` and the `Bodies`/`BodySource` group.
+and `Effect::Reject` are new), Stage 2 added `Observer::report`,
+`Machine::{kind_of, deadline_for, nodes}` and the `Bodies`/`BodySource` group,
+and Stage 3 gave every `BodySource` method an `Option<InstanceId>` and two new
+methods, put the spawner in `Event::InstanceSpawned`, replaced
+`Event::InstanceEnded` with `Event::StopInstance`, and added `NodeState::Live`
+and `Machine::{spawn_check, spawn_table, instances, instance_nodes, origin,
+declarations}`.
 `crates/sdax/tests/surface.rs` pins the author half and witness S-01 in
 `sdax::compile_fail` pins the absence of the host half from the root.
 
@@ -140,12 +146,27 @@ Stage 2 adds the part that executes:
   with random cancellation, drops and panics — plus a Monte Carlo walk of
   generated plans on the adapter.
 
-What does not exist, and is not stubbed: `cx.spawn`, `Child::ready` and live
-template instances (**Stage 3** — `Effect::SpawnInstance` is in the vocabulary
-and the machine never emits it). Four suite-(c) rows are omitted for that reason
-and named in `dev-docs/Stage1Report.md` § 7; `S-02` (exhaustive schedule
-enumeration) still did not run.
+Stage 3 adds dynamic instances:
 
-`dev-docs/Stage0Report.md`, `dev-docs/Stage1Report.md` and
-`dev-docs/Stage2Report.md` state what was measured, what is deferred, and where
-verification stops.
+- **`cx.spawn(&template, input)`** on any body, and `Child::{ready, stop, id}`.
+  The refusal is the machine's — `ForeignTemplate`, `UndeclaredTemplate`,
+  `ScopeStopping` — published as a `SpawnTable` snapshot so a body decides from
+  its own task without reaching the machine;
+- an instance is a **scope of its own**, appended to the machine's table at run
+  time with keys of its own, admitted, settled and cleaned up as one unit. A
+  template's obligation is stopping its live instances, so **every key an
+  instance imports is released only after that instance has ended** (INV-16),
+  and a start body that awaits `Child::ready()` makes the scope's readiness
+  include its instances (INV-17), which is what makes `I-34` expressible;
+- suite (c) rows `C-30`, `C-51`, `C-64`, `C-65`, the INV-16 half of `C-14` and
+  `I-34`, green on **both** drivers from one source: 74 rows on the scripted
+  driver, 78 on the adapter;
+- an instance-aware invariant checker: every rule groups by the *copy* of a
+  declaration rather than by path, plus `INSTANCE`, `T5-INSTANCE` and
+  `INSTANCE-RELEASE` for what only templates can break;
+- a Monte Carlo walk that generates templates and instances, with fourteen new
+  coverage floors. It found five defects; 200 000 pure cases and 20 000 adapter
+  cases pass.
+
+`dev-docs/Stage0Report.md` … `dev-docs/Stage3Report.md` state what was
+measured, what is deferred, and where verification stops.

@@ -355,6 +355,7 @@ fn one_case(seed: u64) -> String {
         }
     };
     let driven = Driven::from_recorded(Recorded {
+        spawns: Vec::new(),
         report,
         view,
         steps: rec2.steps,

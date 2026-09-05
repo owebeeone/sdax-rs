@@ -16,8 +16,10 @@
 mod body;
 mod driver;
 mod running;
+mod scope;
 
 pub use running::{PlanStart, RunHandle, RunOptions, RunRecord, Running, Snapshot, WhyAt};
+pub use scope::InstanceEnded;
 
 use sdax::host::{BoxFuture, Clock, Joined, NoObserver, Observer, Runtime, TaskHandle, Time};
 use sdax::TraceEvent;

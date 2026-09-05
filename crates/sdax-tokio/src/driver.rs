@@ -8,10 +8,11 @@
 
 use crate::body::{blocking_job, join_aborted, run_body, run_serve, Msg, Tx};
 use crate::running::{Control, RunRecord};
+use crate::scope::RunScope;
 use sdax::host::engine::{Effect, Event, Machine, TimerId};
 use sdax::host::sim::SimStep;
-use sdax::host::{BodySource, Clock, CxInner, RawKey, Runtime, Task, TaskHandle, Time};
-use sdax::{FaultKind, Kind, NodePath, Outcome, Report, Trace};
+use sdax::host::{BodySource, Clock, CxInner, InstanceId, RawKey, Runtime, Task, TaskHandle, Time};
+use sdax::{FaultKind, Kind, NodePath, Outcome, Report, Trace, TraceKind};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -68,7 +69,12 @@ pub(crate) struct Driver<R: Runtime> {
     /// the start body that produced it.
     arming: Option<RawKey>,
     kinds: HashMap<RawKey, Kind>,
+    /// The declaration a run key was made from, and the instance it belongs
+    /// to: what a `BodySource` is addressed by. An instance's nodes join it
+    /// when the instance is opened.
+    origins: HashMap<RawKey, (RawKey, Option<InstanceId>)>,
     paths: Vec<(RawKey, NodePath)>,
+    scope: Arc<RunScope>,
     timers: HashMap<TimerId, R::Task>,
     trace: Trace,
     ctl: Arc<Control>,
@@ -91,8 +97,14 @@ impl<R: Runtime> Driver<R> {
         ctl: Arc<Control>,
         record: Option<Arc<Mutex<RunRecord>>>,
         done: oneshot::Sender<Finished>,
+        scope: Arc<RunScope>,
     ) -> Self {
         let kinds = machine.nodes().iter().map(|(k, _, n)| (*k, *n)).collect();
+        let origins = machine
+            .nodes()
+            .iter()
+            .map(|(k, _, _)| (*k, (*k, None)))
+            .collect();
         let paths = machine
             .nodes()
             .iter()
@@ -108,7 +120,9 @@ impl<R: Runtime> Driver<R> {
             live: HashMap::new(),
             arming: None,
             kinds,
+            origins,
             paths,
+            scope,
             timers: HashMap::new(),
             trace: Trace::default(),
             ctl,
@@ -193,7 +207,8 @@ impl<R: Runtime> Driver<R> {
         if let Some(v) = cx.take_held() {
             // INV-3: taken whatever the outcome, so a held-then-failed attempt
             // still has a value for its release to discharge.
-            self.src.store(node, v);
+            let (decl, inst) = self.origin(node);
+            self.src.store(decl, inst, v);
         }
         let _ = epoch;
         if self.kinds.get(&node) == Some(&Kind::Service) && matches!(ev, Event::NodeOk(_)) {
@@ -283,6 +298,15 @@ impl<R: Runtime> Driver<R> {
         }
         self.ctl
             .publish(&self.machine, &self.paths, self.live.len());
+        // The gate and the readiness latches are what a body reads from its
+        // own task; both are snapshots of the machine as of this step.
+        self.scope.publish(self.machine.spawn_table());
+        self.scope.resolve(&self.machine.instances());
+    }
+
+    /// The declaration key and instance behind a run key.
+    fn origin(&self, node: RawKey) -> (RawKey, Option<InstanceId>) {
+        self.origins.get(&node).copied().unwrap_or((node, None))
     }
 
     fn perform(&mut self, e: Effect) {
@@ -303,14 +327,33 @@ impl<R: Runtime> Driver<R> {
                 }
             }
             Effect::Emit(ev) => {
+                // An instance that has ended has no bodies left, so its slot
+                // tables go with it (INV-13: they were per instance).
+                if let TraceKind::InstanceEnded(id, outcome) = ev.kind {
+                    self.scope.ended(id, outcome);
+                    self.src.close_instance(id);
+                }
                 self.rt.observer().event(&ev);
                 self.trace.events.push(*ev);
             }
             Effect::End(outcome) => self.ended = Some(outcome),
             Effect::Reject(r) => self.ctl.reject(format!("{} — {}", r.reason, r.event)),
-            // Stage 3. The machine emits none today; if one ever arrives, it
-            // is refused loudly rather than quietly ignored.
-            Effect::SpawnInstance { .. } => self.ctl.reject("SpawnInstance is Stage 3".to_string()),
+            Effect::SpawnInstance {
+                template,
+                parent,
+                id,
+            } => {
+                // The slots first, with the per-instance input already in
+                // them: the machine's very next effects spawn the instance's
+                // bodies, and they read this table.
+                let input = self.scope.take_input(id);
+                self.src.open_instance(template, parent, id, input);
+                for (key, decl, path, kind) in self.machine.instance_nodes(id) {
+                    self.kinds.insert(key, kind);
+                    self.origins.insert(key, (decl, Some(id)));
+                    self.paths.push((key, path));
+                }
+            }
         }
     }
 
@@ -321,13 +364,18 @@ impl<R: Runtime> Driver<R> {
         debug_assert_ne!(self.kinds.get(&node), Some(&Kind::Component));
         self.epoch += 1;
         let epoch = self.epoch;
-        let mut cx = CxInner::new(node, self.clock.clone()).with_attempt(attempt);
+        // The scope is attached before the deadline: `with_*` rebuilds the
+        // context, and a body must reach `cx.spawn` (contract § 5).
+        let mut cx = CxInner::new(node, self.clock.clone())
+            .with_attempt(attempt)
+            .with_scope(self.scope.clone());
         if let Some(at) = self.machine.deadline_for(node) {
             cx = cx.with_deadline(at);
         }
         let watch = self.kinds.get(&node).map(|k| k.can_hold()).unwrap_or(false);
         let tx = self.tx.clone();
-        let handle = match self.src.body(node, &cx) {
+        let (decl, inst) = self.origin(node);
+        let handle = match self.src.body(decl, inst, &cx) {
             Some(Task::Async(f)) => Some(self.rt.spawn(Box::pin(run_body(
                 tx,
                 node,
@@ -370,12 +418,13 @@ impl<R: Runtime> Driver<R> {
             self.epoch += 1;
             self.epoch
         });
-        let mut cx = CxInner::new(node, self.clock.clone());
+        let mut cx = CxInner::new(node, self.clock.clone()).with_scope(self.scope.clone());
         if let Some(at) = self.machine.deadline_for(node) {
             cx = cx.with_deadline(at);
         }
         let tx = self.tx.clone();
-        let handle = match self.src.cleanup(node, &cx) {
+        let (decl, inst) = self.origin(node);
+        let handle = match self.src.cleanup(decl, inst, &cx) {
             Some(Task::Async(f)) => Some(self.rt.spawn(Box::pin(run_body(
                 tx,
                 node,

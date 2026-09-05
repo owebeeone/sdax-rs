@@ -13,9 +13,11 @@
 //! is a [`Effect::Timer`] the host sets and echoes back, so the machine is
 //! deterministic given a script and a schedule (INV-14).
 //!
-//! Stage 1 covers static plans and components. A plan that declares a
-//! template is refused by [`Machine::new`] with [`EngineError::Templates`]:
-//! instances are Stage 3, and there is no stub of them.
+//! From Stage 3 the machine also runs templates and dynamic instances: a
+//! body's `cx.spawn` reaches it as [`Event::InstanceSpawned`], the host is
+//! told to open the instance's slots by [`Effect::SpawnInstance`], and the
+//! instance's own scope is admitted, settled and cleaned up as one unit
+//! (INV-16).
 //!
 //! This module is part of [`host`](crate::host) and not of the author API: a
 //! plan is declared, validated and inspected without ever naming an `Event` or
@@ -30,11 +32,13 @@ mod admit;
 mod cleanup;
 mod exits;
 mod faults;
+mod instances;
 mod machine;
 mod settle;
 mod state;
 mod table;
 
+pub use instances::SpawnTable;
 pub use state::{EngineError, Machine, NodeState, RunState};
 
 /// Identity of one timer the host was asked to set.
@@ -84,20 +88,21 @@ pub enum Event {
     ShutdownRequested,
     /// `cancel()` was called, or `Running` was dropped.
     CancelRequested,
-    /// A body instantiated a template.
+    /// A body instantiated a template (`cx.spawn`).
     InstanceSpawned {
-        /// Which template.
+        /// The node whose body spawned it, so the template is resolved in the
+        /// scope that declared it.
+        spawner: RawKey,
+        /// The template's **declaration** key, as a `Template` handle carries
+        /// it.
         template: RawKey,
-        /// The new instance.
+        /// The identity the host minted for the new instance.
         id: InstanceId,
     },
-    /// An instance's own run ended.
-    InstanceEnded {
-        /// Which instance.
-        id: InstanceId,
-        /// How it ended.
-        outcome: Outcome,
-    },
+    /// `Child::stop()`: this instance is asked to stop. How it *ends* is the
+    /// machine's own observation ([`TraceKind::InstanceEnded`](crate::TraceKind::InstanceEnded)), never an
+    /// input (`OD-INSTANCE-EVENTS`).
+    StopInstance(InstanceId),
     /// A task the engine aborted has been joined (T5: the engine joins before
     /// treating a node as settled).
     TaskJoined {
@@ -146,10 +151,15 @@ pub enum Effect {
     /// cancel, a deadline that no longer applies). Firing it anyway is
     /// harmless: the machine ignores a timer it has forgotten.
     CancelTimer(TimerId),
-    /// Instantiate a template.
+    /// Open one instance of a template: the host makes its slot table and
+    /// puts the per-instance input in it, before any body of the instance is
+    /// spawned.
     SpawnInstance {
-        /// Which template.
+        /// The template's **declaration** key, which addresses its bodies.
         template: RawKey,
+        /// The instance the spawning body itself belongs to, if any: a nested
+        /// template's bodies live in *that* instance's tables.
+        parent: Option<InstanceId>,
         /// The instance to create.
         id: InstanceId,
     },

@@ -12,15 +12,24 @@ use crate::sim::Schedule;
 use crate::view::{NodePath, Reason, Why};
 
 impl Machine {
-    /// A machine for one run of a static plan (resources, steps, services,
-    /// effects, joins and components).
+    /// A machine for one run of a plan: resources, steps, services, effects,
+    /// joins, components and templates.
     ///
-    /// Refuses a plan with templates — dynamic instances are Stage 3, and a
-    /// silent no-op would be a claim this crate cannot make — a root plan
-    /// with unresolved imports (`L-IMPORTS`), and one child plan used as two
-    /// components.
+    /// Refuses a plan that is itself a template (its per-instance input has a
+    /// value only when `cx.spawn` supplies one), a root plan with unresolved
+    /// imports (`L-IMPORTS`), and one child plan used as two components.
     pub fn new<Out>(plan: &Plan<Out>) -> Result<Machine, super::EngineError> {
         Table::build(plan.ir()).map(Machine::from_table)
+    }
+
+    /// Every node the declaration tree holds, a template's inner nodes
+    /// included, as `(declaration key, path, kind)`.
+    ///
+    /// [`nodes`](Self::nodes) answers for the *run*, which has a template's
+    /// nodes only once an instance exists. A harness that supplies bodies
+    /// needs them before that.
+    pub fn declarations<Out, In>(plan: &Plan<Out, In>) -> Vec<(RawKey, NodePath, Kind)> {
+        Table::declarations(plan.ir())
     }
 
     /// Prefer these nodes when several become eligible in one step (T1's FIFO
@@ -32,6 +41,9 @@ impl Machine {
                     self.rank[i] = rank as u32;
                 }
             }
+            // Kept so an instance's nodes, which appear at run time, are
+            // ranked by the same preference (INV-14).
+            self.schedule = names.clone();
         }
         self
     }
@@ -92,8 +104,25 @@ impl Machine {
             Event::TaskJoined { node, joined } => {
                 self.body_node(node).and_then(|n| self.on_joined(n, joined))
             }
-            Event::InstanceSpawned { .. } | Event::InstanceEnded { .. } => {
-                Err("template instances are Stage 3")
+            Event::InstanceSpawned {
+                spawner,
+                template,
+                id,
+            } => {
+                if self.scopes[0].st == RunState::Ended {
+                    Err("the run has ended")
+                } else if self.scopes[0].st == RunState::Planned {
+                    Err("the run has not begun")
+                } else {
+                    self.on_instance_spawned(spawner, template, id)
+                }
+            }
+            Event::StopInstance(id) => {
+                if self.scopes[0].st == RunState::Ended {
+                    Err("the run has ended")
+                } else {
+                    self.on_stop_instance(id)
+                }
             }
         };
         if let Err(reason) = result {
@@ -127,7 +156,7 @@ impl Machine {
     fn body_node(&self, key: RawKey) -> Result<usize, &'static str> {
         let n = self.node(key)?;
         match self.t.nodes[n].kind {
-            Kind::Component | Kind::Join => Err("this kind has no body"),
+            Kind::Component | Kind::Join | Kind::Template => Err("this kind has no body"),
             _ => Ok(n),
         }
     }
@@ -338,6 +367,8 @@ impl Machine {
             },
             St::RetryRelease => NodeState::Releasing,
             St::Ready => NodeState::Ready,
+            St::Live => NodeState::Live,
+            St::StoppingInstances => NodeState::Stopping,
             St::Finished => NodeState::Finished,
             St::Failed => NodeState::Failed { held: s.held },
             St::Interrupted => NodeState::Interrupted {

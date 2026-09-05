@@ -7,6 +7,7 @@
 mod builder;
 mod corpus;
 mod exec;
+mod instances;
 mod keys;
 mod machine;
 mod planner_validate;

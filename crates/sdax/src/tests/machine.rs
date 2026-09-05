@@ -421,10 +421,30 @@ fn f10_a_body_outcome_for_a_component_or_a_join_is_refused() {
     assert!(matches!(fx.as_slice(), [Effect::Reject(_)]), "{fx:?}");
 }
 
+/// The Stage 1 refusal is gone: `I-30`'s plan runs, and the machine's table
+/// carries the template node itself. Its *instances* are appended when a body
+/// spawns one (`tests::instances`).
 #[test]
-fn a_plan_with_a_template_is_refused_naming_stage_3() {
+fn a_plan_with_a_template_runs_and_the_template_is_a_node() {
     let plan = super::corpus::i30().expect("valid");
-    let err = Machine::new(&plan).expect_err("templates are Stage 3");
-    let text = err.to_string();
-    assert!(text.contains("Stage 3") && text.contains("Link"), "{text}");
+    let m = Machine::new(&plan).expect("templates run from Stage 3");
+    assert_eq!(m.kind_of(key(&m, "Link")), Some(crate::Kind::Template));
+    assert!(
+        m.instances().is_empty(),
+        "no instance exists before a spawn"
+    );
+}
+
+/// A body event for a template is refused like one for a component or a join:
+/// a template has no body at all (`Stage1-TDD-Log` row 13, extended).
+#[test]
+fn a_body_event_for_a_template_is_refused() {
+    let plan = super::corpus::i30().expect("valid");
+    let mut m = Machine::new(&plan).expect("runs");
+    m.begin();
+    let k = key(&m, "Link");
+    for ev in [Event::Started(k), Event::NodeOk(k), Event::Held(k)] {
+        let fx = m.step(ev);
+        assert!(matches!(fx.as_slice(), [Effect::Reject(_)]), "{fx:?}");
+    }
 }

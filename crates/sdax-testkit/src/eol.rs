@@ -6,6 +6,7 @@
 //! `assert_eq!(t.ready("Db"), Some(1.0))`. Order questions use positions in
 //! the trace (`pos`), because two events at one tick still have an order.
 
+use sdax::host::InstanceId;
 use sdax::{Outcome, Phase, Trace, TraceEvent, TraceKind};
 
 /// The trace, queried.
@@ -89,6 +90,71 @@ impl<'a> Eol<'a> {
             .iter()
             .enumerate()
             .filter(move |(_, e)| e.node.as_ref().map(|p| *p == *node.as_str()) == Some(true))
+    }
+
+    /// The instance a trace event belongs to, from its record order: the
+    /// first instance named along the path from the root.
+    fn instance_of(e: &TraceEvent) -> Option<InstanceId> {
+        e.order
+            .as_ref()
+            .and_then(|o| o.steps.iter().find_map(|(_, i)| *i))
+    }
+
+    /// Events of `node` **in one instance**. Several live instances share a
+    /// path, so a query that does not say which one merges them.
+    fn events_of(
+        &self,
+        node: &str,
+        inst: InstanceId,
+    ) -> impl Iterator<Item = (usize, &'a TraceEvent)> {
+        self.events(node)
+            .filter(move |(_, e)| Self::instance_of(e) == Some(inst))
+    }
+
+    /// Position of the first matching event of one instance's copy of `node`.
+    pub fn pos_of(
+        &self,
+        want: fn(&TraceKind) -> bool,
+        node: &str,
+        inst: InstanceId,
+    ) -> Option<usize> {
+        self.events_of(node, inst)
+            .find(|(_, e)| want(&e.kind))
+            .map(|(i, _)| i)
+    }
+
+    /// Time of the first matching event of one instance's copy of `node`.
+    pub fn at_of(&self, want: fn(&TraceKind) -> bool, node: &str, inst: InstanceId) -> Option<f64> {
+        self.events_of(node, inst)
+            .find(|(_, e)| want(&e.kind))
+            .map(|(_, e)| secs_of(e))
+    }
+
+    /// The instances a template created, in the order they were spawned.
+    pub fn spawned(&self, template: &str) -> Vec<InstanceId> {
+        self.events(template)
+            .filter_map(|(_, e)| match e.kind {
+                TraceKind::InstanceSpawned(id) => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The instances of a template that ended, and how.
+    pub fn instance_ends(&self, template: &str) -> Vec<(InstanceId, Outcome)> {
+        self.events(template)
+            .filter_map(|(_, e)| match e.kind {
+                TraceKind::InstanceEnded(id, o) => Some((id, o)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// When one instance of a template ended.
+    pub fn instance_end_at(&self, template: &str, inst: InstanceId) -> Option<f64> {
+        self.events(template)
+            .find(|(_, e)| matches!(e.kind, TraceKind::InstanceEnded(i, _) if i == inst))
+            .map(|(_, e)| secs_of(e))
     }
 
     /// Position in the trace of the first event of `node` matching `want`.

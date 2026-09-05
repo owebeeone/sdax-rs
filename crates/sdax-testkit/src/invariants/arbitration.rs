@@ -8,8 +8,13 @@
 //! machine's own `why`, so they measured that the machine *said* it waited, not
 //! that the arbitration was right.
 //!
-//! Everything here is computed from the [`PlanView`] and the [`Trace`] alone.
+//! Everything here is computed from the [`PlanView`] and the [`Trace`] alone,
+//! and everything is per **copy** ([`Occ`]): two instances of one template
+//! contending for a key they both import is one pair to check, while two
+//! instances each holding *their own* copy of a lock is no pair at all. A rule
+//! that compared paths would get both backwards.
 
+use super::occ::{is_static, label, occ_of, occ_of_scope, occ_of_target, occurrences, Occ};
 use super::{violation, Violation};
 use crate::WhyAt;
 use sdax::{Kind, NodePath, PlanView, Trace, TraceKind};
@@ -31,10 +36,32 @@ fn ends_grant(k: &TraceKind) -> bool {
 /// The resources a node names, by the paths the view resolved them to. A lock
 /// on an imported resource names the parent's node, so two scopes contending
 /// for one resource are comparable.
-fn locks(n: &sdax::NodeView, attr: &str) -> Vec<String> {
+fn locks(view: &PlanView, n: &sdax::NodeView, attr: &str) -> Vec<NodePath> {
     n.attr(attr)
-        .map(|s| s.split(", ").map(|x| x.to_string()).collect())
+        .map(|s| s.split(", ").map(|x| path_of(view, x)).collect())
         .unwrap_or_default()
+}
+
+/// A rendered path, back as the [`NodePath`] it renders.
+///
+/// Looked up among the plan's own nodes rather than split on `/`: a node's
+/// *name* may contain a slash, so `"A/B/C"` can be two segments or three and
+/// only the plan knows which. Splitting made two instances' own copies of one
+/// resource look like one shared lock and `MUTEX` fired on a run that was
+/// perfectly arbitrated (`monte_carlo_big` seed 12339652235566683353).
+fn path_of(view: &PlanView, s: &str) -> NodePath {
+    if let Some(n) = view.nodes.iter().find(|n| n.path.to_string() == s) {
+        return n.path.clone();
+    }
+    let mut segs = s.split('/');
+    let mut p = match segs.next() {
+        Some(first) => NodePath::root(first),
+        None => NodePath::default(),
+    };
+    for s in segs {
+        p = p.child(s);
+    }
+    p
 }
 
 /// The scope a node lives in: its path without the last segment. The root
@@ -48,13 +75,14 @@ fn scope_of(p: &NodePath) -> NodePath {
     out
 }
 
-/// `[start, end)` trace-index intervals a node held a grant, one per attempt.
-/// A service keeps its grant past `Ready` (contract § 1, T1), until its stop.
-fn grant_spans(trace: &Trace, path: &NodePath, service: bool) -> Vec<(usize, usize)> {
+/// `[start, end)` trace-index intervals one **copy** of a node held a grant,
+/// one per attempt. A service keeps its grant past `Ready` (contract § 1, T1),
+/// until its stop.
+fn grant_spans(trace: &Trace, path: &NodePath, occ: &Occ, service: bool) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut open: Option<usize> = None;
     for (i, e) in trace.events.iter().enumerate() {
-        if e.node.as_ref() != Some(path) {
+        if e.node.as_ref() != Some(path) || occ_of(e) != *occ {
             continue;
         }
         match &e.kind {
@@ -98,25 +126,56 @@ pub fn check_arbitration(trace: &Trace, view: &PlanView) -> Vec<Violation> {
             .iter()
             .any(|n| n.path == *p && n.kind == Kind::Service)
     };
-
-    // MUTEX: every pair of nodes naming one resource, in any scope — the view
-    // resolves an imported lock to the parent's path, so a child node and a
-    // parent node contending for one resource are one pair.
-    for (i, a) in view.nodes.iter().enumerate() {
-        let (ax, ash) = (locks(a, "exclusive"), locks(a, "shared"));
-        if ax.is_empty() && ash.is_empty() {
+    // One entry per live copy that names a lock: the copy, and the *resolved*
+    // copy of each resource it names, exclusively or shared.
+    struct User {
+        path: NodePath,
+        occ: Occ,
+        exclusive: Vec<(NodePath, Occ)>,
+        shared: Vec<(NodePath, Occ)>,
+    }
+    let mut users: Vec<User> = Vec::new();
+    for (path, occ) in occurrences(trace, view) {
+        let Some(n) = view.nodes.iter().find(|n| n.path == path) else {
+            continue;
+        };
+        let resolve = |rs: Vec<NodePath>| -> Vec<(NodePath, Occ)> {
+            rs.into_iter()
+                .map(|r| {
+                    let o = occ_of_target(&path, &occ, &r);
+                    (r, o)
+                })
+                .collect()
+        };
+        let exclusive = resolve(locks(view, n, "exclusive"));
+        let shared = resolve(locks(view, n, "shared"));
+        if exclusive.is_empty() && shared.is_empty() {
             continue;
         }
-        for b in view.nodes.iter().skip(i + 1) {
-            let (bx, bsh) = (locks(b, "exclusive"), locks(b, "shared"));
-            // shared/shared is not a conflict; every other pairing is.
-            let conflict = ax.iter().any(|r| bx.contains(r) || bsh.contains(r))
-                || ash.iter().any(|r| bx.contains(r));
+        users.push(User {
+            path,
+            occ,
+            exclusive,
+            shared,
+        });
+    }
+
+    // MUTEX: every pair of copies naming one copy of a resource. Two instances
+    // of one template are a pair when the resource is one they both import,
+    // and are not a pair when each holds its own.
+    for i in 0..users.len() {
+        for j in i + 1..users.len() {
+            let (a, b) = (&users[i], &users[j]);
+            let conflict = a
+                .exclusive
+                .iter()
+                .any(|r| b.exclusive.contains(r) || b.shared.contains(r))
+                || a.shared.iter().any(|r| b.exclusive.contains(r));
             if !conflict {
                 continue;
             }
-            let sa = grant_spans(trace, &a.path, is_service(&a.path));
-            let sb = grant_spans(trace, &b.path, is_service(&b.path));
+            let sa = grant_spans(trace, &a.path, &a.occ, is_service(&a.path));
+            let sb = grant_spans(trace, &b.path, &b.occ, is_service(&b.path));
             for x in &sa {
                 for y in &sb {
                     if overlaps(*x, *y) {
@@ -124,7 +183,10 @@ pub fn check_arbitration(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                             "MUTEX",
                             format!(
                                 "{} and {} hold the same resource at once ({:?} and {:?})",
-                                a.path, b.path, x, y
+                                label(&a.path, &a.occ),
+                                label(&b.path, &b.occ),
+                                x,
+                                y
                             ),
                         ));
                     }
@@ -133,32 +195,48 @@ pub fn check_arbitration(trace: &Trace, view: &PlanView) -> Vec<Violation> {
         }
     }
 
-    // POOL: every pool of every scope, its own users only.
+    // POOL: every pool of every *copy* of every scope, its own users only. A
+    // pool declared in a template's plan is one pool per instance.
     for pool in &view.pools {
-        let mut spans: Vec<(usize, usize, &NodePath)> = Vec::new();
+        let depth = pool.scope.segments().len();
+        let mut spans: Vec<(usize, usize, String, Occ)> = Vec::new();
         for u in &pool.users {
-            for (s, e) in grant_spans(trace, u, is_service(u)) {
-                spans.push((s, e, u));
+            for (path, occ) in occurrences(trace, view) {
+                if path != *u {
+                    continue;
+                }
+                let key = occ_of_scope(&occ, depth);
+                for (s, e) in grant_spans(trace, &path, &occ, is_service(&path)) {
+                    spans.push((s, e, label(&path, &occ), key.clone()));
+                }
             }
         }
-        for at in 0..trace.events.len() {
-            let inside: Vec<&NodePath> = spans
-                .iter()
-                .filter(|(s, e, _)| *s <= at && at < *e)
-                .map(|(_, _, u)| *u)
-                .collect();
-            if inside.len() > pool.limit {
-                out.push(violation(
-                    "POOL",
-                    format!(
-                        "pool {} (limit {}) holds {} at trace index {at}: {:?}",
-                        pool.name,
-                        pool.limit,
-                        inside.len(),
-                        inside.iter().map(|p| p.to_string()).collect::<Vec<_>>()
-                    ),
-                ));
-                break;
+        let mut keys: Vec<Occ> = Vec::new();
+        for (_, _, _, k) in &spans {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
+        for k in keys {
+            for at in 0..trace.events.len() {
+                let inside: Vec<&str> = spans
+                    .iter()
+                    .filter(|(s, e, _, key)| *key == k && *s <= at && at < *e)
+                    .map(|(_, _, u, _)| u.as_str())
+                    .collect();
+                if inside.len() > pool.limit {
+                    out.push(violation(
+                        "POOL",
+                        format!(
+                            "pool {} (limit {}) holds {} at trace index {at}: {:?}",
+                            pool.name,
+                            pool.limit,
+                            inside.len(),
+                            inside
+                        ),
+                    ));
+                    break;
+                }
             }
         }
     }
@@ -175,13 +253,15 @@ pub fn check_arbitration(trace: &Trace, view: &PlanView) -> Vec<Violation> {
 ///
 /// `T5-INNER` — nothing starts inside a component after that component's own
 /// attempt ended. `trace.rs` checks T5 against the **root**'s `Settling` only,
-/// so an inner scope that settled for a reason of its own was unchecked.
+/// so an inner scope that settled for a reason of its own was unchecked. The
+/// instance form of the same rule is `T5-INSTANCE`, in `containment.rs`.
 pub fn check_scopes(trace: &Trace, view: &PlanView) -> Vec<Violation> {
     let mut out = Vec::new();
     let evs = &trace.events;
-    let ended_badly = |p: &NodePath| {
+    let ended_badly = |p: &NodePath, o: &Occ| {
         evs.iter().any(|e| {
             e.node.as_ref() == Some(p)
+                && occ_of(e) == *o
                 && matches!(
                     e.kind,
                     TraceKind::Fail(_, _)
@@ -194,13 +274,19 @@ pub fn check_scopes(trace: &Trace, view: &PlanView) -> Vec<Violation> {
     };
     for (i, e) in evs.iter().enumerate() {
         let Some(path) = &e.node else { continue };
+        let occ = occ_of(e);
         match &e.kind {
             TraceKind::Skipped { because } => {
                 if let Some(b) = because {
-                    if !ended_badly(b) {
+                    let bocc = occ_of_target(path, &occ, b);
+                    if !ended_badly(b, &bocc) {
                         out.push(violation(
                             "SKIPPED",
-                            format!("{path} was skipped because of {b}, which did not end badly"),
+                            format!(
+                                "{} was skipped because of {}, which did not end badly",
+                                label(path, &occ),
+                                label(b, &bocc)
+                            ),
                         ));
                     }
                 }
@@ -208,17 +294,20 @@ pub fn check_scopes(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 // earlier attempt failed and is waiting for its next may be
                 // skipped — the trace numbers both attempts the same, so the
                 // check is "the last `Start` before the skip already ended".
-                let last_start = evs[..i]
-                    .iter()
-                    .rposition(|x| x.node.as_ref() == Some(path) && is_start(&x.kind));
+                let last_start = evs[..i].iter().rposition(|x| {
+                    x.node.as_ref() == Some(path) && occ_of(x) == occ && is_start(&x.kind)
+                });
                 if let Some(sp) = last_start {
-                    let ended = evs[sp + 1..i]
-                        .iter()
-                        .any(|x| x.node.as_ref() == Some(path) && ends_grant(&x.kind));
+                    let ended = evs[sp + 1..i].iter().any(|x| {
+                        x.node.as_ref() == Some(path) && occ_of(x) == occ && ends_grant(&x.kind)
+                    });
                     if !ended {
                         out.push(violation(
                             "SKIPPED",
-                            format!("{path} was skipped with attempt #{sp} still in flight"),
+                            format!(
+                                "{} was skipped with attempt #{sp} still in flight",
+                                label(path, &occ)
+                            ),
                         ));
                     }
                 }
@@ -231,18 +320,21 @@ pub fn check_scopes(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     continue;
                 }
                 let requested = evs[..i].iter().any(|x| {
-                    x.node.as_ref() == Some(path) && matches!(x.kind, TraceKind::StopRequested)
+                    x.node.as_ref() == Some(path)
+                        && occ_of(x) == occ
+                        && matches!(x.kind, TraceKind::StopRequested)
                 });
                 if requested {
                     continue;
                 }
                 // The scope it ends is its own, and the trace says so
                 // differently at each level. The root emits `Settling`. An
-                // inner scope emits none, and its release cannot open until
-                // INV-5 lets it, so the observable consequence there is T5:
-                // nothing of that scope starts afterwards.
+                // inner scope — a component's or an instance's — emits none,
+                // and its release cannot open until INV-5 lets it, so the
+                // observable consequence there is T5: nothing of that scope
+                // starts afterwards.
                 let scope = scope_of(path);
-                if scope.segments().is_empty() {
+                if scope.segments().is_empty() && is_static(&occ) {
                     let settled = evs
                         .iter()
                         .any(|x| matches!(x.kind, TraceKind::Settling) && x.at <= e.at);
@@ -253,15 +345,20 @@ pub fn check_scopes(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                         ));
                     }
                 } else {
-                    let prefix = format!("{scope}/");
                     for (j, x) in evs.iter().enumerate().skip(i + 1) {
                         let Some(q) = &x.node else { continue };
-                        let text = q.to_string();
-                        if is_start(&x.kind) && text.starts_with(&prefix) && scope_of(q) == scope {
+                        let qocc = occ_of(x);
+                        if is_start(&x.kind)
+                            && scope_of(q) == scope
+                            && occ_of_scope(&qocc, scope.segments().len())
+                                == occ_of_scope(&occ, scope.segments().len())
+                        {
                             out.push(violation(
                                 "TERMINAL",
                                 format!(
-                                    "{q} started at #{j}, after terminal service {path} ended its scope"
+                                    "{} started at #{j}, after terminal service {} ended its scope",
+                                    label(q, &qocc),
+                                    label(path, &occ)
                                 ),
                             ));
                         }
@@ -272,10 +369,17 @@ pub fn check_scopes(trace: &Trace, view: &PlanView) -> Vec<Violation> {
         }
     }
 
-    // T5-INNER.
-    for n in view.nodes.iter().filter(|n| n.kind == Kind::Component) {
+    // T5-INNER, per copy of the component.
+    for (path, occ) in occurrences(trace, view) {
+        let Some(n) = view.nodes.iter().find(|n| n.path == path) else {
+            continue;
+        };
+        if n.kind != Kind::Component {
+            continue;
+        }
         let Some(end) = evs.iter().position(|e| {
-            e.node.as_ref() == Some(&n.path)
+            e.node.as_ref() == Some(&path)
+                && occ_of(e) == occ
                 && matches!(
                     e.kind,
                     TraceKind::Fail(_, _)
@@ -286,14 +390,21 @@ pub fn check_scopes(trace: &Trace, view: &PlanView) -> Vec<Violation> {
         }) else {
             continue;
         };
+        let depth = path.segments().len();
         for (i, e) in evs.iter().enumerate().skip(end + 1) {
             let Some(p) = &e.node else { continue };
-            if is_start(&e.kind) && p.to_string().starts_with(&format!("{}/", n.path)) {
+            let po = occ_of(e);
+            if is_start(&e.kind)
+                && p.segments().len() > depth
+                && p.segments().starts_with(path.segments())
+                && occ_of_scope(&po, depth) == occ_of_scope(&occ, depth)
+            {
                 out.push(violation(
                     "T5-INNER",
                     format!(
-                        "{p} started at #{i}, after component {}'s attempt ended at #{end}",
-                        n.path
+                        "{} started at #{i}, after component {} ended at #{end}",
+                        label(p, &po),
+                        label(&path, &occ)
                     ),
                 ));
             }
