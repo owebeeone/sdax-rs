@@ -1,0 +1,284 @@
+//! Queries over a [`Trace`] in the observation vocabulary of the canonical
+//! tests (EOL v1, `CanonicalTests.md` § 0): `start(N)`, `ready(N)`,
+//! `cleanup(N)` as an interval, `before`, `never`, `max-concurrent`.
+//!
+//! Times are seconds on the virtual clock, as `f64`, so a test reads
+//! `assert_eq!(t.ready("Db"), Some(1.0))`. Order questions use positions in
+//! the trace (`pos`), because two events at one tick still have an order.
+
+use sdax::{Outcome, Phase, Trace, TraceEvent, TraceKind};
+
+/// The trace, queried.
+#[derive(Clone, Copy)]
+pub struct Eol<'a>(pub &'a Trace);
+
+/// Seconds on the virtual clock.
+pub fn secs_of(e: &TraceEvent) -> f64 {
+    e.at.as_nanos() as f64 / 1e9
+}
+
+/// `start(N.*)`.
+pub fn is_start(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Start(_))
+}
+/// `held(N)`.
+pub fn is_held(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Held)
+}
+/// `ok(N.prepare)` / `ready(N)`.
+pub fn is_ready(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Ready)
+}
+/// `fail(N.*)` of a body (not a cleanup).
+pub fn is_fail(k: &TraceKind) -> bool {
+    matches!(
+        k,
+        TraceKind::Fail(Phase::Prepare | Phase::Run | Phase::Serve, _)
+    )
+}
+/// `cancelled(N.*)`.
+pub fn is_interrupted(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Interrupted { .. })
+}
+/// The start of `cleanup(N)`: a release, a compensation or a stop request.
+pub fn is_cleanup_start(k: &TraceKind) -> bool {
+    matches!(
+        k,
+        TraceKind::ReleaseStart | TraceKind::CompensateStart | TraceKind::StopRequested
+    )
+}
+/// The end of `cleanup(N)`, however it ended.
+pub fn is_cleanup_end(k: &TraceKind) -> bool {
+    matches!(
+        k,
+        TraceKind::ReleaseOk
+            | TraceKind::ReleaseFail(_)
+            | TraceKind::CompensateOk
+            | TraceKind::CompensateFail(_)
+            | TraceKind::Stopped
+            | TraceKind::Fail(Phase::Stop, _)
+            | TraceKind::Abandoned
+    )
+}
+/// `stop(N)` requested.
+pub fn is_stop_requested(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::StopRequested)
+}
+/// The serve future returned `Ok`.
+pub fn is_stopped(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Stopped)
+}
+/// `abandon(N)`.
+pub fn is_abandoned(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Abandoned)
+}
+/// The node was reported ambiguous.
+pub fn is_ambiguous(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Ambiguous)
+}
+/// The node was skipped.
+pub fn is_skipped(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Skipped { .. })
+}
+
+impl<'a> Eol<'a> {
+    fn events(&self, node: &str) -> impl Iterator<Item = (usize, &'a TraceEvent)> {
+        let node = node.to_string();
+        self.0
+            .events
+            .iter()
+            .enumerate()
+            .filter(move |(_, e)| e.node.as_ref().map(|p| *p == *node.as_str()) == Some(true))
+    }
+
+    /// Position in the trace of the first event of `node` matching `want`.
+    /// `None` sorts after every `Some`, so `a < b` reads "a happens, and
+    /// before b" only when both happened; check presence separately.
+    pub fn pos(&self, want: fn(&TraceKind) -> bool, node: &str) -> Option<usize> {
+        self.events(node)
+            .find(|(_, e)| want(&e.kind))
+            .map(|(i, _)| i)
+    }
+
+    /// Position of the last matching event.
+    pub fn last_pos(&self, want: fn(&TraceKind) -> bool, node: &str) -> Option<usize> {
+        self.events(node)
+            .filter(|(_, e)| want(&e.kind))
+            .last()
+            .map(|(i, _)| i)
+    }
+
+    /// Time of the first matching event.
+    pub fn at(&self, want: fn(&TraceKind) -> bool, node: &str) -> Option<f64> {
+        self.events(node)
+            .find(|(_, e)| want(&e.kind))
+            .map(|(_, e)| secs_of(e))
+    }
+
+    /// Time of the last matching event.
+    pub fn last_at(&self, want: fn(&TraceKind) -> bool, node: &str) -> Option<f64> {
+        self.events(node)
+            .filter(|(_, e)| want(&e.kind))
+            .last()
+            .map(|(_, e)| secs_of(e))
+    }
+
+    /// How many events of `node` match.
+    pub fn count(&self, want: fn(&TraceKind) -> bool, node: &str) -> usize {
+        self.events(node).filter(|(_, e)| want(&e.kind)).count()
+    }
+
+    /// `start(N)` (first attempt).
+    pub fn start(&self, node: &str) -> Option<f64> {
+        self.at(is_start, node)
+    }
+    /// The start of attempt `k`.
+    pub fn start_attempt(&self, node: &str, k: u32) -> Option<f64> {
+        self.events(node)
+            .find(|(_, e)| is_start(&e.kind) && e.order.as_ref().map(|o| o.attempt) == Some(k))
+            .map(|(_, e)| secs_of(e))
+    }
+    /// How many attempts started.
+    pub fn attempts(&self, node: &str) -> u32 {
+        self.events(node)
+            .filter(|(_, e)| is_start(&e.kind))
+            .filter_map(|(_, e)| e.order.as_ref().map(|o| o.attempt))
+            .max()
+            .unwrap_or(0)
+    }
+    /// `held(N)`.
+    pub fn held(&self, node: &str) -> Option<f64> {
+        self.at(is_held, node)
+    }
+    /// `ok(N.prepare)` / `ready(N)`.
+    pub fn ready(&self, node: &str) -> Option<f64> {
+        self.at(is_ready, node)
+    }
+    /// The first body failure.
+    pub fn fail(&self, node: &str) -> Option<f64> {
+        self.at(is_fail, node)
+    }
+    /// `cancelled(N)`, with its `held` flag.
+    pub fn interrupted(&self, node: &str) -> Option<bool> {
+        self.events(node).find_map(|(_, e)| match e.kind {
+            TraceKind::Interrupted { held } => Some(held),
+            _ => None,
+        })
+    }
+    /// Whether the node was reported ambiguous.
+    pub fn ambiguous(&self, node: &str) -> bool {
+        self.pos(is_ambiguous, node).is_some()
+    }
+    /// `Skipped{because}`.
+    pub fn skipped_because(&self, node: &str) -> Option<String> {
+        self.events(node).find_map(|(_, e)| match &e.kind {
+            TraceKind::Skipped { because } => Some(because.to_string()),
+            _ => None,
+        })
+    }
+    /// The start of `cleanup(N)`.
+    pub fn cleanup_start(&self, node: &str) -> Option<f64> {
+        self.at(is_cleanup_start, node)
+    }
+    /// The end of `cleanup(N)` (the last, when a retry released earlier).
+    pub fn cleanup_end(&self, node: &str) -> Option<f64> {
+        self.last_at(is_cleanup_end, node)
+    }
+    /// `stop(N)` requested.
+    pub fn stop_requested(&self, node: &str) -> Option<f64> {
+        self.at(is_stop_requested, node)
+    }
+    /// A `Stopped` strictly before `t` (a service that finished by itself).
+    pub fn stopped_before(&self, t: f64, node: &str) -> Option<f64> {
+        self.events(node)
+            .filter(|(_, e)| is_stopped(&e.kind))
+            .map(|(_, e)| secs_of(e))
+            .find(|&s| s < t)
+    }
+    /// `abandon(N)`.
+    pub fn abandoned(&self, node: &str) -> Option<f64> {
+        self.at(is_abandoned, node)
+    }
+    /// `end(run)`.
+    pub fn end(&self) -> Option<(f64, Outcome)> {
+        self.0.events.iter().find_map(|e| match e.kind {
+            TraceKind::End(o) => Some((secs_of(e), o)),
+            _ => None,
+        })
+    }
+    /// When the run stopped admitting.
+    pub fn settling(&self) -> Option<f64> {
+        self.0
+            .events
+            .iter()
+            .find(|e| matches!(e.kind, TraceKind::Settling))
+            .map(secs_of)
+    }
+    /// Whether a run-level event of this kind exists.
+    pub fn has_run_event(&self, want: fn(&TraceKind) -> bool) -> bool {
+        self.0
+            .events
+            .iter()
+            .any(|e| e.node.is_none() && want(&e.kind))
+    }
+
+    /// The body intervals `[start, end)` of a node, per attempt.
+    fn intervals(&self, node: &str) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut open: Option<usize> = None;
+        for (i, e) in self.events(node) {
+            if is_start(&e.kind) {
+                open = Some(i);
+            } else if open.is_some()
+                && (is_ready(&e.kind)
+                    || is_fail(&e.kind)
+                    || is_interrupted(&e.kind)
+                    || is_ambiguous(&e.kind)
+                    || is_abandoned(&e.kind))
+            {
+                out.push((open.take().expect("open"), i));
+            }
+        }
+        if let Some(s) = open {
+            out.push((s, usize::MAX));
+        }
+        out
+    }
+
+    /// `max-concurrent({N…})`: the most bodies of these nodes in flight at
+    /// once, by trace position.
+    pub fn max_concurrent(&self, nodes: &[&str]) -> usize {
+        let mut best = 0;
+        let all: Vec<(usize, usize)> = nodes.iter().flat_map(|n| self.intervals(n)).collect();
+        for &(s, _) in &all {
+            let live = all.iter().filter(|&&(a, b)| a <= s && s < b).count();
+            best = best.max(live);
+        }
+        best
+    }
+
+    /// How many body intervals of `a` overlap a body interval of `b`.
+    pub fn overlap_count(&self, a: &[&str], b: &[&str]) -> usize {
+        let ia: Vec<(usize, usize)> = a.iter().flat_map(|n| self.intervals(n)).collect();
+        let ib: Vec<(usize, usize)> = b.iter().flat_map(|n| self.intervals(n)).collect();
+        ia.iter()
+            .filter(|&&(s1, e1)| ib.iter().any(|&(s2, e2)| s1 < e2 && s2 < e1))
+            .count()
+    }
+
+    /// The trace, one line per event, for a failure message.
+    pub fn render(&self) -> String {
+        let mut s = String::new();
+        for (i, e) in self.0.events.iter().enumerate() {
+            let node = e.node.as_ref().map(|p| p.to_string()).unwrap_or_default();
+            let attempt = e.order.as_ref().map(|o| o.attempt).unwrap_or(0);
+            s.push_str(&format!(
+                "{i:3}  t={:<6} {:<24} #{attempt} {:?}\n",
+                secs_of(e),
+                node,
+                e.kind
+            ));
+        }
+        s
+    }
+}

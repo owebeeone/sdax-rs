@@ -7,18 +7,20 @@ Base: `sdax-v1/B/Proposal.md` (Designer B), adopted by
 `sdax-v1/reviews/Comparison.md` § 1, with the adoptions and fixes in § 12 below.
 Where this document and the proposal disagree, this document governs.
 
-**Stage 0 scope.** This document states the whole contract. The crate today
-implements the authoring surface, the validator, inspection, the seam and the
-host contracts. It has no engine: no `Machine`, no `Plan::start`, no `Running`,
-and no stub of them. Rows marked *(Stage 1)* or *(Stage 2)* are specified and
-not implemented, and the crate says so where they are named.
+**Implementation scope.** This document states the whole contract. The crate
+today implements the authoring surface, the validator, inspection, the seam, the
+host contracts, and — from Stage 1 — `host::engine::Machine` (T1–T8 for static
+plans and components) and `Plan::simulate`. It has **no run driver**: no
+`Plan::start`, no `Running`, and no stub of them. Rows marked *(Stage 2)* or
+*(Stage 3)* are specified and not implemented, and the crate says so where they
+are named.
 
 ---
 
 ## 1. Vocabulary
 
 A **plan** is an immutable, reusable, `Send + Sync` value, built once and (from
-Stage 1) started any number of times; each start is a **run** with its own
+Stage 2) started any number of times; each start is a **run** with its own
 slots, locks and pools. A plan is a **scope**: its nodes share one fail policy,
 one shutdown budget and one run mode. Scopes nest as **components** (a plan used
 as one node, instantiated once per parent run) and **templates** (a plan
@@ -154,8 +156,8 @@ body does is ordinary Rust and is not the engine's business.
 | `cx.stop()`, `cx.until_stop(f)`, `cx.is_stopping()` | all phases | observe the stop request |
 | `cx.sleep(d)`, `cx.timeout(d, f)`, `cx.now()`, `cx.deadline()` | all phases | the injected clock |
 | `cx.attempt()` | all phases | the attempt number, from 1 |
-| `cx.spawn(&template, input)` | all phases | instantiate a declared template; refused while settling *(engine side: Stage 1)* |
-| `child.ready()`, `child.stop()`, `child.id()` | on a `Child` | await an instance's readiness (INV-17); ask it to stop *(Stage 1)* |
+| `cx.spawn(&template, input)` | all phases | instantiate a declared template; refused while settling *(engine side: Stage 3)* |
+| `child.ready()`, `child.stop()`, `child.id()` | on a `Child` | await an instance's readiness (INV-17); ask it to stop *(Stage 3)* |
 
 **The one rule of the body contract.** Perform external effects *inside*
 `cx.hold(..)`. A body that performs the effect itself, awaits something else and
@@ -251,17 +253,24 @@ and within a rule in declaration order.
 ### Load — before any spawn
 
 `L-IMPORTS`: a plan with unresolved imports started as a root is refused with
-the import list. `Plan::unresolved_imports()` is the decision procedure; Stage 1's
+the import list. `Plan::unresolved_imports()` is the decision procedure; Stage 2's
 `start` calls it before any effect. It returns `Vec<NodePath>` — the import
 nodes *of this plan*, named the way the report, the trace and `inspect()` name
 every node. It cannot name the ancestor key behind each one: that key belongs to
 a plan whose declaration is not in scope here.
 
-### First run — signals a run produces *(Stage 1)*
+### First run — signals a run produces *(Stage 2, except `RequestDuringCleanup`)*
 
 `SpawnError::{ForeignTemplate, UndeclaredTemplate, ScopeStopping, NotRunning}`;
 `FaultKind::DoubleHold`; `FaultKind::NeverReady`;
 `TraceKind::{DroppedWhileRunning, RequestDuringCleanup, RuntimeDroppedWithLiveRuns}`.
+
+Of these, Stage 1's machine emits `TraceKind::RequestDuringCleanup` (a
+`shutdown()` or `cancel()` arriving while the run is already settling or
+cleaning up — INV-7: it never interrupts a cleanup). The rest belong to the run
+driver (`DoubleHold` from `CxInner::hold_count > 1`, `NeverReady`,
+`DroppedWhileRunning`, `RuntimeDroppedWithLiveRuns`) or to `cx.spawn`
+(`SpawnError`, Stage 3 except `NotRunning`, which the seam answers today).
 
 ---
 
@@ -300,10 +309,9 @@ Inspection is author API: `Plan`, `PlanView` and everything it is made of live
 at the crate root and in `sdax::prelude`. Nothing in `sdax::host` is needed to
 declare, validate or inspect a plan.
 
-`Plan::simulate(&Script) -> Trace` *(Stage 1)*: the trace the pure machine
-produces for a scripted schedule with no body run, so a counterfactual is
-answered pre-ship with the same code that drives production. It is declared
-here and deliberately not stubbed.
+`Plan::simulate(&Script) -> Trace` *(Stage 1, implemented)*: the trace the pure
+machine produces for a scripted schedule with no body run, so a counterfactual
+is answered pre-ship with the same code that drives production.
 
 ---
 
@@ -320,8 +328,10 @@ plus `Joined`, `NoObserver`, `BoxFuture`, `Time`, `Scope`, `ChildControl`,
 
 **Stability.** Only the author surface carries the crate's stability promise.
 `sdax::host` may change in a minor version before 1.0: the run driver is in
-`sdax-tokio` and the machine is Stage 1, so these signatures are still being
-learned. A host item that stops resolving at the crate root is the point of the
+`sdax-tokio` and is still to be written, so these signatures are still being
+learned — Stage 1 already changed four of them (`Event::NodeErr` and
+`Event::ServeEnded` carry their fault; `Effect::CancelTimer` and
+`Effect::Reject` are new). A host item that stops resolving at the crate root is the point of the
 split, and D-HOST-SPLIT witnesses it.
 
 | trait | required operations |
@@ -342,9 +352,9 @@ and these must stay `dyn`-usable. The shared `Clock` conformance suite is
 | stage | delivers | gate |
 |---|---|---|
 | **0** *(done)* | surface, `validate`, `inspect`/`why`/`diff`/`effects`, the seam, report and engine types, host contracts, `FakeClock`/`TraceRecorder`/static checker, `TokioRuntime` | suite (a) W-*, suite (b) P-01…P-15 |
-| 1 | `engine::Machine` (T1–T8, retries, deadlines, policies, components), `Plan::simulate`, the testkit's scripted driver and trace-level invariant checker | suite (c) C-01…C-41 on the scripted driver |
-| 2 | the tokio run driver, `Plan::start`, `Running` + drop guard + drainer, blocking pools | suite (c) re-run on the adapter with paused time; suite (d) R-* |
-| 3 | dynamic instances end to end: `cx.spawn`, `Child::ready`, containment | C-30, P-07 |
+| **1** *(done)* | `engine::Machine` (T1–T8, retries, deadlines, policies, components), `Plan::simulate` and the stepping simulator, the testkit's scripted driver, `eol::Eol` and trace-level invariant checker, and a Monte Carlo suite over generated plans | suite (c) on the scripted driver: 41 of B's 46 `C-*` rows; `C-14` is Stage 2 and `C-30`, `C-51`, `C-64`, `C-65` are Stage 3. `S-02` did **not** run. `dev-docs/Stage1Report.md` § 7 |
+| 2 | the tokio run driver, `Plan::start`, `Running` + drop guard + drainer, blocking pools; `plan::Bodies` moves under `sdax::host` so the driver in `sdax-tokio` can reach it; `C-14` | suite (c) re-run on the adapter with paused time; suite (d) R-* |
+| 3 | dynamic instances end to end: `cx.spawn`, `Child::ready`, containment; `Effect::SpawnInstance` and `Event::InstanceSpawned`/`InstanceEnded`, which the machine refuses today; `C-30`, `C-51`, `C-64`, `C-65` | C-30, P-07 |
 
 ---
 
@@ -354,7 +364,7 @@ and these must stay `dyn`-usable. The shared `Clock` conformance suite is
 |---|---|---|
 | **A1** | `Comparison.md` § 1.2(a) — declaration size | Positional constructors alongside the chain form, definitionally identical and witnessed by comparing `inspect()`. |
 | **A2** | F-A11 / probe P5 — raw spawn is a silent escape | `clippy.toml` `disallowed-methods` for `tokio::{task::spawn, task::spawn_blocking, spawn}`, `tokio::runtime::Handle::{spawn, spawn_blocking}` and `std::thread::spawn`; the two correct call sites in `sdax-tokio` carry a scoped `#[allow]`. Plus `scripts/check-architecture.sh` over `cargo metadata`. |
-| **A3** | `Comparison.md` § 1.2(c) — plan-level inspection | `Plan::effects()` (Stage 0). `Plan::simulate` is declared for Stage 1 and not stubbed. |
+| **A3** | `Comparison.md` § 1.2(c) — plan-level inspection | `Plan::effects()` (Stage 0). `Plan::simulate` is implemented in Stage 1. |
 | **F1** | F-A4 / F-B4 — readiness after dynamic instances (I-34) | `spawns(&template)` on services, visible in `inspect()`; `Child::ready()`; `V-SPAWN-SELF-IMPORT`; INV-17. |
 | **F2** | F-A3 / F-B3 — an effect with no compensation | `.persistent()` as the alternative to `.compensate(..)`; listed by `effects()`, shown as `effect (persistent)`; `on_ambiguous` still required; INV-18. |
 | **F3** | F-B5 — the derived run mode | `Mode` is a required argument of `build`; `.resident()` and the structure-derived default are removed; `V-MODE`; INV-19. |
@@ -392,3 +402,6 @@ normative; the question it closes is annotated rather than deleted in
 | **OD-5** | `try_step`'s value type | `try_step(..).run(f) -> Key<Result<T, Error>>`; dependents receive `Arc<Result<T, Error>>` | 2026-09-05 | The failure is the value, so it must be the dependent's to read; `V-TRY-UNCONSUMED` already refuses the shape where nobody reads it. |
 | **OD-MODE** | `Mode::Finite` and a nested `Resident` component | Allowed: `V-MODE` looks only at the plan's own nodes; the component becomes Ready when its inner run is steady, and its residency ends with the parent's cleanup (§ 2) | 2026-09-05 | A scope owns its own mode. The alternative — forcing a parent to be `Resident` because something inside it is — would make `Mode` a derived property, which F3 exists to remove. |
 | **OD-IMPORTS** | what `Plan::unresolved_imports()` returns | `Vec<NodePath>`, naming this plan's import nodes | 2026-09-05 | `RawKey` is the engine's node address and is now host API; a refusal an author reads should name nodes the way the report, the trace and `inspect()` do. |
+| **OD-PANIC-CANCELLED** | a body the engine had already cancelled panics: INV-9 says every panic the engine observes is in the report; INV-10 says an engine-interrupted node is never a fault | **INV-10 wins.** The node's terminal state is `Interrupted` (or `Ambiguous` for an effect that had not held), the panic is in the trace, and neither is a fault in the report | 2026-09-06 | The engine asked for the cancel; a body that panics on the way out of a cancel it was given is not a failure of the work the plan declared. INV-9's "the engine observes" is satisfied by the trace, which is where the panic is visible. Stage 1 found the two invariants in direct contradiction on this case (MC seed `13115684965286655053`); a machine fix was written and reverted in favour of this reading. `Ambiguous` is the same terminal observation for an effect interrupted before `hold` (INV-11), so the escape names both. |
+| **OD-PERSIST-AMBIG** | `.persistent()` with `.on_ambiguous(Ambiguity::Compensate)`: `on_ambiguous` is required on every effect (INV-18), so the pair is declarable, and it asks for a compensation that does not exist | **Persistent wins.** Nothing runs for the effect at shutdown or on an ambiguity, and no cleanup failure can arise from it; the ambiguity is recorded and nothing is compensated | 2026-09-06 | INV-18 is unconditional: a persistent effect carries no compensation obligation. `Ambiguity` selects *among* the discharges an effect has, and a persistent effect has none, so there is nothing for `Compensate` to select. `build` accepts the pair today; refusing it with a new `V-*` rule would be a clearer surface and is an open question in `dev-docs/Stage1Report.md` § 9. |
+| **OD-BACKSTOP** | a generated `Mode::Resident` plan whose services declare `Restart::on_error` with no `max` never ends by itself; is that a defect to fix or a plan to bound? | **Neither: the plan is correct and the *script* must end it.** The Monte Carlo generator appends a backstop `Request::Shutdown` at 20–25 s, well past the 0–15.5 s window its random requests are drawn from | 2026-09-06 | Unlimited restart on a resident plan is exactly what the author asked for, and an engine that stopped it anyway would be wrong. What was broken was the test: a case with no terminating request is not a hang in the machine, and a walk that treats it as one hides real hangs. The driver's liveness guard (1 000 steps) catches genuine non-termination separately. |

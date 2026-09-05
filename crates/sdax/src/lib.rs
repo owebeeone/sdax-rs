@@ -104,6 +104,7 @@ mod plan;
 mod policy;
 mod report;
 mod shorthand;
+mod sim;
 mod terminals;
 mod validate;
 mod view;
@@ -116,6 +117,7 @@ pub use contracts::Error;
 pub use cx::{
     Acquire, Child, Cx, Held, Hold, Release, Run, Serving, SpawnError, Start, Stop, Timeout,
 };
+pub use host::engine::EngineError;
 pub use key::{Deps, Key};
 pub use plan::{Kind, Plan, Pool, ReleaseStyle, Template};
 pub use policy::{Ambiguity, Backoff, CancelMode, Mode, Policy, Restart, Retry, Shutdown};
@@ -123,6 +125,7 @@ pub use report::{
     Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
     TraceEvent, TraceKind,
 };
+pub use sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve};
 pub use terminals::{NeedsCompensate, NeedsRelease};
 pub use validate::{Finding, Invalid, Rule};
 pub use view::{
@@ -147,6 +150,7 @@ pub mod prelude {
     pub use crate::cx::{
         Acquire, Child, Cx, Held, Hold, Release, Run, Serving, SpawnError, Start, Stop, Timeout,
     };
+    pub use crate::host::engine::EngineError;
     pub use crate::key::{Deps, Key};
     pub use crate::plan::{Kind, Plan, Pool, ReleaseStyle, Template};
     pub use crate::policy::{
@@ -156,6 +160,7 @@ pub mod prelude {
         Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
         TraceEvent, TraceKind,
     };
+    pub use crate::sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve};
     pub use crate::terminals::{NeedsCompensate, NeedsRelease};
     pub use crate::validate::{Finding, Invalid, Rule};
     pub use crate::view::{

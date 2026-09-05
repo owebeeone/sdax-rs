@@ -6,9 +6,16 @@
 //! public and their names are stable, because a scripted driver, a tokio
 //! adapter and a trace checker all speak them.
 //!
-//! **Stage 0 has no machine.** The types are here so the vocabulary is fixed
-//! and reviewable before the machine is written; `Machine::step` is Stage 1,
-//! and no stub of it exists — a stub would be a claim this crate cannot make.
+//! **The machine.** [`Machine`] is the pure state machine that gives every
+//! declaration its run-time meaning (contract § 2–4, T1–T8). It owns no clock
+//! and no task: the host tells it the time ([`Machine::advance`]) and what
+//! happened ([`Machine::step`]), and performs what it returns. Every deadline
+//! is a [`Effect::Timer`] the host sets and echoes back, so the machine is
+//! deterministic given a script and a schedule (INV-14).
+//!
+//! Stage 1 covers static plans and components. A plan that declares a
+//! template is refused by [`Machine::new`] with [`EngineError::Templates`]:
+//! instances are Stage 3, and there is no stub of them.
 //!
 //! This module is part of [`host`](crate::host) and not of the author API: a
 //! plan is declared, validated and inspected without ever naming an `Event` or
@@ -17,7 +24,17 @@
 use crate::contracts::Time;
 use crate::cx::InstanceId;
 use crate::key::RawKey;
-use crate::report::{FaultLabel, Outcome, TraceEvent};
+use crate::report::{FaultKind, Outcome, TraceEvent};
+
+mod admit;
+mod cleanup;
+mod faults;
+mod machine;
+mod settle;
+mod state;
+mod table;
+
+pub use state::{EngineError, Machine, NodeState, RunState};
 
 /// Identity of one timer the host was asked to set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -43,8 +60,9 @@ pub enum Event {
     Held(RawKey),
     /// The body returned `Ok`.
     NodeOk(RawKey),
-    /// The body returned `Err`, panicked or timed out.
-    NodeErr(RawKey, FaultLabel),
+    /// The body returned `Err`, panicked or timed out. The fault is carried
+    /// whole so the report can hold the error or the panic payload.
+    NodeErr(RawKey, FaultKind),
     /// The body was cancelled; `held` decides whether a release is owed.
     NodeCancelled {
         /// Which node.
@@ -56,8 +74,8 @@ pub enum Event {
     ServeEnded {
         /// Which service.
         node: RawKey,
-        /// Whether it returned `Ok`.
-        ok: bool,
+        /// `None` if it returned `Ok`; otherwise what went wrong.
+        fault: Option<FaultKind>,
     },
     /// A timer the machine asked for has fired.
     Timer(TimerId),
@@ -123,6 +141,10 @@ pub enum Effect {
         /// When it should fire.
         at: Time,
     },
+    /// Forget a timer the machine no longer needs (a backoff cut short by a
+    /// cancel, a deadline that no longer applies). Firing it anyway is
+    /// harmless: the machine ignores a timer it has forgotten.
+    CancelTimer(TimerId),
     /// Instantiate a template.
     SpawnInstance {
         /// Which template.
@@ -134,4 +156,17 @@ pub enum Effect {
     Emit(Box<TraceEvent>),
     /// The run is over.
     End(Outcome),
+    /// The event made no sense here (an unknown node, a body that is not in
+    /// flight, anything after `End`). The machine never panics on input; it
+    /// says so instead (D1 totality).
+    Reject(Rejected),
+}
+
+/// An event the machine refused, and why.
+#[derive(Debug)]
+pub struct Rejected {
+    /// The event as received, rendered.
+    pub event: String,
+    /// Why it was refused.
+    pub reason: &'static str,
 }

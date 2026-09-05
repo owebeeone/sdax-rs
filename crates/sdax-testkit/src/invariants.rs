@@ -6,9 +6,10 @@
 //! computes itself. A checker that trusted the thing it checks would prove
 //! nothing.
 //!
-//! Stage 0 checks the static structure (INV-1, INV-5, INV-6). The trace-level
-//! family (INV-2, INV-3, INV-4, INV-7…INV-16) needs a run, and arrives with
-//! the scripted driver in Stage 1.
+//! [`check_plan`] checks the static structure (INV-1, INV-5, INV-6).
+//! [`check_trace_prefix`] and [`check_trace`] check a run's trace against
+//! the plan view and the report (INV-1…5, 7…12, 15, 18, 20, `orphans:
+//! none`), from the view and the trace alone — never from the machine.
 //!
 //! **Honest limit.** INV-1 has a negative fixture (an edge no node declared).
 //! INV-5 and INV-6 do not: the core derives the release order *from* the edge
@@ -16,6 +17,10 @@
 //! derivation regresses — which is exactly what these two checks are for. They
 //! are regression guards with positive coverage over every plan shape, not
 //! independently falsified checks, and this crate does not claim otherwise.
+
+mod trace;
+
+pub use trace::{check_trace, check_trace_prefix};
 
 use sdax::host::{Clock, Time};
 use sdax::{NodePath, PlanView};
@@ -34,7 +39,7 @@ pub struct Violation {
     pub detail: String,
 }
 
-fn violation(rule: &'static str, detail: String) -> Violation {
+pub(crate) fn violation(rule: &'static str, detail: String) -> Violation {
     Violation { rule, detail }
 }
 

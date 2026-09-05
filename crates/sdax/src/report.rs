@@ -193,6 +193,10 @@ pub enum TraceKind {
     InstanceSpawned(InstanceId),
     /// A template instance ended.
     InstanceEnded(InstanceId, Outcome),
+    /// The run stopped admitting starts: a request, a fault under
+    /// `FailFast`, a terminal service finishing, or `Steady` under `Finite`.
+    /// The shutdown budget starts here (T7, INV-8).
+    Settling,
     /// `Running` was dropped while the run was live.
     DroppedWhileRunning,
     /// A cancel or shutdown arrived while cleanup was already running; it is

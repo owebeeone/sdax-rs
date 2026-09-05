@@ -36,6 +36,12 @@ pub use crate::plan::SEMANTICS;
 
 pub mod engine;
 
+/// The stepping simulator behind `Plan::simulate`, for a harness that
+/// watches every event and effect.
+pub mod sim {
+    pub use crate::sim::{ScriptError, SimStep, Simulator};
+}
+
 /// The per-run slot table.
 ///
 /// Hidden rather than `pub(crate)` only because [`Deps`](crate::Deps) — a

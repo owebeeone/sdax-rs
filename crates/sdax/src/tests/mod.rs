@@ -8,6 +8,7 @@ mod builder;
 mod corpus;
 mod exec;
 mod keys;
+mod machine;
 mod planner_validate;
 mod planner_view;
 mod report_order;
