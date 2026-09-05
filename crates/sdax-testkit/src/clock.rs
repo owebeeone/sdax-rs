@@ -1,6 +1,6 @@
 //! A clock a test advances by hand.
 
-use sdax::{BoxFuture, Clock, Time};
+use sdax::host::{BoxFuture, Clock, Time};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

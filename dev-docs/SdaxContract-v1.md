@@ -44,7 +44,7 @@ Edges and constraints:
 | `import(parent_key)` | a cross-scope need in a child plan; the parent's node is released only after the child is cleaned up | `V-IMPORT-SCOPE` |
 | `.exclusive(k)` / `.shared(k)` | arbitration on a resource the node already needs | `V-LOCK-NEEDS` |
 | `pool(name, n)`, `.limit(pool)`, `.on(pool)` | a per-run concurrency budget; `.on` is the required pool of a blocking step | `V-POOL-STARVE`, `V-UNUSED-POOL` |
-| `.spawns(&template)` | this service may instantiate this template (F1) | `V-SPAWN-SELF-IMPORT`, `V-FOREIGN-KEY` |
+| `.spawns(&template)` | this service may instantiate this template (F1) | `V-SPAWN-KIND`, `V-SPAWN-SELF-IMPORT`, `V-FOREIGN-KEY` |
 | `.export(key)` | the plan's typed output | compiler |
 
 Per-node attributes: `.within(d)`, `.retry(Retry)`, `.restart(Restart)`
@@ -84,6 +84,11 @@ from that clock's origin.
 `Ended(Report)`. Transitions into `Settling`: `shutdown()`; `cancel()` or drop
 of `Running`; a fault under `FailFast`; a `terminal` service finishing; or,
 under `Mode::Finite`, reaching `Steady`.
+
+`Mode` is per scope, and a nested scope has its own. A `Finite` parent may
+contain a `Resident` component; the component becomes Ready when its inner run
+is steady and its residency ends with the parent's cleanup. (Owner decision,
+2026-09-05.)
 
 ## 3. Transitions
 
@@ -218,6 +223,7 @@ Each row is witnessed: the doctests in `sdax::compile_fail` fail to compile, and
 | D-SEND | a `!Send` body | terminal bound | W-13 | `E0277` |
 | D-EFFECT-RECORD | an effect that says nothing about its record | `NeedsCompensate` is not a `Key` | W-16 | `E0308` |
 | D-READY | forged readiness | `Serving` has private fields | W-17 | `E0451` |
+| D-HOST-SPLIT | a host type named at the crate root (`sdax::CxInner`) | the author API is the root and `prelude`; adapters and the engine use `sdax::host` | S-01 | `E0432` |
 
 ### Validate — `PlanBuilder::build`
 
@@ -227,11 +233,12 @@ and within a rule in declaration order.
 | id | decision procedure | test |
 |---|---|---|
 | `V-EMPTY` | a plan whose only nodes are its input and imports has nothing to run | P-10 |
-| `V-FOREIGN-KEY` | for every node, every key in `needs ∪ exclusive ∪ shared ∪ spawns` and every pool it names belongs to this plan; an `import` node's source is exempt | P-01 |
+| `V-FOREIGN-KEY` | for every node, every key in `needs ∪ exclusive ∪ shared ∪ spawns` and every pool it names belongs to this plan; an `import` node's source is exempt. A late `spawns(key, &t)` whose key is not a node of this plan is the same finding, reported after the per-node ones | P-01 |
 | `V-DUP-NAME` | node names within one scope are unique | P-02 |
-| `V-DUP-ATTR` | no attribute is set twice on one node | P-12 |
+| `V-DUP-ATTR` | no attribute is set twice on one node. Locks are per key: several resources may be locked, but one resource twice — or once `exclusive` and once `shared` — is the same duplication | P-12 |
 | `V-IMPORT-SCOPE` | every key a registered child plan imports is a node of the registering plan; a deeper nesting imports at each level | P-07 |
 | `V-SPAWN-SELF-IMPORT` | for every service S and template T ∈ `spawns(S)`, no key T imports is S (F1, INV-17) | new |
+| `V-SPAWN-KIND` | for every node N with a non-empty `spawns(N)`, N is a service. The chain form is typed; the late form `PlanBuilder::spawns(key, &t)` takes any key, so the kind is decided here | new |
 | `V-LOCK-NEEDS` | `exclusive(k)`/`shared(k)` ⇒ `k ∈ needs(N)` | P-08 |
 | `V-IDEMPOTENT-REQUIRED` | (`retry` on an effect) ∨ (`restart` on a service) ∨ (`on_ambiguous ∈ {Compensate, Retry}`) ⇒ `.idempotent()` | P-06 |
 | `V-POOL-STARVE` | resident holders of a pool (services taking it; unbounded if a template's instances take it) ≥ its limit, while a non-resident node also takes it | P-09 |
@@ -245,7 +252,10 @@ and within a rule in declaration order.
 
 `L-IMPORTS`: a plan with unresolved imports started as a root is refused with
 the import list. `Plan::unresolved_imports()` is the decision procedure; Stage 1's
-`start` calls it before any effect.
+`start` calls it before any effect. It returns `Vec<NodePath>` — the import
+nodes *of this plan*, named the way the report, the trace and `inspect()` name
+every node. It cannot name the ancestor key behind each one: that key belongs to
+a plan whose declaration is not in scope here.
 
 ### First run — signals a run produces *(Stage 1)*
 
@@ -286,6 +296,10 @@ partial order exposing `before`, `unordered` and `unordered_pairs`, plus
 (acquire), effects (perform) and persistent effects — in declaration order,
 plus the earliest layer holding one.
 
+Inspection is author API: `Plan`, `PlanView` and everything it is made of live
+at the crate root and in `sdax::prelude`. Nothing in `sdax::host` is needed to
+declare, validate or inspect a plan.
+
 `Plan::simulate(&Script) -> Trace` *(Stage 1)*: the trace the pure machine
 produces for a scripted schedule with no body run, so a counterfactual is
 answered pre-ship with the same code that drives production. It is declared
@@ -294,6 +308,21 @@ here and deliberately not stubbed.
 ---
 
 ## 10. Host contracts
+
+**Where they live.** The crate has two surfaces. The **author** surface is the
+crate root and `sdax::prelude`: what a plan is written, validated, inspected and
+read back against. The **host** surface is `sdax::host`: what a runtime adapter,
+a run driver or the engine needs and an author does not — the four traits below,
+plus `Joined`, `NoObserver`, `BoxFuture`, `Time`, `Scope`, `ChildControl`,
+`InstanceId`, `StopSignal`, `RawKey`, `SEMANTICS`, the driver-facing `CxInner`
+(`take_held`, `put_output`, `take_serve`, `hold_count`, and `Cx::new` /
+`Cx::inner`), and `sdax::host::engine::{Event, Effect, TimerId, JoinedLabel}`.
+
+**Stability.** Only the author surface carries the crate's stability promise.
+`sdax::host` may change in a minor version before 1.0: the run driver is in
+`sdax-tokio` and the machine is Stage 1, so these signatures are still being
+learned. A host item that stops resolving at the crate root is the point of the
+split, and D-HOST-SPLIT witnesses it.
 
 | trait | required operations |
 |---|---|
@@ -344,4 +373,22 @@ Spelling changes forced by Rust, not by design:
 - `PlanBuilder::spawns(service_key, &template)` exists alongside the chain form
   `service(..).spawns(&t)`, for the case the chain form cannot express — a
   template whose `import` names a key declared after it. That is the only way
-  `V-SPAWN-SELF-IMPORT` is reachable; see `dev-docs/Stage0Report.md`.
+  `V-SPAWN-SELF-IMPORT` is reachable; see `dev-docs/Stage0Report.md`. Unlike the
+  chain form it takes any key, so the declaration is recorded whatever it names
+  and `build` decides: `V-SPAWN-KIND` for a node that is not a service,
+  `V-FOREIGN-KEY` for a key of another plan. Neither is dropped silently.
+
+---
+
+## 13. Decisions
+
+Questions this document once left open, and the answer. A decision here is
+normative; the question it closes is annotated rather than deleted in
+`dev-docs/Stage0Report.md` § 8, so the reasoning stays readable.
+
+| id | question | decision | date | reason |
+|---|---|---|---|---|
+| **OD-2** | the seam's error type | `Error = Box<dyn std::error::Error + Send + Sync + 'static>`, fixed rather than generic | 2026-09-05 | `?` infers it inside a body with no annotation, which the W-14 witness exercises (`let _port: u16 = "9000".parse()?`); typed errors are not lost — they survive as `downcast_ref` targets on `FaultKind::Error`. A generic error parameter would spread through every terminal, every `Deps` impl and every host trait for a gain the seam does not need. |
+| **OD-5** | `try_step`'s value type | `try_step(..).run(f) -> Key<Result<T, Error>>`; dependents receive `Arc<Result<T, Error>>` | 2026-09-05 | The failure is the value, so it must be the dependent's to read; `V-TRY-UNCONSUMED` already refuses the shape where nobody reads it. |
+| **OD-MODE** | `Mode::Finite` and a nested `Resident` component | Allowed: `V-MODE` looks only at the plan's own nodes; the component becomes Ready when its inner run is steady, and its residency ends with the parent's cleanup (§ 2) | 2026-09-05 | A scope owns its own mode. The alternative — forcing a parent to be `Resident` because something inside it is — would make `Mode` a derived property, which F3 exists to remove. |
+| **OD-IMPORTS** | what `Plan::unresolved_imports()` returns | `Vec<NodePath>`, naming this plan's import nodes | 2026-09-05 | `RawKey` is the engine's node address and is now host API; a refusal an author reads should name nodes the way the report, the trace and `inspect()` do. |

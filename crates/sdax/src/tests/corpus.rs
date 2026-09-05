@@ -363,6 +363,17 @@ pub fn link_plan(endpoint: Key<Endpoint>) -> Result<Plan<(), PeerLink>, Invalid>
     t.build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Resident)
 }
 
+/// A template with no imports at all, for the tests that need one registered
+/// without tying it to any particular key.
+pub fn plain_link() -> Result<Plan<(), PeerLink>, Invalid> {
+    let mut t = Plan::template::<PeerLink>("Link");
+    let conn = t.input();
+    t.step("Inner")
+        .needs(conn)
+        .run(|_cx, _c: Arc<PeerLink>| async move { Ok(()) });
+    t.build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Finite)
+}
+
 /// I-30 — a mesh whose accept loop spawns per-connection links.
 pub fn i30() -> Result<Plan, Invalid> {
     let mut p = Plan::builder("Mesh");

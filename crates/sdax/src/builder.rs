@@ -47,6 +47,7 @@ pub(crate) struct Build {
     pub(crate) blocking: Vec<Option<ErasedBlocking>>,
     pub(crate) export: Option<RawKey>,
     pub(crate) input: Option<RawKey>,
+    pub(crate) foreign_spawns: Vec<(RawKey, RawKey)>,
 }
 
 impl Build {
@@ -61,6 +62,7 @@ impl Build {
             blocking: Vec::new(),
             export: None,
             input: None,
+            foreign_spawns: Vec::new(),
         }
     }
 
@@ -230,10 +232,17 @@ impl<Out, In> PlanBuilder<Out, In> {
     /// case the chain form cannot express — a template whose `import` names a
     /// key declared *after* the service — and it is exactly that case that
     /// [`Rule::SpawnSelfImport`](crate::Rule::SpawnSelfImport) rejects.
+    ///
+    /// Unlike the chain form this takes any key, so the declaration is
+    /// **recorded whatever it names** and `build` decides: a node that is not
+    /// a service is [`Rule::SpawnKind`](crate::Rule::SpawnKind), and a key of
+    /// another plan is [`Rule::ForeignKey`](crate::Rule::ForeignKey). Neither
+    /// is silently dropped.
     pub fn spawns<H: ?Sized, I>(&mut self, service: Key<H>, template: &Template<I>) {
         let raw = service.raw();
-        if let Some(node) = self.b.nodes.iter_mut().find(|n| n.key == raw) {
-            node.spawns.push(template.node);
+        match self.b.nodes.iter_mut().find(|n| n.key == raw) {
+            Some(node) => node.spawns.push(template.node),
+            None => self.b.foreign_spawns.push((raw, template.node)),
         }
     }
 
@@ -278,6 +287,7 @@ impl<Out, In> PlanBuilder<Out, In> {
             mode,
             export: self.b.export,
             input: self.b.input,
+            foreign_spawns: self.b.foreign_spawns,
         };
         let checks = validate(&ir);
         if !checks.is_empty() {

@@ -1,6 +1,7 @@
 //! An observer that keeps what it is told.
 
-use sdax::{Observer, Trace, TraceEvent, TraceKind};
+use sdax::host::Observer;
+use sdax::{Trace, TraceEvent, TraceKind};
 use std::sync::Mutex;
 
 /// An [`Observer`] that records every event in observation order.

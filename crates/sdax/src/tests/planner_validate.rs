@@ -2,6 +2,7 @@
 //! plus the two rules the adopted contract adds (`V-MODE`, `V-SPAWN-SELF-IMPORT`).
 
 use super::corpus::*;
+use crate::host::RawKey;
 use crate::*;
 use std::sync::Arc;
 
@@ -378,6 +379,137 @@ fn v_spawn_self_import_rejects_a_readiness_deadlock() {
     assert!(i30().is_ok());
 }
 
+/// F1 — the late `spawns` form may only attach a template to a service.
+#[test]
+fn v_spawn_kind_rejects_a_late_spawns_on_a_node_that_is_not_a_service() {
+    let mut p = Plan::builder("Mesh");
+    let db = p
+        .resource("Db")
+        .acquire(|cx, ()| async move { Ok(cx.hold_value(Db)) })
+        .release(|_cx, _d| async move { Ok(()) });
+    let tpl = p.template("Link", &plain_link().expect("valid"));
+    p.spawns(db, &tpl);
+    let inv = invalid(p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident));
+    let f = only(&inv, Rule::SpawnKind);
+    assert_eq!(f.nodes, ["Db", "Link"]);
+    assert!(
+        f.detail.contains("resource") && f.detail.contains("Link"),
+        "names the node's kind and the template: {}",
+        f.detail
+    );
+    assert!(!f.fix.is_empty());
+}
+
+/// F1 — the chain form is unaffected: a service may still declare `spawns`,
+/// in either form.
+#[test]
+fn a_service_may_spawn_in_the_chain_form_and_in_the_late_form() {
+    assert!(i30().is_ok(), "the chain form is accepted");
+
+    let mut p = Plan::builder("Mesh");
+    let tpl = p.template("Link", &plain_link().expect("valid"));
+    let accept = p
+        .service("AcceptLoop")
+        .stop_within(secs(2))
+        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+    p.spawns(accept, &tpl);
+    let plan = p
+        .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
+        .expect("a service may spawn");
+    assert_eq!(
+        plan.inspect()
+            .node("AcceptLoop")
+            .expect("AcceptLoop")
+            .spawns,
+        vec![NodePath::root("Link")]
+    );
+}
+
+/// A late `spawns` naming a key of another plan is a finding, not a silent
+/// no-op.
+#[test]
+fn v_foreign_key_catches_a_late_spawns_whose_key_belongs_to_another_plan() {
+    let mut other = Plan::builder("Other");
+    let stray = other
+        .service("Stray")
+        .stop_within(secs(1))
+        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+    let other_id = other.id();
+    let _ = other.build(Policy::FailFast, Shutdown::within(secs(2)), Mode::Resident);
+
+    let mut p = Plan::builder("Mesh");
+    let mine = p.id();
+    let tpl = p.template("Link", &plain_link().expect("valid"));
+    p.spawns(stray, &tpl);
+    let inv = invalid(p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident));
+    let f = only(&inv, Rule::ForeignKey);
+    assert_eq!(f.nodes, ["Link"]);
+    assert_eq!(f.keys, [stray.raw()]);
+    assert!(
+        f.detail.contains(&other_id.to_string()) && f.detail.contains(&mine.to_string()),
+        "names both plans: {}",
+        f.detail
+    );
+}
+
+/// P-12 (locks) — one resource locked twice, or in two modes, on one node.
+#[test]
+fn p12_repeated_or_conflicting_lock_attributes_are_rejected() {
+    fn build(twice: bool, both_modes: bool) -> Result<Plan, Invalid> {
+        let mut p = Plan::builder("Locks");
+        let db = p
+            .resource("Db")
+            .acquire(|cx, ()| async move { Ok(cx.hold_value(Db)) })
+            .release(|_cx, _d| async move { Ok(()) });
+        let mut mig = p.step("Mig").needs(db).exclusive(db);
+        if twice {
+            mig = mig.exclusive(db);
+        }
+        if both_modes {
+            mig = mig.shared(db);
+        }
+        mig.run(|_cx, _d: Arc<Db>| async move { Ok(()) });
+        p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite)
+    }
+    assert!(build(false, false).is_ok(), "one lock in one mode is fine");
+
+    let inv = invalid(build(true, false));
+    let f = only(&inv, Rule::DupAttr);
+    assert_eq!(f.nodes, ["Mig"]);
+    assert!(
+        f.detail.contains("exclusive") && f.detail.contains("Db"),
+        "names the attribute and the key: {}",
+        f.detail
+    );
+
+    let inv = invalid(build(false, true));
+    let f = only(&inv, Rule::DupAttr);
+    assert!(
+        f.detail.contains("exclusive") && f.detail.contains("shared") && f.detail.contains("Db"),
+        "names both modes and the key: {}",
+        f.detail
+    );
+
+    // Two different resources, one mode each, is not a duplicate.
+    let mut p = Plan::builder("Two locks");
+    let a = p
+        .resource("A")
+        .acquire(|cx, ()| async move { Ok(cx.hold_value(Db)) })
+        .release(|_cx, _d| async move { Ok(()) });
+    let b = p
+        .resource("B")
+        .acquire(|cx, ()| async move { Ok(cx.hold_value(Db)) })
+        .release(|_cx, _d| async move { Ok(()) });
+    p.step("Mig")
+        .needs((a, b))
+        .exclusive(a)
+        .exclusive(b)
+        .run(|_cx, _d: (Arc<Db>, Arc<Db>)| async move { Ok(()) });
+    assert!(p
+        .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite)
+        .is_ok());
+}
+
 /// Every finding names its rule id, the node(s) and a fix.
 #[test]
 fn findings_are_values_that_name_the_rule_and_a_fix() {
@@ -400,6 +532,10 @@ fn l_imports_lists_what_a_root_run_could_not_resolve() {
         .acquire(|cx, ()| async move { Ok(cx.hold_value(Endpoint)) })
         .release(|_cx, _e| async move { Ok(()) });
     let child = link_plan(endpoint).expect("valid");
-    assert_eq!(child.unresolved_imports(), vec![endpoint.raw()]);
+    assert_eq!(
+        child.unresolved_imports(),
+        vec![NodePath::root("import#1")],
+        "the import node of the child, named the way every other node is"
+    );
     assert!(i01().expect("valid").unresolved_imports().is_empty());
 }

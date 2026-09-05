@@ -13,7 +13,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use sdax::{BoxFuture, Clock, Joined, NoObserver, Observer, Runtime, TaskHandle, Time, TraceEvent};
+use sdax::host::{BoxFuture, Clock, Joined, NoObserver, Observer, Runtime, TaskHandle, Time};
+use sdax::TraceEvent;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;

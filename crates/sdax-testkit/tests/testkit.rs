@@ -1,6 +1,7 @@
 //! What the harness itself must do (LBT-009: a test double is only useful if
 //! it is contract-faithful).
 
+use sdax::host::{Clock, Observer, Time};
 use sdax::*;
 use sdax_testkit::{invariants, FakeClock, TraceRecorder};
 use std::sync::Arc;

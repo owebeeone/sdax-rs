@@ -281,11 +281,17 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
             path: path.clone(),
             kind: n.kind,
             needs,
-            spawns: n
-                .spawns
-                .iter()
-                .filter_map(|k| ir.node(*k).map(&path_of))
-                .collect(),
+            // `spawns` is a service's declaration (F1). Any other kind
+            // carrying one is `V-SPAWN-KIND` and never reaches a built plan,
+            // so the view does not show it there either.
+            spawns: if n.kind == Kind::Service {
+                n.spawns
+                    .iter()
+                    .filter_map(|k| ir.node(*k).map(&path_of))
+                    .collect()
+            } else {
+                Vec::new()
+            },
             attrs: resolved_attrs(ir, n),
             declared: n.attrs.declared.clone(),
         });

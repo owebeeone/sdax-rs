@@ -10,6 +10,7 @@ use crate::contracts::{BoxFuture, Error};
 use crate::cx::{Child, Cx, SpawnError};
 use crate::key::{RawKey, Slots};
 use crate::policy::{Ambiguity, CancelMode, Mode, Policy, Restart, Retry, Shutdown};
+use crate::view::NodePath;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -155,9 +156,10 @@ pub struct Attrs {
     pub on_ambiguous: Option<Ambiguity>,
     /// How an in-flight body is cancelled.
     pub cancel: CancelMode,
-    /// Resources this node takes exclusively.
+    /// Resources this node takes exclusively. Several different resources may
+    /// be taken; one resource twice, or in both modes, is `V-DUP-ATTR`.
     pub exclusive: Vec<RawKey>,
-    /// Resources this node takes shared.
+    /// Resources this node takes shared, under the same rule as `exclusive`.
     pub shared: Vec<RawKey>,
     /// A pool bounding this node's concurrency.
     pub limit: Option<Pool>,
@@ -168,7 +170,8 @@ pub struct Attrs {
     /// Every attribute the author set explicitly, in the order set. A name
     /// appearing twice is `V-DUP-ATTR`; a name absent means the value shown by
     /// `inspect()` is the engine's, which is what makes a default change
-    /// diffable.
+    /// diffable. Locks are not listed here — they have no engine default and
+    /// are checked per key rather than per name.
     pub declared: Vec<&'static str>,
 }
 
@@ -237,6 +240,12 @@ pub struct PlanIr {
     pub export: Option<RawKey>,
     /// The template input node, if this plan is a template.
     pub input: Option<RawKey>,
+    /// Late `spawns(key, &template)` declarations whose key is not a node of
+    /// this plan, as `(the key named, the template node)`. They are recorded
+    /// rather than dropped so [`Rule::ForeignKey`](crate::Rule::ForeignKey)
+    /// can report them; a declaration that vanishes is worse than one that is
+    /// refused.
+    pub foreign_spawns: Vec<(RawKey, RawKey)>,
 }
 
 impl PlanIr {
@@ -328,13 +337,25 @@ impl<Out, In> Plan<Out, In> {
         self.ir.semantics
     }
 
-    /// Parent keys this plan imports and that a root run could not resolve.
+    /// The import nodes of this plan, which a root run could not resolve.
     ///
     /// `L-IMPORTS` in the gate inventory: starting a plan with unresolved
     /// imports as a root is refused before any spawn. Stage 0 exposes the
     /// decision procedure; Stage 1's `start` calls it.
-    pub fn unresolved_imports(&self) -> Vec<RawKey> {
-        self.ir.imports()
+    ///
+    /// Each path names an import node **of this plan** — the node
+    /// `import(parent_key)` created — rather than the ancestor key behind it,
+    /// which this plan cannot name: the key belongs to a plan whose
+    /// declaration is not in scope here. Paths are what the report, the trace
+    /// and `inspect()` address nodes by, so a refusal reads in the same
+    /// vocabulary as everything else.
+    pub fn unresolved_imports(&self) -> Vec<NodePath> {
+        self.ir
+            .nodes
+            .iter()
+            .filter(|n| n.kind == Kind::Import)
+            .map(|n| NodePath::root(&n.name))
+            .collect()
     }
 }
 

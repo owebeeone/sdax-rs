@@ -10,6 +10,7 @@
 //! a rule in node declaration order, so two builds of one program produce the
 //! same list.
 
+mod budgets;
 mod rules;
 
 use crate::key::RawKey;
@@ -24,7 +25,8 @@ pub enum Rule {
     ForeignKey,
     /// `V-DUP-NAME`: two nodes of one scope share a name.
     DupName,
-    /// `V-DUP-ATTR`: an attribute set twice on one node.
+    /// `V-DUP-ATTR`: an attribute set twice on one node, or one resource
+    /// locked twice or in two modes.
     DupAttr,
     /// `V-IMPORT-SCOPE`: a child plan imports a key the registering plan does
     /// not own.
@@ -32,6 +34,8 @@ pub enum Rule {
     /// `V-SPAWN-SELF-IMPORT`: a template a service spawns imports that
     /// service's own key — a readiness deadlock (F1).
     SpawnSelfImport,
+    /// `V-SPAWN-KIND`: `spawns` attached to a node that is not a service.
+    SpawnKind,
     /// `V-LOCK-NEEDS`: `exclusive`/`shared` names a resource the node does not
     /// need.
     LockNeeds,
@@ -57,13 +61,14 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in emission order.
-    pub const ALL: [Rule; 14] = [
+    pub const ALL: [Rule; 15] = [
         Rule::Empty,
         Rule::ForeignKey,
         Rule::DupName,
         Rule::DupAttr,
         Rule::ImportScope,
         Rule::SpawnSelfImport,
+        Rule::SpawnKind,
         Rule::LockNeeds,
         Rule::IdempotentRequired,
         Rule::PoolStarve,
@@ -83,6 +88,7 @@ impl Rule {
             Rule::DupAttr => "V-DUP-ATTR",
             Rule::ImportScope => "V-IMPORT-SCOPE",
             Rule::SpawnSelfImport => "V-SPAWN-SELF-IMPORT",
+            Rule::SpawnKind => "V-SPAWN-KIND",
             Rule::LockNeeds => "V-LOCK-NEEDS",
             Rule::IdempotentRequired => "V-IDEMPOTENT-REQUIRED",
             Rule::PoolStarve => "V-POOL-STARVE",
@@ -186,14 +192,15 @@ pub(crate) fn validate(ir: &PlanIr) -> Vec<Finding> {
             Rule::DupAttr => rules::dup_attr(&mut c),
             Rule::ImportScope => rules::import_scope(&mut c),
             Rule::SpawnSelfImport => rules::spawn_self_import(&mut c),
+            Rule::SpawnKind => rules::spawn_kind(&mut c),
             Rule::LockNeeds => rules::lock_needs(&mut c),
-            Rule::IdempotentRequired => rules::idempotent_required(&mut c),
-            Rule::PoolStarve => rules::pool_starve(&mut c),
-            Rule::UnusedPool => rules::unused_pool(&mut c),
-            Rule::ServiceUnbounded => rules::service_unbounded(&mut c),
-            Rule::TryUnconsumed => rules::try_unconsumed(&mut c),
-            Rule::BudgetOrder => rules::budget_order(&mut c),
-            Rule::Mode => rules::mode(&mut c),
+            Rule::IdempotentRequired => budgets::idempotent_required(&mut c),
+            Rule::PoolStarve => budgets::pool_starve(&mut c),
+            Rule::UnusedPool => budgets::unused_pool(&mut c),
+            Rule::ServiceUnbounded => budgets::service_unbounded(&mut c),
+            Rule::TryUnconsumed => budgets::try_unconsumed(&mut c),
+            Rule::BudgetOrder => budgets::budget_order(&mut c),
+            Rule::Mode => budgets::mode(&mut c),
         }
     }
     c.out

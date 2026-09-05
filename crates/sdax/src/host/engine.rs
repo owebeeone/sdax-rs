@@ -9,11 +9,15 @@
 //! **Stage 0 has no machine.** The types are here so the vocabulary is fixed
 //! and reviewable before the machine is written; `Machine::step` is Stage 1,
 //! and no stub of it exists — a stub would be a claim this crate cannot make.
+//!
+//! This module is part of [`host`](crate::host) and not of the author API: a
+//! plan is declared, validated and inspected without ever naming an `Event` or
+//! an `Effect`.
 
+use crate::contracts::Time;
 use crate::cx::InstanceId;
 use crate::key::RawKey;
 use crate::report::{FaultLabel, Outcome, TraceEvent};
-use crate::Time;
 
 /// Identity of one timer the host was asked to set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

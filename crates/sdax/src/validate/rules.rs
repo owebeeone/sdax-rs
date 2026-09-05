@@ -1,13 +1,15 @@
-//! One function per validate rule, each with its decision procedure.
+//! The rules about a declaration's **shape**: which keys it names, which names
+//! it reuses, which attributes it sets twice, and where a `spawns` may be
+//! attached. The rules about policy, pools and budgets are in
+//! [`super::budgets`].
 //!
-//! Every rule reads the recorded declaration and nothing else, so `build`
-//! stays pure: inspecting or validating a plan runs no body and performs no
-//! effect.
+//! One function per rule, each with its decision procedure. Every rule reads
+//! the recorded declaration and nothing else, so `build` stays pure:
+//! inspecting or validating a plan runs no body and performs no effect.
 
 use super::{Ctx, Rule};
 use crate::key::RawKey;
-use crate::plan::{Kind, PlanIr, Pool};
-use crate::policy::{Ambiguity, Mode};
+use crate::plan::Kind;
 
 /// `V-EMPTY`: a plan whose only nodes are its input and its imports has
 /// nothing to run.
@@ -32,6 +34,11 @@ pub(crate) fn empty(c: &mut Ctx<'_>) {
 /// `shared(N)` and `spawns(N)`, and every pool N names, must belong to this
 /// plan. An `Import` node's source is exempt: naming a parent key is what an
 /// import is for.
+///
+/// A late `spawns(key, &template)` whose key is not a node of this plan is the
+/// same mistake reached another way: the builder records it in
+/// `PlanIr::foreign_spawns` and it is reported here, after the per-node
+/// findings and in the order the declarations were written.
 pub(crate) fn foreign_key(c: &mut Ctx<'_>) {
     let id = c.ir.id;
     let mut findings = Vec::new();
@@ -73,6 +80,18 @@ pub(crate) fn foreign_key(c: &mut Ctx<'_>) {
             }
         }
     }
+    for (key, tpl) in &c.ir.foreign_spawns {
+        let template = c.name(*tpl);
+        findings.push((
+            template.clone(),
+            *key,
+            format!(
+                "key {}/{} was declared to spawn template {template:?}, but it belongs to \
+                 plan {} and not to this plan ({})",
+                key.plan, key.idx, key.plan, id
+            ),
+        ));
+    }
     for (node, key, detail) in findings {
         c.add(
             Rule::ForeignKey,
@@ -110,34 +129,89 @@ pub(crate) fn dup_name(c: &mut Ctx<'_>) {
 
 /// `V-DUP-ATTR`: an attribute set twice on one node is a copy-paste mistake,
 /// not a refinement; the builder records each second setting.
+///
+/// Locks are checked **per key** rather than per name: `.exclusive(a)` and
+/// `.exclusive(b)` are two different locks and are fine, while `.exclusive(a)`
+/// twice, or `.exclusive(a).shared(a)`, is one resource claimed twice — the
+/// second claim would silently win, and the two modes contradict each other.
 pub(crate) fn dup_attr(c: &mut Ctx<'_>) {
-    let dups: Vec<(String, Vec<&'static str>)> =
-        c.ir.nodes
-            .iter()
-            .filter_map(|n| {
-                let mut seen: Vec<&'static str> = Vec::new();
-                let mut twice: Vec<&'static str> = Vec::new();
-                for a in &n.attrs.declared {
-                    if seen.contains(a) {
-                        if !twice.contains(a) {
-                            twice.push(a);
-                        }
-                    } else {
-                        seen.push(a);
-                    }
+    let mut findings: Vec<(String, Vec<RawKey>, String, &'static str)> = Vec::new();
+    for n in &c.ir.nodes {
+        let mut seen: Vec<&'static str> = Vec::new();
+        let mut twice: Vec<&'static str> = Vec::new();
+        for a in &n.attrs.declared {
+            if seen.contains(a) {
+                if !twice.contains(a) {
+                    twice.push(a);
                 }
-                (!twice.is_empty()).then(|| (n.name.clone(), twice))
-            })
-            .collect();
-    for (name, attrs) in dups {
-        c.add(
-            Rule::DupAttr,
-            vec![name.clone()],
-            Vec::new(),
-            format!("node {name:?} sets {} twice", attrs.join(", ")),
-            "set the attribute once; the second value silently won",
-        );
+            } else {
+                seen.push(a);
+            }
+        }
+        if !twice.is_empty() {
+            findings.push((
+                n.name.clone(),
+                Vec::new(),
+                format!("node {:?} sets {} twice", n.name, twice.join(", ")),
+                "set the attribute once; the second value silently won",
+            ));
+        }
+        for (mode, list) in [
+            ("exclusive", &n.attrs.exclusive),
+            ("shared", &n.attrs.shared),
+        ] {
+            for k in repeats(list) {
+                let lock = c.name(k);
+                findings.push((
+                    n.name.clone(),
+                    vec![k],
+                    format!("node {:?} takes {lock:?} {mode} twice", n.name),
+                    "take the resource once; the second claim is the same lock",
+                ));
+            }
+        }
+        for k in dedup(&n.attrs.exclusive) {
+            if n.attrs.shared.contains(&k) {
+                let lock = c.name(k);
+                findings.push((
+                    n.name.clone(),
+                    vec![k],
+                    format!("node {:?} takes {lock:?} both exclusive and shared", n.name),
+                    "take the resource in one mode; exclusive and shared cannot both hold",
+                ));
+            }
+        }
     }
+    for (name, keys, detail, fix) in findings {
+        c.add(Rule::DupAttr, vec![name], keys, detail, fix);
+    }
+}
+
+/// The keys of `list` in first-seen order, each once.
+fn dedup(list: &[RawKey]) -> Vec<RawKey> {
+    let mut out: Vec<RawKey> = Vec::new();
+    for k in list {
+        if !out.contains(k) {
+            out.push(*k);
+        }
+    }
+    out
+}
+
+/// The keys `list` names more than once, in first-seen order, each once.
+fn repeats(list: &[RawKey]) -> Vec<RawKey> {
+    let mut seen: Vec<RawKey> = Vec::new();
+    let mut twice: Vec<RawKey> = Vec::new();
+    for k in list {
+        if seen.contains(k) {
+            if !twice.contains(k) {
+                twice.push(*k);
+            }
+        } else {
+            seen.push(*k);
+        }
+    }
+    twice
 }
 
 /// `V-IMPORT-SCOPE`: every key a registered child plan imports must be a node
@@ -210,6 +284,38 @@ pub(crate) fn spawn_self_import(c: &mut Ctx<'_>) {
     }
 }
 
+/// `V-SPAWN-KIND`: for every node N and every template T in `spawns(N)`, N is
+/// a service.
+///
+/// The chain form exists only on `Node<_, _, Service>`, so this is about the
+/// late form `PlanBuilder::spawns(key, &template)`, which takes any key. A
+/// resource, a step or an effect has no scope of its own to put an instance
+/// in, and nothing would ever stop what it spawned.
+pub(crate) fn spawn_kind(c: &mut Ctx<'_>) {
+    let mut findings = Vec::new();
+    for n in &c.ir.nodes {
+        if n.kind == Kind::Service {
+            continue;
+        }
+        for tpl in &n.spawns {
+            findings.push((n.name.clone(), c.name(*tpl), n.kind, *tpl));
+        }
+    }
+    for (node, template, kind, key) in findings {
+        c.add(
+            Rule::SpawnKind,
+            vec![node.clone(), template.clone()],
+            vec![key],
+            format!(
+                "node {node:?} is a {} and was declared to spawn template {template:?}",
+                kind.label()
+            ),
+            "only a service may spawn: declare it on the service that instantiates \
+             the template, or make this node a service",
+        );
+    }
+}
+
 /// `V-LOCK-NEEDS`: `exclusive(k)` or `shared(k)` requires `k ∈ needs(N)`. A
 /// lock on a value the node never receives cannot be what the author meant.
 pub(crate) fn lock_needs(c: &mut Ctx<'_>) {
@@ -229,274 +335,6 @@ pub(crate) fn lock_needs(c: &mut Ctx<'_>) {
             vec![key],
             format!("node {node:?} locks {lock:?} but does not need it"),
             "add the resource to `needs`, or drop the lock",
-        );
-    }
-}
-
-/// `V-IDEMPOTENT-REQUIRED`: `retry` on an effect, `restart` on a service, or
-/// `on_ambiguous ∈ {Compensate, Retry}` all mean the engine may act twice on
-/// one external effect; each requires `.idempotent()`.
-pub(crate) fn idempotent_required(c: &mut Ctx<'_>) {
-    let mut findings = Vec::new();
-    for n in &c.ir.nodes {
-        if n.attrs.idempotent {
-            continue;
-        }
-        let mut because = Vec::new();
-        if n.kind == Kind::Effect && n.attrs.retry.is_some() {
-            because.push("retry");
-        }
-        if n.kind == Kind::Service && n.attrs.restart.is_some() {
-            because.push("restart");
-        }
-        if matches!(
-            n.attrs.on_ambiguous,
-            Some(Ambiguity::Compensate) | Some(Ambiguity::Retry)
-        ) {
-            because.push("on_ambiguous");
-        }
-        if !because.is_empty() {
-            findings.push((n.name.clone(), because.join(" and ")));
-        }
-    }
-    for (node, because) in findings {
-        c.add(
-            Rule::IdempotentRequired,
-            vec![node.clone()],
-            Vec::new(),
-            format!("node {node:?} declares {because} but is not marked idempotent"),
-            "add `.idempotent()` if repeating the action is safe, or drop the re-execution",
-        );
-    }
-}
-
-pub(crate) fn pool_users(ir: &PlanIr, pool: Pool) -> Vec<&crate::plan::NodeDecl> {
-    ir.nodes
-        .iter()
-        .filter(|n| n.attrs.limit == Some(pool) || n.attrs.pool == Some(pool))
-        .collect()
-}
-
-pub(crate) fn child_holds_pool(ir: &PlanIr, pool: Pool) -> bool {
-    ir.nodes.iter().any(|n| {
-        n.attrs.limit == Some(pool)
-            || n.attrs.pool == Some(pool)
-            || n.child
-                .as_ref()
-                .is_some_and(|ch| child_holds_pool(ch, pool))
-    })
-}
-
-/// `V-POOL-STARVE`: count the pool's *resident* holders — services that take
-/// it, and templates whose instances take it (unbounded, since instance count
-/// is not known). If they can fill the pool and some non-resident node also
-/// takes it, that node can never run.
-pub(crate) fn pool_starve(c: &mut Ctx<'_>) {
-    let mut findings = Vec::new();
-    for (idx, decl) in c.ir.pools.iter().enumerate() {
-        let pool = Pool {
-            plan: c.ir.id,
-            idx: idx as u32,
-        };
-        let users = pool_users(c.ir, pool);
-        let mut resident = 0usize;
-        let mut unbounded = false;
-        for n in &users {
-            match n.kind {
-                Kind::Service => resident += 1,
-                Kind::Template => unbounded = true,
-                _ => {}
-            }
-        }
-        if c.ir.nodes.iter().any(|n| {
-            n.kind == Kind::Template
-                && n.child
-                    .as_ref()
-                    .is_some_and(|ch| child_holds_pool(ch, pool))
-        }) {
-            unbounded = true;
-        }
-        let starved: Vec<String> = users
-            .iter()
-            .filter(|n| !matches!(n.kind, Kind::Service | Kind::Template))
-            .map(|n| n.name.clone())
-            .collect();
-        if starved.is_empty() {
-            continue;
-        }
-        if unbounded || resident >= decl.limit {
-            let holders = if unbounded {
-                "unbounded".to_string()
-            } else {
-                resident.to_string()
-            };
-            findings.push((
-                starved.clone(),
-                format!(
-                    "pool {:?} has limit {} and {holders} resident holder(s); {} can never be granted",
-                    decl.name,
-                    decl.limit,
-                    starved.join(", ")
-                ),
-            ));
-        }
-    }
-    for (starved, detail) in findings {
-        c.add(
-            Rule::PoolStarve,
-            starved,
-            Vec::new(),
-            detail,
-            "raise the pool's limit, or take the pool off the resident holders",
-        );
-    }
-}
-
-/// `V-UNUSED-POOL`: a pool nobody takes is a declaration that means nothing.
-pub(crate) fn unused_pool(c: &mut Ctx<'_>) {
-    let mut findings = Vec::new();
-    for (idx, decl) in c.ir.pools.iter().enumerate() {
-        let pool = Pool {
-            plan: c.ir.id,
-            idx: idx as u32,
-        };
-        if !child_holds_pool(c.ir, pool) {
-            findings.push(format!("pool {:?} has no user", decl.name));
-        }
-    }
-    for detail in findings {
-        c.add(
-            Rule::UnusedPool,
-            Vec::new(),
-            Vec::new(),
-            detail,
-            "use the pool with `.limit(pool)` or `.on(pool)`, or remove it",
-        );
-    }
-}
-
-/// `V-SERVICE-UNBOUNDED`: with `Shutdown::unbounded()` nothing bounds a stop
-/// but the service's own `stop_within`, so every service must declare one.
-pub(crate) fn service_unbounded(c: &mut Ctx<'_>) {
-    if c.ir.shutdown.budget().is_some() {
-        return;
-    }
-    let names: Vec<String> =
-        c.ir.nodes
-            .iter()
-            .filter(|n| n.kind == Kind::Service && n.attrs.stop_within.is_none())
-            .map(|n| n.name.clone())
-            .collect();
-    for name in names {
-        c.add(
-            Rule::ServiceUnbounded,
-            vec![name.clone()],
-            Vec::new(),
-            format!("service {name:?} has no stop_within and the shutdown budget is unbounded"),
-            "declare `.stop_within(d)`, or bound the scope with `Shutdown::within(d)`",
-        );
-    }
-}
-
-/// `V-TRY-UNCONSUMED`: a try-step turns failure into a value; with no
-/// dependent, that value is dropped and the failure vanishes.
-pub(crate) fn try_unconsumed(c: &mut Ctx<'_>) {
-    let unconsumed: Vec<String> =
-        c.ir.nodes
-            .iter()
-            .filter(|n| n.kind == Kind::TryStep)
-            .filter(|n| !c.ir.nodes.iter().any(|m| m.needs.contains(&n.key)))
-            .map(|n| n.name.clone())
-            .collect();
-    if unconsumed.is_empty() {
-        return;
-    }
-    let detail = format!("try_step(s) {} have no dependent", unconsumed.join(", "));
-    c.add(
-        Rule::TryUnconsumed,
-        unconsumed,
-        Vec::new(),
-        detail,
-        "let a node need the try_step's result, or make it a plain `step`",
-    );
-}
-
-/// `V-BUDGET-ORDER`: `stop_within(d) ≤ Shutdown::within(D)`, and a child
-/// plan's own budget ≤ the budget of the plan that registers it.
-pub(crate) fn budget_order(c: &mut Ctx<'_>) {
-    let Some(budget) = c.ir.shutdown.budget() else {
-        return;
-    };
-    let mut findings = Vec::new();
-    for n in &c.ir.nodes {
-        if let Some(d) = n.attrs.stop_within {
-            if d > budget {
-                findings.push((
-                    n.name.clone(),
-                    format!(
-                        "service {:?} declares stop_within {} inside a shutdown budget of {}",
-                        n.name,
-                        crate::view::human(d),
-                        crate::view::human(budget)
-                    ),
-                ));
-            }
-        }
-        if let Some(child) = &n.child {
-            if let Some(inner) = child.shutdown.budget() {
-                if inner > budget {
-                    findings.push((
-                        n.name.clone(),
-                        format!(
-                            "child plan {:?} has a shutdown budget of {} inside a parent budget of {}",
-                            n.name,
-                            crate::view::human(inner),
-                            crate::view::human(budget)
-                        ),
-                    ));
-                }
-            } else {
-                findings.push((
-                    n.name.clone(),
-                    format!(
-                        "child plan {:?} is unbounded inside a bounded parent",
-                        n.name
-                    ),
-                ));
-            }
-        }
-    }
-    for (node, detail) in findings {
-        c.add(
-            Rule::BudgetOrder,
-            vec![node],
-            Vec::new(),
-            detail,
-            "shorten the inner budget, or lengthen the scope's `Shutdown::within`",
-        );
-    }
-}
-
-/// `V-MODE`: `Mode::Finite` says the run ends when every node has settled. A
-/// service never settles by itself and a template's instances outlive their
-/// spawner, so a finite run would stop them the moment they became ready.
-pub(crate) fn mode(c: &mut Ctx<'_>) {
-    if c.ir.mode != Mode::Finite {
-        return;
-    }
-    let offenders: Vec<String> =
-        c.ir.nodes
-            .iter()
-            .filter(|n| matches!(n.kind, Kind::Service | Kind::Template))
-            .map(|n| n.name.clone())
-            .collect();
-    for name in offenders {
-        c.add(
-            Rule::Mode,
-            vec![name.clone()],
-            Vec::new(),
-            format!("{name:?} is long-lived, and this plan was built finite"),
-            "build with `Mode::Resident`, or take the service or template out of this plan",
         );
     }
 }

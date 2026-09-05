@@ -5,7 +5,10 @@
 //! in this order is Stage 1.
 
 use super::exec::block_on;
-use crate::engine::{Effect, Event};
+use crate::host::engine::{Effect, Event, JoinedLabel, TimerId};
+use crate::host::{
+    BoxFuture, Clock, InstanceId, Joined, NoObserver, Observer, RawKey, Runtime, TaskHandle, Time,
+};
 use crate::*;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};

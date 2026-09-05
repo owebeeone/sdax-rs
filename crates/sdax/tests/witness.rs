@@ -5,6 +5,7 @@
 //! declarations* — Stage 0 runs no lifecycle, so a pass here is not
 //! behavioural conformance.
 
+use sdax::host::{BoxFuture, Clock, CxInner, RawKey, Time};
 use sdax::*;
 use std::future::Future;
 use std::pin::Pin;

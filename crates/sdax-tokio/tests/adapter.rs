@@ -2,9 +2,8 @@
 //! real substrate. The run driver, the `Running` drop guard and the drainer
 //! are Stage 2.
 
-use sdax::{
-    Joined, NoObserver, Observer, Outcome, Runtime, TaskHandle, Time, TraceEvent, TraceKind,
-};
+use sdax::host::{Joined, NoObserver, Observer, Runtime, TaskHandle, Time};
+use sdax::{Outcome, TraceEvent, TraceKind};
 use sdax_tokio::TokioRuntime;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

@@ -68,6 +68,17 @@
 //! # Ok::<(), Invalid>(())
 //! ```
 //!
+//! # Author API and host API
+//!
+//! The crate root and [`prelude`] are the **author** API: the surface a plan is
+//! written, validated, inspected and read back against. [`host`] is what a
+//! runtime adapter, a run driver or the engine needs and an author does not —
+//! [`Runtime`](host::Runtime), [`Clock`](host::Clock),
+//! [`Observer`](host::Observer), [`CxInner`](host::CxInner),
+//! [`Scope`](host::Scope), [`RawKey`](host::RawKey) and the
+//! [`engine`](host::engine) vocabulary. Only the author half carries the
+//! crate's stability promise; `host` may change in a minor version before 1.0.
+//!
 //! # The one rule of the body contract
 //!
 //! Perform external effects *inside* `cx.hold(..)`. A body that performs the
@@ -83,10 +94,11 @@
 #![warn(missing_docs)]
 
 mod builder;
+#[doc(hidden)]
 pub mod compile_fail;
 mod contracts;
 mod cx;
-pub mod engine;
+pub mod host;
 mod key;
 mod plan;
 mod policy;
@@ -100,16 +112,12 @@ pub use builder::{
     release, Blocking, Effect, NoAmbiguity, NoPool, Node, PlanBuilder, Resource, Service, Step,
     TryStep,
 };
-pub use contracts::{
-    BoxFuture, Clock, Error, Joined, NoObserver, Observer, Runtime, TaskHandle, Time,
-};
+pub use contracts::Error;
 pub use cx::{
-    Acquire, Child, ChildControl, Cx, CxInner, Held, Hold, InstanceId, Release, Run, Scope,
-    Serving, SpawnError, Start, Stop, StopSignal, Timeout,
+    Acquire, Child, Cx, Held, Hold, Release, Run, Serving, SpawnError, Start, Stop, Timeout,
 };
-pub use engine::{JoinedLabel, TimerId};
-pub use key::{Deps, Key, RawKey, Slots};
-pub use plan::{Kind, Plan, Pool, ReleaseStyle, Template, SEMANTICS};
+pub use key::{Deps, Key};
+pub use plan::{Kind, Plan, Pool, ReleaseStyle, Template};
 pub use policy::{Ambiguity, Backoff, CancelMode, Mode, Policy, Restart, Retry, Shutdown};
 pub use report::{
     Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
@@ -122,17 +130,38 @@ pub use view::{
     ReleaseOrder, Why,
 };
 
-/// Everything an author needs to write a plan, plus `Duration`.
+/// Everything an author needs to write, validate, inspect and read back a
+/// plan, plus `Duration`.
+///
+/// This is the crate root's author half, re-exported for `use sdax::prelude::*`.
+/// It deliberately carries no host contract: an author never implements
+/// [`Runtime`](crate::host::Runtime), [`Clock`](crate::host::Clock) or
+/// [`Observer`](crate::host::Observer), and never names a
+/// [`Time`](crate::host::Time) — those live in [`host`].
 pub mod prelude {
-    pub use crate::builder::{release, PlanBuilder};
-    pub use crate::contracts::{Clock, Error, Observer, Runtime, Time};
-    pub use crate::cx::{Acquire, Child, Cx, Held, Release, Run, Serving, Start};
+    pub use crate::builder::{
+        release, Blocking, Effect, NoAmbiguity, NoPool, Node, PlanBuilder, Resource, Service, Step,
+        TryStep,
+    };
+    pub use crate::contracts::Error;
+    pub use crate::cx::{
+        Acquire, Child, Cx, Held, Hold, Release, Run, Serving, SpawnError, Start, Stop, Timeout,
+    };
     pub use crate::key::{Deps, Key};
-    pub use crate::plan::{Plan, Pool, Template};
-    pub use crate::policy::{Ambiguity, Backoff, Mode, Policy, Restart, Retry, Shutdown};
-    pub use crate::report::{Outcome, Report};
+    pub use crate::plan::{Kind, Plan, Pool, ReleaseStyle, Template};
+    pub use crate::policy::{
+        Ambiguity, Backoff, CancelMode, Mode, Policy, Restart, Retry, Shutdown,
+    };
+    pub use crate::report::{
+        Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
+        TraceEvent, TraceKind,
+    };
+    pub use crate::terminals::{NeedsCompensate, NeedsRelease};
     pub use crate::validate::{Finding, Invalid, Rule};
-    pub use crate::view::{PlanView, Why};
+    pub use crate::view::{
+        AttrChange, Edge, Effects, NodePath, NodeView, PlanDiff, PlanView, PoolView, Reason,
+        ReleaseOrder, Why,
+    };
     pub use std::time::Duration;
 }
 

@@ -189,6 +189,9 @@ impl<P> Clone for Cx<P> {
 
 impl<P> Cx<P> {
     /// Wrap engine state as a body context.
+    ///
+    /// Host API: the run driver builds contexts, an author receives them.
+    /// [`CxInner`] lives in [`host`](crate::host) for the same reason.
     pub fn new(inner: Arc<CxInner>) -> Self {
         Cx {
             inner,
@@ -196,7 +199,7 @@ impl<P> Cx<P> {
         }
     }
 
-    /// The engine state behind this context.
+    /// The engine state behind this context. Host API, like [`Cx::new`].
     pub fn inner(&self) -> Arc<CxInner> {
         self.inner.clone()
     }

@@ -42,11 +42,14 @@
 //!
 //! ## W-03 — a forged registration (`X1`)
 //!
-//! `Held` has no public constructor and no public fields.
+//! `Held` has no public constructor and no public fields. (`RawKey` is the
+//! engine's node address and lives in `sdax::host`, so the forgery has to
+//! reach for it there — which is not what stops it.)
 //!
 //! ```compile_fail
 //! // expect: E0451
 //! use sdax::*;
+//! use sdax::host::RawKey;
 //! use std::sync::Arc;
 //! struct Port;
 //! fn forge(arc: Arc<Port>, node: RawKey) -> Held<Port> {
@@ -228,4 +231,18 @@
 //! fn forge() -> Serving<()> {
 //!     Serving { handle: (), serve: Box::pin(async { Ok(()) }) }
 //! }
+//! ```
+//!
+//! ## S-01 — a host type named at the crate root
+//!
+//! The crate root and the prelude are the author API; everything a runtime
+//! adapter, a run driver or the engine needs lives under `sdax::host`. The
+//! split is only real if the old root path stops resolving, and only a program
+//! that fails to compile can witness that. The compile-*pass* half is
+//! `tests/surface.rs`.
+//!
+//! ```compile_fail
+//! // expect: E0432
+//! use sdax::CxInner;
+//! let _ = CxInner::new;
 //! ```

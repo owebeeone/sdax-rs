@@ -17,7 +17,8 @@
 //! are regression guards with positive coverage over every plan shape, not
 //! independently falsified checks, and this crate does not claim otherwise.
 
-use sdax::{Clock, NodePath, PlanView, Time};
+use sdax::host::{Clock, Time};
+use sdax::{NodePath, PlanView};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

@@ -12,7 +12,8 @@ and a dev-only testkit. Stop at machine + testkit before buying an engine.
 
 - `crates/sdax` — core library. Authoring surface, inspectable plan, validator,
   the seam, and (from Stage 1) the pure event/effect machine. No tokio types.
-  This is the crates.io package.
+  This is the crates.io package. Its crate root and `prelude` are the **author**
+  API; `sdax::host` is the **host** API (see Status).
 - `crates/sdax-tokio` — tokio `Runtime` adapter; the run driver and drop-guard
   drainer arrive in Stage 2. The only crate that may mention tokio types, and
   the only one that may spawn a raw task.
@@ -64,12 +65,24 @@ Release tags are immutable. Details in [`RELEASE.md`](RELEASE.md).
 **Stage 0 — the contract, the validator and the seam. No engine.** Version
 `0.1.0` is unreleased and nothing is frozen.
 
+**Two surfaces.** The crate root and `sdax::prelude` are the **author** API:
+what a plan is written, validated, inspected and read back against. `sdax::host`
+is the **host** API: what a runtime adapter, a run driver or the engine needs and
+an author does not — `Runtime`, `TaskHandle`, `Joined`, `Clock`, `Time`,
+`Observer`, `NoObserver`, `BoxFuture`, `Scope`, `ChildControl`, `InstanceId`,
+`StopSignal`, `CxInner`, `RawKey`, `SEMANTICS` and
+`host::engine::{Event, Effect, TimerId, JoinedLabel}`. **Only the author surface
+carries the stability promise**; `sdax::host` may change in a minor version
+before 1.0, because the run driver and the machine are still being written.
+`crates/sdax/tests/surface.rs` pins the author half and witness S-01 in
+`sdax::compile_fail` pins the absence of the host half from the root.
+
 What exists:
 
 - the complete authoring surface — resources, steps, try-steps, blocking steps,
   services, effects (compensated or persistent), joins, components, templates —
   in a chain form and a positional shorthand that records the same declaration;
-- `build(policy, shutdown, mode)` with 14 validate rules, each reporting a
+- `build(policy, shutdown, mode)` with 15 validate rules, each reporting a
   `Finding` that names the rule, the node, the key and a fix;
 - `inspect()`: nodes, exactly the declared edges, earliest-start layers, the
   release order as a partial order, `why`, `effects()`, `diff` and a rendering;

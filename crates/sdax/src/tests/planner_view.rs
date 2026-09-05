@@ -130,6 +130,38 @@ fn spawns_is_visible_in_the_view() {
     assert!(mesh.to_string().contains("spawns Link"), "{}", mesh);
 }
 
+/// F1 — `spawns` is a service's declaration, so the view shows it only there.
+///
+/// White box: a plan whose resource carries a `spawns` cannot be built at all
+/// (`V-SPAWN-KIND` rejects it), so the view is checked over a hand-made IR.
+#[test]
+fn spawns_is_shown_only_on_a_service() {
+    let mesh = i30().expect("valid");
+    let mut ir = (*mesh.ir).clone();
+    let tpl_key = ir
+        .nodes
+        .iter()
+        .find(|n| n.kind == Kind::Template)
+        .expect("template")
+        .key;
+    assert_eq!(ir.nodes[0].kind, Kind::Resource, "node 0 is the endpoint");
+    ir.nodes[0].spawns.push(tpl_key);
+    let v = crate::view::PlanView::of(&ir);
+    assert!(
+        v.node("Endpoint").expect("Endpoint").spawns.is_empty(),
+        "a resource never shows spawns"
+    );
+    assert_eq!(
+        names(&v.node("AcceptLoop").expect("AcceptLoop").spawns),
+        ["Link"]
+    );
+    assert_eq!(
+        v.to_string().matches("spawns Link").count(),
+        1,
+        "only the service's line carries it:\n{v}"
+    );
+}
+
 /// A3 — `effects()` lists what is at or past the ship boundary, in declaration
 /// order, with the earliest layer that contains one.
 #[test]

@@ -1,5 +1,6 @@
 //! Keys and dependency tuples (witness A1/A4 of `B/experiments/typed_keys`).
 
+use crate::host::{RawKey, Slots};
 use crate::*;
 use std::sync::Arc;
 
