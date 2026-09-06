@@ -105,6 +105,7 @@ fn run_seeded(
 ) -> Result<(), Box<CaseFailure>> {
     let mut g = prng::SplitMix64::new(case_seed);
     let generated = gen::generate(&mut g);
+    let root_input = generated.root_input;
     let declaration = generated.lines.join("\n");
     let fail = |what: String, plan: String, script: String, trace: String| {
         Box::new(CaseFailure {
@@ -162,7 +163,9 @@ fn run_seeded(
     let script = script::generate(&mut g, &view, bounded);
     let rendered_plan = format!("{declaration}\n\n{view}");
 
-    let d = match ScriptedDriver::run(&plan, &script) {
+    // Every case is started the way an author starts a root run: with its
+    // input. Most plans declare none, and `()` is what those take.
+    let d = match ScriptedDriver::run_with_input(&plan, (), &script) {
         Ok(d) => d,
         Err(e) => {
             return Err(fail(
@@ -194,6 +197,16 @@ fn run_seeded(
     }
 
     corners(&d, &view, cov);
+    if root_input {
+        cov.hit("a root plan takes a per-run input");
+        if d.trace
+            .events
+            .iter()
+            .any(|e| e.node.as_ref().map(|p| p.to_string()).as_deref() == Some("Cfg"))
+        {
+            cov.hit("the root input's reader ran");
+        }
+    }
 
     // INV-14: the same seed is the same run, byte for byte.
     if index % DETERMINISM_EVERY == 0 {
@@ -215,7 +228,8 @@ fn run_seeded(
         };
         let view2 = plan2.inspect();
         let script2 = script::generate(&mut g2, &view2, view2.shutdown.budget().is_some());
-        let d2 = ScriptedDriver::run(&plan2, &script2).expect("the same script runs again");
+        let d2 = ScriptedDriver::run_with_input(&plan2, (), &script2)
+            .expect("the same script runs again");
         let (a, b) = (d.eol().render(), d2.eol().render());
         if a != b {
             let what = format!(

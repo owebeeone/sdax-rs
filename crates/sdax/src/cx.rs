@@ -167,7 +167,9 @@ impl CxInner {
     ///
     /// Host API: [`Cx::spawn`](crate::Cx::spawn) is the typed form an author
     /// writes; a harness that supplies erased bodies has only the key, and
-    /// this is how it reaches the same seam.
+    /// this is how it reaches the same seam. `input` must be a boxed
+    /// `Arc<I>` — a slot holds `Arc<T>` for every node, the instance's input
+    /// included (`OD-SPAWN-INPUT`).
     pub fn spawn_instance(
         &self,
         template: RawKey,

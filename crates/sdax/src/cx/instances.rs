@@ -181,6 +181,9 @@ impl std::fmt::Debug for Child {
 /// The engine side of `cx.spawn`: the run's scope, as a body may reach it.
 pub trait Scope: Send + Sync {
     /// Instantiate a registered template with a per-instance input.
+    ///
+    /// `input` is a boxed `Arc<I>`: it is written straight into the instance's
+    /// slot for the input node, and a slot holds `Arc<T>`.
     fn spawn_instance(
         &self,
         spawner: RawKey,

@@ -3,6 +3,12 @@
 Read this before changing anything here. `dev-docs/SdaxContract-v1.md` is the
 normative contract; this file is how the work is done.
 
+`docs/` is how to use the crate. `dev-docs/` is plans, the contract, stage
+reports, TDD logs and reviews. Do not put status, INV-/T-/C- ids, host
+engine types, or how the crate was verified into `docs/`. A `rust,guide:<name>`
+fence in `docs/` is the entire file `crates/sdax-tokio/tests/guide/<name>.rs`
+— do not trim it.
+
 ## Commits
 
 - **Never add a `Co-Authored-By: Claude …` trailer, or any other AI attribution
@@ -28,8 +34,7 @@ cannot.
 
 ## Honest labels
 
-- What is not executed is not described as executed. There is no engine yet;
-  say so where it matters.
+- What is not executed is not described as executed. Say so where it matters.
 - **Never stub a missing capability with `todo!()`, a panic, or a function that
   returns a plausible-looking constant.** A stub is a claim the crate cannot
   make. Leave the item out, and say in the docs which stage it belongs to.
@@ -101,11 +106,18 @@ cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 cargo package -p sdax --locked --offline --allow-dirty
 ./scripts/check-architecture.sh
 ./scripts/compile-fail.sh
+./scripts/check-guide-quotes.sh
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --offline
 ```
 
 The last one is not in CI yet; run it anyway. Every public item is documented,
 so a broken intra-doc link is a real defect.
+
+`check-guide-quotes.sh` is the one that keeps `docs/` honest: every
+`rust,guide:<name>` fence must be the whole file
+`crates/sdax-tokio/tests/guide/<name>.rs`, which
+`cargo test -p sdax-tokio --test guide` runs. Edit the test, then copy it into
+the fence — never the other way round.
 
 `cargo fmt` runs with rustfmt's defaults; there is no `rustfmt.toml`.
 

@@ -384,7 +384,10 @@ impl<P> Cx<P> {
         template: &Template<I>,
         input: I,
     ) -> Result<Child, SpawnError> {
-        self.spawn_raw(template.node, Box::new(input))
+        // `Arc<I>`, not `I`: a slot holds `Arc<T>` for every node, and the
+        // instance's input is a slot like any other, so a body that `needs` it
+        // reads `Arc<I>` back out (`OD-SPAWN-INPUT`).
+        self.spawn_raw(template.node, Box::new(Arc::new(input)))
     }
 }
 

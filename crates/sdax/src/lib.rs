@@ -20,14 +20,13 @@
 //!    the run mode, and what to do about an effect whose outcome is unknown — is
 //!    a required argument or a required typestate step, never a default.
 //!
-//! # Stage 0 has no execution
+//! # Build here, start on the adapter
 //!
-//! This version is the **contract, the validator and the seam**. It has no
-//! state machine, no `Plan::start` and no `Running` — and no stub standing in
-//! for them, because a stub would be a claim the crate cannot make. What it
-//! does today: build a plan, reject an invalid one with findings that name the
-//! rule, and answer questions about a plan before anything runs.
-//! `dev-docs/SdaxContract-v1.md` is normative and marks every deferred row.
+//! This crate is std-only: write a plan, reject an invalid one with findings
+//! that name the rule, inspect it, and simulate a script. Execution lives in
+//! `sdax-tokio`: `use sdax_tokio::PlanStart;` then `plan.start(rt, input)`.
+//! A [`Plan::builder`] plan takes `()`; a [`Plan::with_input`] plan takes one
+//! typed value per run. How to use it lives in the repository's `docs/` tree.
 //!
 //! ```
 //! use sdax::*;

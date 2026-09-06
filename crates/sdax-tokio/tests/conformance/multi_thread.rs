@@ -164,7 +164,7 @@ fn once<Out: Send + Sync + 'static>(
     let requests: Vec<(Duration, Request)> = script.requests().to_vec();
     let mine = rt.clone();
     let out = tokio_rt.block_on(async move {
-        let running = plan.start_with(rt.clone(), opts);
+        let running = plan.start_with(rt.clone(), (), opts);
         let handle = running.handle();
         for (at, req) in requests {
             if at.is_zero() {

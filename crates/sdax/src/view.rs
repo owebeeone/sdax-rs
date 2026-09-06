@@ -287,6 +287,14 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
         };
         let mut needs = Vec::new();
         for k in &n.needs {
+            // A need on *this* plan's own input is not an edge when the plan is
+            // the root: the value is in the run's slots before the first step,
+            // so there is no node to wait for and none to show. Inside a
+            // template or a component the same key stands for the node that
+            // instantiates the plan, which the resolver recorded below.
+            if ir.input == Some(*k) && res.resolve(*k).is_none() {
+                continue;
+            }
             let to = resolve_need(ir, prefix, res, *k);
             out.edges.push(Edge {
                 from: path.clone(),

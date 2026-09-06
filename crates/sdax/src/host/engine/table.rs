@@ -119,15 +119,32 @@ fn lookup(map: &[(RawKey, usize)], k: RawKey) -> Option<usize> {
     map.iter().rev().find(|(key, _)| *key == k).map(|(_, i)| *i)
 }
 
+/// Whether the caller starting this run supplies the plan's per-run input.
+///
+/// The declaration alone cannot say: one plan value is both a root a caller
+/// starts with `start(rt, input)` and a template `cx.spawn` instantiates. What
+/// decides is the entry point, so the entry point is what tells the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RootInput {
+    /// A value is in the run's slot for the input node before the first body
+    /// is built, so a need on it is already satisfied.
+    Supplied,
+    /// Nobody supplies one: a plan that declares an input is refused, because
+    /// the node that needs it could never be satisfied.
+    Absent,
+}
+
 impl Table {
-    /// Flatten a root plan. Refuses a plan that is itself a template (a
-    /// per-instance input has no value outside `cx.spawn`), a root with
-    /// unresolved imports (`L-IMPORTS`), and one child plan used as two
-    /// components: the engine addresses a *declaration* by [`RawKey`], which a
-    /// plan used twice cannot keep unique.
-    pub fn build(ir: &PlanIr) -> Result<Table, EngineError> {
-        if let Some(n) = ir.nodes.iter().find(|n| n.kind == Kind::Input) {
-            return Err(EngineError::TemplateAsScope(NodePath::root(&n.name)));
+    /// Flatten a root plan. Refuses a plan whose declared input nothing
+    /// supplies a value for ([`RootInput::Absent`]), a root with unresolved
+    /// imports (`L-IMPORTS`), and one child plan used as two components: the
+    /// engine addresses a *declaration* by [`RawKey`], which a plan used twice
+    /// cannot keep unique.
+    pub fn build(ir: &PlanIr, input: RootInput) -> Result<Table, EngineError> {
+        if input == RootInput::Absent {
+            if let Some(n) = ir.nodes.iter().find(|n| n.kind == Kind::Input) {
+                return Err(EngineError::TemplateAsScope(NodePath::root(&n.name)));
+            }
         }
         let imports: Vec<NodePath> = ir
             .nodes
@@ -279,9 +296,10 @@ impl Table {
                 continue;
             }
             if n.kind == Kind::Input {
-                // The per-instance input is not a node of the run: its value is
-                // in the instance's slots from the moment of the spawn, so a
-                // need on it is already satisfied and is dropped here.
+                // The per-run input is not a node of the run: its value is in
+                // the run's slots from the moment the run started — the spawn
+                // for an instance, `start(rt, input)` for a root — so a need on
+                // it is already satisfied and is dropped here.
                 continue;
             }
             let idx = self.nodes.len();

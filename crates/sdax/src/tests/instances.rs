@@ -3,7 +3,7 @@
 //! time, so the instance table, the spawn gate and the instance's own release
 //! graph are exercised without a driver.
 
-use crate::host::engine::{Effect, Event, Machine, NodeState, RunState};
+use crate::host::engine::{Effect, EngineError, Event, Machine, NodeState, RunState};
 use crate::host::{InstanceId, RawKey};
 use crate::*;
 use std::sync::Arc;
@@ -56,6 +56,48 @@ fn a_plan_with_a_template_is_accepted() {
     let plan = mesh();
     let m = Machine::new(&plan).expect("the machine runs templates from Stage 3");
     assert_eq!(m.run_state(), RunState::Planned);
+}
+
+/// A plan that declares an input runs as a root when the caller supplies the
+/// value, and is refused when nobody does. Both answers come from the same
+/// plan value: what decides is the entry point, not the declaration.
+#[test]
+fn an_input_bearing_plan_runs_only_when_its_value_is_supplied() {
+    let mut p = Plan::with_input::<u8>("Request");
+    let input = p.input();
+    p.step("Cfg")
+        .needs(input)
+        .run(|_cx, _v: Arc<u8>| async move { Ok(()) });
+    let plan = p
+        .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite)
+        .expect("valid");
+
+    let err = Machine::new(&plan).expect_err("no value, no run");
+    match &err {
+        EngineError::TemplateAsScope(node) => assert_eq!(*node, NodePath::root("input")),
+        other => panic!("refused, but not as an unsatisfied input: {other}"),
+    }
+    let m = Machine::with_input(&plan).expect("the caller supplies the input");
+    assert_eq!(m.run_state(), RunState::Planned);
+    // The input is not a node of the run: `Cfg` is, and its need on the input
+    // is satisfied before the first step.
+    assert!(m.key_of("input").is_none());
+    assert!(m.key_of("Cfg").is_some());
+
+    // The counterfactual splits the same way, so § 9's pre-ship answer is
+    // available for exactly the plans that can be run.
+    assert!(plan.simulate(&Script::new()).is_err());
+    let trace = plan
+        .simulate_with_input(1u8, &Script::new())
+        .expect("the counterfactual for start(rt, input)");
+    assert!(trace
+        .events
+        .iter()
+        .any(|e| e.node.as_ref() == Some(&NodePath::root("Cfg"))));
+    assert!(trace
+        .events
+        .iter()
+        .all(|e| e.node.as_ref() != Some(&NodePath::root("input"))));
 }
 
 /// The template node comes up `Live` — it has no body and never becomes

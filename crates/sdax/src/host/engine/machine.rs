@@ -2,7 +2,7 @@
 //! `step`, and what a host may read back.
 
 use super::state::{Machine, NodeState, Purpose, St};
-use super::table::Table;
+use super::table::{RootInput, Table};
 use super::{Effect, Event, Rejected, RunState};
 use crate::contracts::Time;
 use crate::key::RawKey;
@@ -12,14 +12,32 @@ use crate::sim::Schedule;
 use crate::view::{NodePath, Reason, Why};
 
 impl Machine {
-    /// A machine for one run of a plan: resources, steps, services, effects,
-    /// joins, components and templates.
+    /// A machine for one run of a plan the caller supplies **no** input for:
+    /// resources, steps, services, effects, joins, components and templates.
     ///
-    /// Refuses a plan that is itself a template (its per-instance input has a
-    /// value only when `cx.spawn` supplies one), a root plan with unresolved
-    /// imports (`L-IMPORTS`), and one child plan used as two components.
-    pub fn new<Out>(plan: &Plan<Out>) -> Result<Machine, super::EngineError> {
-        Table::build(plan.ir()).map(Machine::from_table)
+    /// Refuses a plan that declares a per-run input (nothing would ever fill
+    /// its slot, so the nodes that need it could never start), a root plan with
+    /// unresolved imports (`L-IMPORTS`), and one child plan used as two
+    /// components. [`Machine::with_input`] is the constructor for a run that
+    /// does supply one.
+    pub fn new<Out, In>(plan: &Plan<Out, In>) -> Result<Machine, super::EngineError> {
+        Table::build(plan.ir(), RootInput::Absent).map(Machine::from_table)
+    }
+
+    /// A machine for one run of a plan whose per-run input the caller supplies:
+    /// `start(rt, input)` at the root, `cx.spawn(&template, input)` for an
+    /// instance.
+    ///
+    /// The caller owes the run one thing the machine cannot check: the value
+    /// must be in the run's slot for the input node *before* the first body is
+    /// built (`bodies_of_with_input`, `BodySource::open_instance`). The input
+    /// node is then not a node of the run at all, and a need on it is satisfied
+    /// from the first step.
+    ///
+    /// A plan that declares no input is accepted here too — there is simply
+    /// nothing to seed.
+    pub fn with_input<Out, In>(plan: &Plan<Out, In>) -> Result<Machine, super::EngineError> {
+        Table::build(plan.ir(), RootInput::Supplied).map(Machine::from_table)
     }
 
     /// Every node the declaration tree holds, a template's inner nodes

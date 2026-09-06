@@ -125,14 +125,35 @@ impl Plan<(), ()> {
 }
 
 impl Plan {
-    /// Start a template: a plan instantiated at run time with a per-instance
-    /// input. A template has no `start`; only `cx.spawn` instantiates it.
-    pub fn template<In: Send + Sync + 'static>(name: &str) -> PlanBuilder<(), In> {
+    /// Start a plan with a **per-run input**: one value of type `In`, supplied
+    /// when the run begins, readable by every node that `needs` it.
+    ///
+    /// One declaration serves both ways a run can be started. A **root** run
+    /// takes its input from `start(rt, input)`; a **template instance** takes
+    /// it from `cx.spawn(&template, input)`. Either way the value is in the
+    /// run's own slot table before the first body is built, so a need on the
+    /// input is satisfied from the first step and the input is not itself a
+    /// node of the run.
+    ///
+    /// `In` is `Send + Sync` because the slot holds an `Arc<In>` that every
+    /// body of the run may read (`OD-SPAWN-INPUT`).
+    pub fn with_input<In: Send + Sync + 'static>(name: &str) -> PlanBuilder<(), In> {
         let mut b = Build::new(name);
         let decl = b.decl("input", Kind::Input);
         let key: Key<In> = b.commit(decl, None, None, None);
         b.input = Some(key.raw());
         PlanBuilder { b, _t: PhantomData }
+    }
+
+    /// Start a template: a plan instantiated at run time by `cx.spawn` with a
+    /// per-instance input.
+    ///
+    /// The same declaration as [`Plan::with_input`], under the name the
+    /// template case is written with. Registering the built plan with
+    /// [`PlanBuilder::template`] is what makes it a template; the plan value
+    /// itself can also be started as a root.
+    pub fn template<In: Send + Sync + 'static>(name: &str) -> PlanBuilder<(), In> {
+        Plan::with_input::<In>(name)
     }
 }
 
@@ -142,12 +163,15 @@ impl<Out, In> PlanBuilder<Out, In> {
         self.b.id
     }
 
-    /// The template's per-instance input.
+    /// This plan's per-run input: the value a root run is started with
+    /// (`start(rt, input)`) and the value one instance is spawned with
+    /// (`cx.spawn(&template, input)`) are the same node.
     ///
-    /// Panics if this plan is not a template: `Plan::builder` plans have no
-    /// input, and the type parameter `In = ()` says so.
+    /// Panics if this plan declares no input. A [`Plan::builder`] plan does
+    /// not, and its `In = ()` says so; [`Plan::with_input`] and
+    /// [`Plan::template`] are what declare one.
     pub fn input(&self) -> Key<In> {
-        Key::from_raw(self.b.input.expect("only a template plan has an input"))
+        Key::from_raw(self.b.input.expect("this plan declares no input"))
     }
 
     /// Name a key of an ancestor plan inside this child plan.

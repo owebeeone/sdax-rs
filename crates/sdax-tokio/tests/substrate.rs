@@ -10,6 +10,7 @@ use sdax_tokio::{PlanStart, TokioRuntime};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::runtime::RuntimeFlavor;
 
 fn paused() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -33,8 +34,18 @@ fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
 }
 
+/// This file builds both flavours — `paused()` and `live()` are current-thread,
+/// `R-07` is multi-threaded — so the one helper dispatches on the handle rather
+/// than naming a constructor. Every run here awaits its own end and then
+/// `TokioRuntime::shutdown`, so nothing in this suite relies on a dropped
+/// `Running` draining in the background (`OD-CT-DRAIN`).
 fn adapter(rt: &tokio::runtime::Runtime, obs: Arc<dyn Observer>) -> Arc<TokioRuntime> {
-    Arc::new(TokioRuntime::new(rt.handle().clone()).with_observer(obs))
+    let handle = rt.handle().clone();
+    let built = match handle.runtime_flavor() {
+        RuntimeFlavor::CurrentThread => TokioRuntime::current_thread_no_background_drain(handle),
+        _ => TokioRuntime::new(handle),
+    };
+    Arc::new(built.with_observer(obs))
 }
 
 struct Unit;
@@ -118,7 +129,7 @@ fn r04_a_declared_pool_bounds_the_blocking_steps_and_the_bound_is_measured() {
     // auto-advance would fire the shutdown budget while it worked.
     let tokio_rt = live();
     let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
-    let report = tokio_rt.block_on(async { plan.start(rt.clone()).await });
+    let report = tokio_rt.block_on(async { plan.start(rt.clone(), ()).await });
     assert_eq!(report.outcome, Outcome::Ok);
     assert!(report.is_clean(), "{:?}", report.faults);
     assert_eq!(
@@ -179,7 +190,7 @@ fn r05_a_blocking_within_does_not_oversubscribe_its_pool() {
     // Real time: a pool thread cannot advance a paused clock.
     let tokio_rt = live();
     let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
-    let report = tokio_rt.block_on(async { plan.start(rt.clone()).await });
+    let report = tokio_rt.block_on(async { plan.start(rt.clone(), ()).await });
     assert_eq!(
         hw.max.load(Ordering::SeqCst),
         1,
@@ -228,7 +239,7 @@ fn r06_panics_in_a_body_and_in_a_release_are_recorded_never_re_raised() {
         .expect("valid");
     let tokio_rt = paused();
     let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
-    let report = tokio_rt.block_on(async { plan.start(rt.clone()).await });
+    let report = tokio_rt.block_on(async { plan.start(rt.clone(), ()).await });
     assert_eq!(report.outcome, Outcome::Failed);
     let labels: Vec<_> = report
         .faults
@@ -248,7 +259,7 @@ fn r06_panics_in_a_body_and_in_a_release_are_recorded_never_re_raised() {
     // blocking pool.
     assert_eq!(tokio_rt.block_on(rt.shutdown(secs(5))), Ok(()));
     // The runtime survived both: a second run on it is unaffected.
-    let again = tokio_rt.block_on(async { tiny().start(rt.clone()).await });
+    let again = tokio_rt.block_on(async { tiny().start(rt.clone(), ()).await });
     assert_eq!(again.outcome, Outcome::Ok);
 }
 
@@ -305,7 +316,7 @@ fn r07_concurrent_runs_of_one_plan_share_no_slots_and_no_pools() {
             let (plan, mine) = (plan.clone(), rt.clone());
             let (tx, rx) = tokio::sync::oneshot::channel();
             rt.spawn(Box::pin(async move {
-                let _ = tx.send(plan.start(mine.clone()).await);
+                let _ = tx.send(plan.start(mine.clone(), ()).await);
             }));
             tasks.push(rx);
         }

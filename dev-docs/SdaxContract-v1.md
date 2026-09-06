@@ -25,7 +25,19 @@ Stage 2) started any number of times; each start is a **run** with its own
 slots, locks and pools. A plan is a **scope**: its nodes share one fail policy,
 one shutdown budget and one run mode. Scopes nest as **components** (a plan used
 as one node, instantiated once per parent run) and **templates** (a plan
-instantiated at run time by a body, with a per-instance input).
+instantiated at run time by a body).
+
+A plan may declare one **input**: a value of the plan's `In` type, supplied per
+run, that any node may `needs`. `Plan::with_input::<In>` (and `Plan::template`,
+which is the same declaration under the template case's name) declares it;
+`PlanBuilder::input()` names it. Where the value comes from is what distinguishes
+the two ways a run starts — `start(rt, input)` for a **root** run,
+`cx.spawn(&template, input)` for one **instance** — and nothing else does: the
+same `Plan<Out, In>` value serves both. The input is **not a node of the run**:
+its slot is filled before the first body is built, so a need on it is satisfied
+from the first step, it never appears in `inspect()`, the trace or the report,
+and it has no release. A run that supplies no value for a declared input is
+refused before any effect (`EngineError::TemplateAsScope`, § 7 *Load*).
 
 | kind | prepare body | becomes *Ready* when | output to dependents | obligation exists iff | cleanup action |
 |---|---|---|---|---|---|
@@ -168,7 +180,7 @@ body does is ordinary Rust and is not the engine's business.
 | `cx.stop()`, `cx.until_stop(f)`, `cx.is_stopping()` | all phases | observe the stop request |
 | `cx.sleep(d)`, `cx.timeout(d, f)`, `cx.now()`, `cx.deadline()` | all phases | the injected clock |
 | `cx.attempt()` | all phases | the attempt number, from 1 |
-| `cx.spawn(&template, input)` | all phases | instantiate a declared template; refused with `ForeignTemplate`, `UndeclaredTemplate` or `ScopeStopping`. `input` is `Send + Sync` (OD-SPAWN-INPUT) |
+| `cx.spawn(&template, input)` | all phases | instantiate a declared template; refused with `ForeignTemplate`, `UndeclaredTemplate` or `ScopeStopping`. `input` is `Send + Sync` and lands in the instance's slot as `Arc<In>` (OD-SPAWN-INPUT); `start(rt, input)` seeds a root run's the same way (OD-ROOT-INPUT) |
 | `child.ready()`, `child.stop()`, `child.id()` | on a `Child` | await an instance's readiness (INV-17); ask it to stop |
 
 **The one rule of the body contract.** Perform external effects *inside*
@@ -266,6 +278,13 @@ and within a rule in declaration order.
 
 ### Load — before any spawn
 
+`L-INPUT`: a plan that declares an input, offered to a run that supplies no
+value for it, is refused with `EngineError::TemplateAsScope` naming the input
+node. The declaration cannot decide this — one plan value is both a root and a
+template — so the entry point does: `Machine::with_input` (what
+`start(rt, input)` and `cx.spawn` reach) admits it, `Machine::new` (what
+`Plan::simulate` and a driver that takes no input reach) refuses it.
+
 `L-IMPORTS`: a plan with unresolved imports started as a root is refused with
 the import list. `Plan::unresolved_imports()` is the decision procedure; Stage 2's
 `start` calls it before any effect. It returns `Vec<NodePath>` — the import
@@ -354,15 +373,20 @@ still being learned — Stage 1 changed four of them (`Event::NodeErr` and
 `Event::InstanceSpawned` carries the spawner; `Event::InstanceEnded` became
 `Event::StopInstance`, `OD-INSTANCE-EVENTS`; `Effect::SpawnInstance` carries
 the parent instance; `EngineError::Templates` became
-`EngineError::TemplateAsScope`). A host item that stops resolving at the crate
-root is the point of the split, and D-HOST-SPLIT witnesses it.
+`EngineError::TemplateAsScope`). The root input (`OD-ROOT-INPUT`) added two
+more: `bodies_of_with_input` beside `bodies_of`, and `Machine::with_input`
+beside `Machine::new`, which is now generic over `In` so a plan with a declared
+input can be *offered* to it and refused. `BodySource` is unchanged — the input
+is seeded when the source is built, not through the trait. A host item that
+stops resolving at the crate root is the point of the split, and D-HOST-SPLIT
+witnesses it.
 
 | trait | required operations |
 |---|---|
 | `Clock` | `now() -> Time`; `sleep(d) -> BoxFuture<'static, ()>` on *this* clock |
 | `Runtime` | `spawn`, `spawn_blocking`, `clock`, `observer`; associated `Task: TaskHandle` |
 | `TaskHandle` | `abort()` (a request; it lands between polls); `join() -> BoxFuture<'static, Joined>` |
-| `Observer` | `event(&TraceEvent)`, `report(&Report<()>)`; must not block and must not panic — and a driver contains a panic anyway (obligation 6) |
+| `Observer` | `event(&TraceEvent)`, `report(&Report<()>)`; must not block and must not panic — and a driver contains a panic anyway (obligation 7) |
 
 **What a run driver owes the machine.** Beyond performing the effects in order:
 
@@ -384,7 +408,16 @@ root is the point of the split, and D-HOST-SPLIT witnesses it.
    the effects that spawn its bodies, and dropped when the trace says the
    instance ended. A `Child` handed out before a settle is still valid: the
    machine ends that instance at once, so `Child::ready()` answers.
-6. **A run never ends in silence, and nothing outside the engine may end it.**
+6. **The per-run input is seeded before the machine begins.** A driver that
+   starts a plan declaring an input owes the run the same thing
+   `Effect::SpawnInstance` owes an instance: the value in the **root scope's**
+   slot for the input node, as `Arc<In>`, before any body is built.
+   `sdax::host::bodies_of_with_input` is the seam that does it, and it does it
+   at construction — before the source reaches a driver at all — so no ordering
+   rule is left for the driver to get wrong. A body source supplied through
+   `RunOptions::bodies` owns its own slot tables and therefore owns what the
+   input means to it; the plan's own source is the one this seeds.
+7. **A run never ends in silence, and nothing outside the engine may end it.**
    Three cases, none of which the machine can see:
    - An `Observer` callback that panics is caught, recorded as
      `TraceKind::ObserverPanicked`, and stepped over. The callbacks run on the
@@ -403,7 +436,11 @@ root is the point of the split, and D-HOST-SPLIT witnesses it.
 imply, stated here because they are what a supervisor gets wrong: a
 never-returning blocking body blocks `Runtime::drop` for ever (T7d), and a
 drainer left by a dropped `Running` is a task, so on a `current_thread`
-runtime it makes no progress between `block_on` calls. A third is about the
+runtime it makes no progress between `block_on` calls. The second is no
+longer only stated: an adapter over a `current_thread` handle is built by
+`TokioRuntime::current_thread_no_background_drain`, whose name is the
+acknowledgement, and `TokioRuntime::new` refuses such a handle rather than
+accepting it silently (`OD-CT-DRAIN`). A third is about the
 build, not the runtime: every `catch_unwind` in this workspace — the body
 wrapper, the observer boundary — is inert under `panic = "abort"`, where a
 body panic aborts the process and `FaultKind::Panic` is unreachable. Nothing
@@ -493,3 +530,5 @@ normative; the question it closes is annotated rather than deleted in
 | **OD-REFUSED-READY** | `start` is total on a plan the machine refuses. Is `ready()`? | **Yes**: the refusal latches the readiness state when the handle is built, so `ready()` answers `Err(Outcome::Failed)` at once, and so does `RunHandle::ready()` | 2026-09-06 | `start` was made total so that a refused plan is an outcome rather than a panic (`OD-START`), and `ready()` is the call a supervisor makes before deciding anything. It awaited a signal that only a running driver could request, and a refused run has no driver: the one path `start`'s totality exists for hung for ever. Found by the substrate review, S-01 |
 | **OD-DOUBLE-HOLD-ERR** | a body registers twice and then returns `Err`. Which is the attempt's fault? | **`DoubleHold`.** It outranks the body's own `Err`; a panic outranks both | 2026-09-06 | Only the `Ok` path checked `hold_count() > 1`, so a double hold followed by an error was reported as a plain `Error` and the first value's obligation was dropped with the body's locals — no release, no record, and INV-9 ("no silent loss") none the wiser. The seam's one-value rule was broken whatever the body then returned, and only one fault kind can be carried: the engine's own observation that the seam broke is worth more than the body's opinion of its work, whereas a panic payload is carried nowhere else. Found by the substrate review, S-06 |
 | **OD-BLOCK-ABORT** | `TaskHandle::abort()` on a blocking task | **A no-op**, and the task stays on the tracker until its thread returns | 2026-09-06 | A thread cannot be taken back (T5, T7). The tokio adapter spawns a pool job and a tracked task that awaits it; aborting that *wrapper* cancelled the accounting and not the work, so `tracked()` read zero and `shutdown()` answered `Ok` while the thread ran on — the single claim INV-15 rests on, false, and reachable through the host API by a `BodySource` whose `cleanup` returns `Task::Blocking` (T7b aborts a cleanup at the budget). Honouring the abort request was the lie; dropping it is the truth the engine already assumes. Found by the substrate review, S-04 |
+| **OD-ROOT-INPUT** | a plan carries an `In` type parameter and the machine already delivers a per-run input value — but only to template instances. Can a **root** run take one? | **Yes**, and it is the same node: `start(rt, input)` (with `try_start`, `start_with`, `try_start_with` alike) takes the plan's input, and the driver seeds the root scope's slot for it with `Arc<In>` before any body is built, exactly as `Effect::SpawnInstance` seeds an instance's. `In: Send + Sync + 'static`, the bound an instance's input already carried (OD-SPAWN-INPUT). `Plan::with_input::<In>` declares it and `Plan::template` is that same constructor under the template case's name; one `Plan<Out, In>` value is startable both ways. `In = ()` is the common case and is written `start(rt, ())`. `EngineError::TemplateAsScope` survives as the refusal for a run that supplies **no** value, chosen by the entry point (`Machine::new` vs `Machine::with_input`) rather than by the declaration | 2026-09-06 | `I-04` — build the per-request orchestration once, run it for thousands of concurrent requests, *each with its own typed state* — is the headline intent, and both design proposals answered it with a plan typed on its input and a `start` that takes one. The implementation kept the type parameter, kept the input node, and exposed neither at the root, so the only per-run state an author could reach was a captured `Arc<Mutex<..>>` shared across every run: the untyped shared-context shape the design rejected. The conformance row for `I-04` passed throughout because it asserts *isolation*, which the code does provide, and its two runs never needed different inputs to prove it — a half-met intent a green suite could not see. What now prevents it is a row that runs one plan twice with **different** inputs and checks each answer against its own input, with no shared cell anywhere in it |
+| **OD-CT-DRAIN** | a `Running` dropped on a `current_thread` runtime leaves a drainer that makes no progress between `block_on` calls, so the run's scope is released in silence — never. § 10 stated it; is stating it enough? | **No: name it at the adapter constructor.** `TokioRuntime::new` reads `Handle::runtime_flavor()` and **panics** on a `current_thread` handle, naming `TokioRuntime::current_thread_no_background_drain`, which is the constructor such a handle goes through and whose name and rustdoc carry the consequence — *a dropped `Running` cannot drain here, so always await `shutdown()`*. The acknowledging constructor is total: a multi-threaded handle is accepted there too, because the promise it asks for is correct on every flavour. Neither drop nor drain semantics change; nothing is refused at `start`; there is no `RunOptions` flag | 2026-09-06 | **Why the constructor.** The flavour is a property of the runtime, not of a run: one `TokioRuntime` wraps one handle with one flavour, so a per-execution opt-in re-derives the same answer every time and admits an incoherent state where one run on a handle claims background draining works and the next does not. One place to audit. **Why an acknowledgement and not a refusal.** The hazard is *drop*, not `current_thread`: a current-thread run that awaits `shutdown()` drains inside the caller's own await and is entirely correct, and that is the largest body of legitimate use in this workspace — 25 of the 29 adapters it builds are current-thread, because current-thread plus paused time is how the conformance suites stay deterministic. Refusing at `start` would reject all of it. **Why a panic rather than a `Result`.** No value the process could compute changes the answer and a handle's flavour cannot be converted, so an `Err` would name a recovery that does not exist; a caller that does not know its flavour statically has the same three-line `match handle.runtime_flavor()` the rustdoc shows and `tests/substrate.rs` uses, so the panic traps nobody. **Why not from `Drop`.** A destructor is invisible during teardown and an unwind there risks a cascading abort — the objection that reopened `S-09`, which had been closed as documentation only. An observer event from the drop guard was considered and not taken: it would be a diagnostic after the fact, and adding a `TraceKind` for it would change the zero-dependency core for something the constructor already prevents |

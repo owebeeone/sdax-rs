@@ -108,8 +108,9 @@ use sdax::host::engine::{
     Effect as EngineEffect, Event, JoinedLabel, Machine, NodeState, RunState, SpawnTable, TimerId,
 };
 use sdax::host::{
-    bodies_of, Bodies, BodySource, BoxFuture, ChildControl, Clock, CxInner, InstanceId, Joined,
-    NoObserver, Observer, RawKey, Runtime, Scope, StopSignal, Task, TaskHandle, Time, SEMANTICS,
+    bodies_of, bodies_of_with_input, Bodies, BodySource, BoxFuture, ChildControl, Clock, CxInner,
+    InstanceId, Joined, NoObserver, Observer, RawKey, Runtime, Scope, StopSignal, Task, TaskHandle,
+    Time, SEMANTICS,
 };
 
 /// The host traits are reachable and usable as bounds and as `dyn`.

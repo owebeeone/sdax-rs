@@ -92,11 +92,30 @@ impl ScriptedBodies {
     ///
     /// Refuses a plan the machine refuses, and a script naming a node the plan
     /// does not declare — the same two refusals `Plan::simulate` makes.
-    pub fn new<Out: Send + Sync + 'static>(
-        plan: &Plan<Out>,
+    pub fn new<Out: Send + Sync + 'static, In>(
+        plan: &Plan<Out, In>,
         script: &Script,
     ) -> Result<Arc<ScriptedBodies>, EngineError> {
         Machine::new(plan)?;
+        ScriptedBodies::over(plan, script)
+    }
+
+    /// [`new`](Self::new) for a run whose per-run input the caller supplies.
+    ///
+    /// The value is not taken: a scripted body reads no slot, so the input is
+    /// never looked at. What changes is that the plan is allowed to run.
+    pub fn with_input<Out: Send + Sync + 'static, In>(
+        plan: &Plan<Out, In>,
+        script: &Script,
+    ) -> Result<Arc<ScriptedBodies>, EngineError> {
+        Machine::with_input(plan)?;
+        ScriptedBodies::over(plan, script)
+    }
+
+    fn over<Out: Send + Sync + 'static, In>(
+        plan: &Plan<Out, In>,
+        script: &Script,
+    ) -> Result<Arc<ScriptedBodies>, EngineError> {
         let declared = Machine::declarations(plan);
         let mut nodes = HashMap::new();
         for (key, path, kind) in &declared {

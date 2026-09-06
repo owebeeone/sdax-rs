@@ -182,8 +182,10 @@ mod tests {
             .build()
             .expect("runtime");
         let heard = Arc::new(Heard::default());
-        let rt =
-            Arc::new(TokioRuntime::new(tokio_rt.handle().clone()).with_observer(heard.clone()));
+        let rt = Arc::new(
+            TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone())
+                .with_observer(heard.clone()),
+        );
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (done, _rx) = tokio::sync::oneshot::channel();
         let mut driver = Driver::new(

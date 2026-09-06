@@ -34,7 +34,7 @@ pub use crate::contracts::{
 pub use crate::cx::{ChildControl, CxInner, InstanceId, Scope, StopSignal};
 pub use crate::key::RawKey;
 pub use crate::plan::SEMANTICS;
-pub use bodies::{bodies_of, Bodies, BodySource, Task};
+pub use bodies::{bodies_of, bodies_of_with_input, Bodies, BodySource, Task};
 
 pub mod bodies;
 pub mod engine;

@@ -31,7 +31,9 @@ fn paused() -> tokio::runtime::Runtime {
 }
 
 fn adapter(rt: &tokio::runtime::Runtime, obs: Arc<dyn Observer>) -> Arc<TokioRuntime> {
-    Arc::new(TokioRuntime::new(rt.handle().clone()).with_observer(obs))
+    Arc::new(
+        TokioRuntime::current_thread_no_background_drain(rt.handle().clone()).with_observer(obs),
+    )
 }
 
 struct Unit;
@@ -119,7 +121,7 @@ fn s02_an_observer_panic_in_event_does_not_kill_the_driver() {
     let tokio_rt = paused();
     let rt = adapter(&tokio_rt, obs.clone());
     let (ready, report) = tokio_rt.block_on(async {
-        let mut running = plan.start(rt.clone());
+        let mut running = plan.start(rt.clone(), ());
         let ready = tokio::time::timeout(secs(3600), running.ready()).await;
         running.shutdown();
         let report = tokio::time::timeout(secs(3600), running).await;
@@ -175,7 +177,7 @@ fn s05_an_observer_panic_in_report_still_delivers_the_report() {
     let tokio_rt = paused();
     let rt = adapter(&tokio_rt, obs.clone());
     let report = tokio_rt.block_on(async {
-        let mut running = plan.start(rt.clone());
+        let mut running = plan.start(rt.clone(), ());
         running.ready().await.expect("steady");
         running.shutdown();
         tokio::time::timeout(secs(3600), running).await

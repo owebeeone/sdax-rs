@@ -104,7 +104,9 @@ pub trait BodySource: Send + Sync + 'static {
     ///
     /// `template` is the template node's declaration key and `parent` the
     /// instance the spawning body itself belonged to, which is what a template
-    /// declared inside a template's plan is resolved against.
+    /// declared inside a template's plan is resolved against. `input` is a
+    /// boxed `Arc<I>`, because that is what a slot holds and what a body that
+    /// `needs` the input reads back (`OD-SPAWN-INPUT`).
     fn open_instance(
         &self,
         template: RawKey,
@@ -196,10 +198,44 @@ struct PlanBodies {
 /// The [`BodySource`] behind `plan` — one per run, because the slot tables it
 /// owns are per run (INV-13).
 ///
-/// Host API: a driver calls this, an author never does.
+/// Host API: a driver calls this, an author never does. A plan that declares a
+/// per-run input needs [`bodies_of_with_input`] instead; this source leaves the
+/// input slot empty, which is what [`Machine::new`](crate::host::engine::Machine::new)
+/// refuses such a plan for.
 pub fn bodies_of<Out: Send + Sync + 'static, In>(plan: &Plan<Out, In>) -> Arc<dyn BodySource> {
+    build_bodies(plan, None)
+}
+
+/// [`bodies_of`], with the plan's per-run input already in the root scope's
+/// slots — what `start(rt, input)` builds.
+///
+/// The seeding happens here, before the source is handed to any driver, so the
+/// value is in place before the first body is built: exactly the guarantee
+/// [`BodySource::open_instance`] gives an instance at the moment of its spawn.
+/// The slot holds `Arc<In>`, like every other slot, so a node that `needs` the
+/// input receives `Arc<In>` (`OD-SPAWN-INPUT`).
+pub fn bodies_of_with_input<Out: Send + Sync + 'static, In: Send + Sync + 'static>(
+    plan: &Plan<Out, In>,
+    input: In,
+) -> Arc<dyn BodySource> {
+    build_bodies(plan, Some(Box::new(Arc::new(input))))
+}
+
+fn build_bodies<Out: Send + Sync + 'static, In>(
+    plan: &Plan<Out, In>,
+    input: Option<Box<dyn Any + Send + Sync>>,
+) -> Arc<dyn BodySource> {
     let mut scopes = Vec::new();
     collect(plan.ir(), plan.bodies_ref(), &mut scopes);
+    // The root's per-run input, in the root scope's slots before any body is
+    // built — the same moment `open_instance` fills an instance's.
+    if let (Some(key), Some(v)) = (plan.ir().input, input) {
+        scopes[0]
+            .slots
+            .lock()
+            .expect("slots poisoned")
+            .set_erased(key, v);
+    }
     let mut templates = Vec::new();
     collect_templates(plan.ir(), plan.bodies_ref(), &mut templates);
     let export = plan.ir().export.map(|key| {

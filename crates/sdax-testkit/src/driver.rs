@@ -50,9 +50,34 @@ pub struct Driven<Out = ()> {
 
 impl ScriptedDriver {
     /// Run to the end (or until stuck), checking the trace after every step.
-    pub fn run<Out>(plan: &Plan<Out>, script: &Script) -> Result<Driven<Out>, ScriptError> {
-        let mut sim = Simulator::new(plan, script)?;
-        let view = plan.inspect();
+    ///
+    /// Supplies no per-run input, so a plan that declares one is refused —
+    /// [`run_with_input`](Self::run_with_input) is the entry point for those.
+    pub fn run<Out, In>(plan: &Plan<Out, In>, script: &Script) -> Result<Driven<Out>, ScriptError> {
+        Ok(ScriptedDriver::drive(
+            Simulator::new(plan, script)?,
+            plan.inspect(),
+        ))
+    }
+
+    /// [`run`](Self::run) for a plan started with a per-run input.
+    ///
+    /// The value is dropped: a scripted body reads no slot. What it proves is
+    /// the shape — the input node is not a node of the run, and a node that
+    /// `needs` it is satisfied from the first step.
+    pub fn run_with_input<Out, In>(
+        plan: &Plan<Out, In>,
+        input: In,
+        script: &Script,
+    ) -> Result<Driven<Out>, ScriptError> {
+        drop(input);
+        Ok(ScriptedDriver::drive(
+            Simulator::with_input(plan, script)?,
+            plan.inspect(),
+        ))
+    }
+
+    fn drive<Out>(mut sim: Simulator, view: PlanView) -> Driven<Out> {
         let mut violations = Vec::new();
         let mut whys = Vec::new();
         let mut first_violation = None;
@@ -136,7 +161,7 @@ impl ScriptedDriver {
             .into_iter()
             .map(|(k, p, _)| (p.to_string(), k))
             .collect();
-        Ok(Driven {
+        Driven {
             report,
             trace,
             view,
@@ -148,7 +173,7 @@ impl ScriptedDriver {
             first_violation,
             whys,
             keys,
-        })
+        }
     }
 }
 

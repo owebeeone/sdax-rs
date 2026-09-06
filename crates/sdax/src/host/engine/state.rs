@@ -16,9 +16,9 @@ use crate::view::{NodePath, Reason};
 /// Why a plan cannot be run by this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
-    /// A template plan — one with a per-instance input — was used as a root
-    /// run or as a component. Only `cx.spawn` instantiates a template, and
-    /// only `cx.spawn` can supply the input. Names the input node.
+    /// A plan that declares a per-run input was offered to a run that supplies
+    /// **no** value for it — a template used as a scope, or a root started
+    /// through an entry point that takes no input. Names the input node.
     TemplateAsScope(NodePath),
     /// A root run cannot resolve these import nodes (`L-IMPORTS`).
     UnresolvedImports(Vec<NodePath>),
@@ -45,8 +45,8 @@ impl std::fmt::Display for EngineError {
         match self {
             EngineError::TemplateAsScope(p) => write!(
                 f,
-                "this plan is a template: its per-instance input {p} has a value only when \
-                 cx.spawn supplies one, so it cannot be a root run or a component"
+                "this plan declares the input {p} and nothing supplies a value for it: start it \
+                 with start(rt, input), or instantiate it with cx.spawn"
             ),
             EngineError::UnresolvedImports(v) => write!(
                 f,

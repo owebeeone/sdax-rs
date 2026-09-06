@@ -245,10 +245,13 @@ fn one_case(seed: u64) -> String {
         .expect("runtime");
     let rec = Arc::new(Captured::default());
     let obs: Arc<dyn Observer> = rec.clone();
-    let rt = Arc::new(TokioRuntime::new(tokio_rt.handle().clone()).with_observer(obs));
+    let rt = Arc::new(
+        TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone())
+            .with_observer(obs),
+    );
     let record = Arc::new(Mutex::new(RunRecord::default()));
     let report = tokio_rt.block_on(async {
-        let mut running = plan.start_with(rt.clone(), RunOptions::new().record(record.clone()));
+        let mut running = plan.start_with(rt.clone(), (), RunOptions::new().record(record.clone()));
         let handle = running.handle();
         match ask {
             Ask::Drop(at) => {

@@ -27,12 +27,44 @@ pub struct TokioDriver;
 impl TokioDriver {
     /// Run `plan` under `script` on a paused tokio runtime and check it the
     /// same way [`sdax_testkit::ScriptedDriver`] checks its own runs.
+    ///
+    /// `allow(dead_code)`: this file is included by two test binaries and they
+    /// use different halves of it — the conformance suite runs every row
+    /// through `run`, the Monte Carlo walk starts every case with an input.
+    #[allow(dead_code)]
     pub fn run<Out: Send + Sync + 'static>(
         plan: &Plan<Out>,
         script: &Script,
     ) -> Result<Driven<Out>, ScriptError> {
-        quiet_scripted_panics();
         let machine = Machine::new(plan).map_err(ScriptError::Engine)?;
+        let src = ScriptedBodies::new(plan, script).map_err(ScriptError::Engine)?;
+        TokioDriver::drive(plan, (), machine, src, script)
+    }
+
+    /// [`run`](Self::run) for a plan started with a per-run input.
+    ///
+    /// The value reaches `start` exactly as an author's would; the bodies are
+    /// still the script's, and a scripted body reads no slot, so what this
+    /// proves is the shape — the run is admitted, and the node that `needs` the
+    /// input starts without waiting for anything.
+    pub fn run_with_input<Out: Send + Sync + 'static, In: Send + Sync + 'static>(
+        plan: &Plan<Out, In>,
+        input: In,
+        script: &Script,
+    ) -> Result<Driven<Out>, ScriptError> {
+        let machine = Machine::with_input(plan).map_err(ScriptError::Engine)?;
+        let src = ScriptedBodies::with_input(plan, script).map_err(ScriptError::Engine)?;
+        TokioDriver::drive(plan, input, machine, src, script)
+    }
+
+    fn drive<Out: Send + Sync + 'static, In: Send + Sync + 'static>(
+        plan: &Plan<Out, In>,
+        input: In,
+        machine: Machine,
+        src: Arc<ScriptedBodies>,
+        script: &Script,
+    ) -> Result<Driven<Out>, ScriptError> {
+        quiet_scripted_panics();
         // A template's inner nodes are declared but exist only per instance,
         // so the script is checked against the *declarations*, exactly as the
         // stepping simulator checks it.
@@ -54,14 +86,15 @@ impl TokioDriver {
                 machine.key_of(&p).map(|k| (p, k))
             })
             .collect();
-        let src = ScriptedBodies::new(plan, script).map_err(ScriptError::Engine)?;
         let bodies = src.clone();
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .start_paused(true)
             .build()
             .expect("runtime");
-        let rt = Arc::new(TokioRuntime::new(tokio_rt.handle().clone()));
+        let rt = Arc::new(TokioRuntime::current_thread_no_background_drain(
+            tokio_rt.handle().clone(),
+        ));
         let record = Arc::new(Mutex::new(RunRecord::default()));
         let opts = RunOptions::new()
             .bodies(src)
@@ -70,7 +103,7 @@ impl TokioDriver {
             .observe_states();
         let requests: Vec<(Duration, Request)> = script.requests().to_vec();
         let out = tokio_rt.block_on(async move {
-            let running = plan.start_with(rt.clone(), opts);
+            let running = plan.start_with(rt.clone(), input, opts);
             let handle = running.handle();
             for (at, req) in requests {
                 if at.is_zero() {

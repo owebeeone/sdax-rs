@@ -9,8 +9,10 @@
 //!
 //! [`TokioRuntime`] is the [`Runtime`] contract on this substrate: spawning,
 //! task handles, the clock and the observer. [`PlanStart`] is the run driver:
-//! `plan.start(rt)` gives a [`Running`] whose drop cancels the run and leaves
-//! one tracked drainer to finish the release graph.
+//! `plan.start(rt, input)` gives a [`Running`] whose drop cancels the run and
+//! leaves one tracked drainer to finish the release graph. The input is the
+//! run's own — `()` for a plan that declares none, a typed value for a plan
+//! built with `Plan::with_input`.
 //!
 //! # What this substrate adds to the contract
 //!
@@ -29,8 +31,12 @@
 //!   a `current_thread` runtime it makes no progress between `block_on` calls:
 //!   drop a `Running` inside a `block_on` that then returns and nothing is
 //!   released until the next one. Give the drainer its budget inside a
-//!   `block_on`, or use a multi-threaded runtime. Tearing the runtime down
-//!   under it is reported, never silent (`TraceKind::RuntimeDroppedWithLiveRuns`).
+//!   `block_on`, or use a multi-threaded runtime. This one is named at the
+//!   constructor rather than left to a page: [`TokioRuntime::new`] takes a
+//!   multi-threaded handle and a `current_thread` handle goes through
+//!   [`TokioRuntime::current_thread_no_background_drain`], which says what the
+//!   caller is taking on. Tearing the runtime down under it is reported, never
+//!   silent (`TraceKind::RuntimeDroppedWithLiveRuns`).
 //! - **Panics are caught only if the profile unwinds.** The engine's promise
 //!   that a body panic is a fault and never re-raised rests on `catch_unwind`.
 //!   Under `panic = "abort"` there is nothing to catch: a body panic aborts the
@@ -53,7 +59,7 @@ use sdax::TraceEvent;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::runtime::Handle;
+use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio_util::task::TaskTracker;
 
 /// The tokio implementation of [`Runtime`].
@@ -72,8 +78,86 @@ pub struct TokioRuntime {
 }
 
 impl TokioRuntime {
-    /// An adapter over an existing runtime handle, recording nothing.
+    /// An adapter over an existing **multi-threaded** runtime handle,
+    /// recording nothing.
+    ///
+    /// A `current_thread` handle goes through
+    /// [`current_thread_no_background_drain`](Self::current_thread_no_background_drain)
+    /// instead, whose name states what this one may assume: that a drainer
+    /// left behind by a dropped [`Running`] runs. The flavour is a property of
+    /// the handle, so it is read once, here, rather than re-derived per run
+    /// (`OD-CT-DRAIN`).
+    ///
+    /// A caller that does not know its flavour statically dispatches on it:
+    ///
+    /// ```
+    /// use sdax_tokio::TokioRuntime;
+    /// use tokio::runtime::{Handle, RuntimeFlavor};
+    ///
+    /// fn adapter(handle: Handle) -> TokioRuntime {
+    ///     match handle.runtime_flavor() {
+    ///         RuntimeFlavor::CurrentThread => {
+    ///             TokioRuntime::current_thread_no_background_drain(handle)
+    ///         }
+    ///         _ => TokioRuntime::new(handle),
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// If `handle` names a `current_thread` runtime. That is a programmer
+    /// error settled at construction — no value the process could compute
+    /// changes the answer, and the flavour cannot be converted — so the panic
+    /// names the constructor that takes one rather than returning an error
+    /// nobody could act on differently.
     pub fn new(handle: Handle) -> Self {
+        if matches!(handle.runtime_flavor(), RuntimeFlavor::CurrentThread) {
+            panic!(
+                "TokioRuntime::new was handed a current_thread runtime handle. \
+                 A dropped `Running` hands its release graph to a drainer, and a \
+                 drainer is a task: on a current_thread runtime it makes no progress \
+                 between `block_on` calls, so a dropped run is left un-released in \
+                 silence. Build the adapter with \
+                 `TokioRuntime::current_thread_no_background_drain(handle)`, which says \
+                 so at the call site, and always await `Running::shutdown()`."
+            );
+        }
+        Self::build(handle)
+    }
+
+    /// An adapter whose name is the acknowledgement: **a dropped [`Running`]
+    /// cannot drain here, so always await [`Running::shutdown`].**
+    ///
+    /// Dropping a `Running` cancels the run, aborts its bodies and leaves the
+    /// release graph to a drainer. The drainer is a task like any other. On a
+    /// `current_thread` runtime a task makes no progress between `block_on`
+    /// calls, so a `Running` dropped inside a `block_on` that then returns
+    /// releases nothing until the next one — and a process that never enters
+    /// another leaks the run's scope without a word. Nothing here fixes that;
+    /// this constructor exists so the exposure is named where the runtime is
+    /// chosen instead of discovered in a teardown that produces no output.
+    ///
+    /// **What the caller owes.** End every run explicitly — await
+    /// [`Running::shutdown`] (or `cancel()`, or the run's own end) inside the
+    /// `block_on` that started it, and then await
+    /// [`TokioRuntime::shutdown`](Self::shutdown) to see whether anything is
+    /// still out there. A current-thread run that does this drains inside the
+    /// caller's own await and is entirely correct: the hazard is *drop*, not
+    /// `current_thread`, which is why this is an acknowledgement and not a
+    /// refusal.
+    ///
+    /// A multi-threaded handle is accepted too — the promise this constructor
+    /// asks for is correct on every flavour, and refusing the safe direction
+    /// would refuse legitimate use for no gain — but [`new`](Self::new) is the
+    /// constructor for one, and says less.
+    pub fn current_thread_no_background_drain(handle: Handle) -> Self {
+        Self::build(handle)
+    }
+
+    /// The adapter itself, once a constructor has settled what the caller
+    /// knows about the flavour. Not public: every way in states its terms.
+    fn build(handle: Handle) -> Self {
         let seen = Arc::new(AtomicU64::new(0));
         TokioRuntime {
             handle,

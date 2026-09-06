@@ -19,4 +19,5 @@ mod instances;
 mod regressions;
 mod retry;
 mod review;
+mod root_input;
 mod startup;

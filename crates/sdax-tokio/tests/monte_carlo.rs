@@ -53,7 +53,9 @@ fn monte_carlo_on_the_adapter() {
         let view = plan.inspect();
         let bounded = view.shutdown.budget().is_some();
         let script = script::generate(&mut g, &view, bounded);
-        let d = match TokioDriver::run(&plan, &script) {
+        // Started the way an author starts a root run: with its input. Most
+        // generated plans declare none, and `()` is what those take.
+        let d = match TokioDriver::run_with_input(&plan, (), &script) {
             Ok(d) => d,
             Err(e) => panic!("case seed {seed}: the script would not run: {e:?}"),
         };

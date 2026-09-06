@@ -117,10 +117,40 @@ pub struct Simulator {
 
 impl Simulator {
     /// A simulation of `plan` under `script`, not yet started.
-    pub fn new<Out>(plan: &Plan<Out>, script: &Script) -> Result<Simulator, ScriptError> {
-        let machine = Machine::new(plan)
-            .map_err(ScriptError::Engine)?
-            .with_schedule(&script.schedule);
+    ///
+    /// Supplies no per-run input, so a plan that declares one is refused
+    /// (`EngineError::TemplateAsScope`). [`Simulator::with_input`] is the
+    /// entry point for a run that supplies one.
+    pub fn new<Out, In>(plan: &Plan<Out, In>, script: &Script) -> Result<Simulator, ScriptError> {
+        Simulator::over(
+            Machine::new(plan).map_err(ScriptError::Engine)?,
+            plan,
+            script,
+        )
+    }
+
+    /// A simulation of a plan whose per-run input the caller supplies.
+    ///
+    /// The value itself is not taken: a simulated body reads no slot, so all
+    /// that matters here is that the input *has* one — which is what decides
+    /// whether the plan may run at all.
+    pub fn with_input<Out, In>(
+        plan: &Plan<Out, In>,
+        script: &Script,
+    ) -> Result<Simulator, ScriptError> {
+        Simulator::over(
+            Machine::with_input(plan).map_err(ScriptError::Engine)?,
+            plan,
+            script,
+        )
+    }
+
+    fn over<Out, In>(
+        machine: Machine,
+        plan: &Plan<Out, In>,
+        script: &Script,
+    ) -> Result<Simulator, ScriptError> {
+        let machine = machine.with_schedule(&script.schedule);
         let declared = Machine::declarations(plan);
         let templates: Vec<(String, RawKey)> = declared
             .iter()
@@ -343,15 +373,30 @@ impl Simulator {
     }
 }
 
-impl<Out> Plan<Out> {
+impl<Out, In> Plan<Out, In> {
     /// The trace the pure machine produces for a scripted schedule, with no
     /// body run and no effect: the counterfactual answered pre-ship with the
     /// code that drives production (contract § 9, adoption A3).
     ///
     /// Refuses a plan the machine cannot run and a script that names an
-    /// unknown node.
+    /// unknown node. A plan that declares a per-run input is one the machine
+    /// cannot run without a value for it, so that plan wants
+    /// [`simulate_with_input`](Self::simulate_with_input).
     pub fn simulate(&self, script: &Script) -> Result<Trace, ScriptError> {
         let mut sim = Simulator::new(self, script)?;
+        sim.run();
+        Ok(sim.trace().clone())
+    }
+
+    /// [`simulate`](Self::simulate) for a plan started with a per-run input —
+    /// the counterfactual for what `start(rt, input)` will do.
+    ///
+    /// The value is dropped: no body runs in a simulation, so nothing reads a
+    /// slot. What it changes is that the input *is* supplied, which is what
+    /// decides whether the plan may run at all.
+    pub fn simulate_with_input(&self, input: In, script: &Script) -> Result<Trace, ScriptError> {
+        drop(input);
+        let mut sim = Simulator::with_input(self, script)?;
         sim.run();
         Ok(sim.trace().clone())
     }

@@ -30,7 +30,9 @@ fn secs(n: u64) -> Duration {
 }
 
 fn adapter(rt: &tokio::runtime::Runtime, obs: Arc<dyn Observer>) -> Arc<TokioRuntime> {
-    Arc::new(TokioRuntime::new(rt.handle().clone()).with_observer(obs))
+    Arc::new(
+        TokioRuntime::current_thread_no_background_drain(rt.handle().clone()).with_observer(obs),
+    )
 }
 
 struct Unit;
@@ -66,7 +68,7 @@ fn r00_a_plan_runs_to_ok_on_the_adapter() {
     let tokio_rt = paused();
     let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
     let plan = tiny();
-    let report = tokio_rt.block_on(async { plan.start(rt.clone()).await });
+    let report = tokio_rt.block_on(async { plan.start(rt.clone(), ()).await });
     assert_eq!(report.outcome, Outcome::Ok);
     assert_eq!(report.output.as_deref(), Some(&7u32));
     assert!(report.is_clean(), "{:?}", report.faults);
@@ -82,7 +84,7 @@ fn c11_cancel_before_the_first_poll_spawns_nothing() {
     let rt = adapter(&tokio_rt, rec.clone());
     let plan = tiny();
     let report = tokio_rt.block_on(async {
-        let running = plan.start(rt.clone());
+        let running = plan.start(rt.clone(), ());
         running.cancel();
         running.await
     });
@@ -146,7 +148,7 @@ fn c14_dropping_running_drains_and_reports_to_the_observer() {
     let marks = Arc::new(Marks::default());
     let plan = dropped_plan(marks.clone());
     tokio_rt.block_on(async {
-        let mut running = plan.start(rt.clone());
+        let mut running = plan.start(rt.clone(), ());
         running.ready().await.expect("reaches steady state");
         drop(running);
         // Paused time: this advances only while the drainer is idle, so it is
@@ -200,7 +202,7 @@ fn r02_the_release_never_precedes_the_join_of_the_aborted_body() {
         .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
         .expect("valid");
     let report = tokio_rt.block_on(async {
-        let running = plan.start(rt.clone());
+        let running = plan.start(rt.clone(), ());
         let handle = running.handle();
         rt.spawn(Box::pin(async move {
             tokio::time::sleep(secs(1)).await;
@@ -235,7 +237,7 @@ fn r03_runtime_shutdown_waits_and_reports_what_is_left() {
     let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
     let plan = tiny();
     let left = tokio_rt.block_on(async {
-        let report = plan.start(rt.clone()).await;
+        let report = plan.start(rt.clone(), ()).await;
         assert_eq!(report.outcome, Outcome::Ok);
         rt.shutdown(secs(1)).await
     });
@@ -280,7 +282,7 @@ fn r03_a_dropped_runtime_with_nothing_running_is_silent() {
     let rec = Arc::new(TraceRecorder::new());
     tokio_rt.block_on(async {
         let rt = adapter(&tokio_rt, rec.clone());
-        let report = tiny().start(rt.clone()).await;
+        let report = tiny().start(rt.clone(), ()).await;
         assert_eq!(report.outcome, Outcome::Ok);
         drop(rt);
     });
@@ -319,6 +321,7 @@ fn r05_regression_a_signalled_start_body_never_starts_its_serve_future() {
     let report = tokio_rt.block_on(async {
         let running = plan.start_with(
             rt.clone(),
+            (),
             sdax_tokio::RunOptions::new().record(record.clone()),
         );
         let handle = running.handle();

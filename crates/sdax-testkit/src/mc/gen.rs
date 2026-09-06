@@ -7,12 +7,17 @@ use super::keys::{add_node, secs, Attrs, Keys, Needs, Unit};
 use super::mutate::Mutation;
 use super::prng::SplitMix64;
 use sdax::*;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A generated declaration.
 pub struct Generated {
     /// The plan, or what the validator said.
     pub plan: Result<Plan, Invalid>,
+    /// Whether the root declares a per-run input with a node that needs it.
+    /// The walk runs every plan through `start`-with-an-input either way, so
+    /// this is what says the input was a *real* one.
+    pub root_input: bool,
     /// The rule an intentionally invalid plan must be refused by.
     pub expect_invalid: Option<Rule>,
     /// The mutation applied, for the failure print.
@@ -518,9 +523,26 @@ pub fn generate(g: &mut SplitMix64) -> Generated {
         bounded_root: budget.is_some(),
         depth: 0,
     };
-    let mut p = Plan::builder("Mc");
+    // A root plan may declare a per-run input, exactly as a template does: the
+    // node is dropped from the run and the need on it is satisfied before the
+    // first step, so the shape is worth walking over.
+    let root_input = g.chance(0.30);
+    let mut p = if root_input {
+        Plan::with_input::<()>("Mc")
+    } else {
+        Plan::builder("Mc")
+    };
     let mut keys = Keys::default();
     let mut lines = Vec::new();
+    if root_input {
+        let input = p.input();
+        let cfg = p
+            .step("Cfg")
+            .needs(input)
+            .run(|_cx, _v: Arc<()>| async move { Ok(Unit) });
+        keys.units.push((cfg, false));
+        lines.push("Cfg: step needs the plan's per-run input".to_string());
+    }
     let count = g.range(1, 7) as usize;
     let has_service = fill(
         g,
@@ -549,6 +571,7 @@ pub fn generate(g: &mut SplitMix64) -> Generated {
     ));
     Generated {
         plan: p.build(shape.policy, shape.shutdown, mode),
+        root_input,
         expect_invalid: mutation.rule(),
         mutation: mutation.name(),
         lines,

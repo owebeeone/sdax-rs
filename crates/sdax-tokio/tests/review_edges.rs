@@ -43,7 +43,9 @@ fn live() -> tokio::runtime::Runtime {
 }
 
 fn adapter(rt: &tokio::runtime::Runtime, obs: Arc<dyn Observer>) -> Arc<TokioRuntime> {
-    Arc::new(TokioRuntime::new(rt.handle().clone()).with_observer(obs))
+    Arc::new(
+        TokioRuntime::current_thread_no_background_drain(rt.handle().clone()).with_observer(obs),
+    )
 }
 
 struct Unit;
@@ -104,7 +106,7 @@ fn s01_ready_on_a_refused_plan_answers_with_the_refusal() {
     let tokio_rt = paused();
     let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
     let (from_ready, from_handle) = tokio_rt.block_on(async {
-        let mut running = child.start(rt.clone());
+        let mut running = child.start(rt.clone(), ());
         let handle = running.handle();
         let a = tokio::time::timeout(secs(3600), running.ready()).await;
         let b = tokio::time::timeout(secs(3600), handle.ready()).await;
@@ -121,7 +123,7 @@ fn s01_ready_on_a_refused_plan_answers_with_the_refusal() {
         "RunHandle::ready() sees the same latch"
     );
     // And the report is still the documented one.
-    let report = tokio_rt.block_on(async { child.start(rt.clone()).await });
+    let report = tokio_rt.block_on(async { child.start(rt.clone(), ()).await });
     assert_eq!(report.outcome, Outcome::Failed);
     assert_eq!(report.faults.len(), 1, "{:?}", report.faults);
 }
@@ -145,7 +147,7 @@ fn s03_a_runtime_dropped_under_the_drainer_is_reported_in_both_orders() {
         let tokio_rt = paused();
         let rt = adapter(&tokio_rt, rec.clone());
         tokio_rt.block_on(async {
-            let mut running = plan.start(rt.clone());
+            let mut running = plan.start(rt.clone(), ());
             running.ready().await.expect("steady");
             drop(running);
         });
@@ -247,6 +249,7 @@ fn s04_a_blocking_cleanup_abandoned_at_the_budget_stays_tracked() {
     let report = tokio_rt.block_on(async {
         let running = plan.start_with(
             rt.clone(),
+            (),
             RunOptions::new().bodies(src).record(record.clone()),
         );
         let h = running.handle();
@@ -318,7 +321,7 @@ fn s06_a_double_hold_followed_by_an_error_is_reported_as_a_double_hold() {
         .expect("valid");
     let tokio_rt = paused();
     let rt = adapter(&tokio_rt, Arc::new(sdax::host::NoObserver));
-    let report = tokio_rt.block_on(async { plan.start(rt.clone()).await });
+    let report = tokio_rt.block_on(async { plan.start(rt.clone(), ()).await });
     let labels: Vec<_> = report.faults.iter().map(|f| f.kind.label()).collect();
     assert_eq!(
         labels,

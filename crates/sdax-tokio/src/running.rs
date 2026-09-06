@@ -390,42 +390,76 @@ impl<Out> Drop for Running<Out> {
 /// An extension trait rather than an inherent method because the driver lives
 /// here and `sdax` has no dependencies at all — not even on this crate. The
 /// call site reads the same: `use sdax_tokio::PlanStart;` then
-/// `plan.start(rt)`.
+/// `plan.start(rt, input)`.
+///
+/// **The input is per run.** A plan built with `Plan::with_input::<In>` takes
+/// one value of type `In` at every start, and the driver puts it in the run's
+/// own slots before the first body is built — so a thousand concurrent runs of
+/// one plan value each read their own state and share nothing (`I-04`). A plan
+/// built with `Plan::builder` declares no input; its `Input` is `()`, and it is
+/// started `plan.start(rt, ())`.
 pub trait PlanStart<Out> {
+    /// The plan's per-run input: `()` for a plan that declares none.
+    ///
+    /// `Send + Sync + 'static`, because the value lives in the run's slot table
+    /// as an `Arc<Input>` that every body of the run may read — the bound an
+    /// instance's input already carries (`OD-SPAWN-INPUT`).
+    type Input: Send + Sync + 'static;
+
     /// Start a run, refusing a plan the machine cannot run before anything is
-    /// spawned (`L-IMPORTS`, a template plan used as a root).
-    fn try_start<R: Runtime>(&self, rt: Arc<R>) -> Result<Running<Out>, EngineError>;
+    /// spawned (`L-IMPORTS`, a child plan used as a root).
+    fn try_start<R: Runtime>(
+        &self,
+        rt: Arc<R>,
+        input: Self::Input,
+    ) -> Result<Running<Out>, EngineError>;
 
     /// Start a run with options: another body source, a record sink, a
     /// schedule preference.
+    ///
+    /// A body source given through [`RunOptions::bodies`] owns its own slot
+    /// tables, so it — not this call — decides what the input means to it; the
+    /// plan's own source is the one this seeds.
     fn try_start_with<R: Runtime>(
         &self,
         rt: Arc<R>,
+        input: Self::Input,
         opts: RunOptions,
     ) -> Result<Running<Out>, EngineError>;
 
     /// Start a run. A refused plan is not a panic and not a silent no-op: the
     /// handle resolves to a `Failed` report carrying the refusal.
-    fn start<R: Runtime>(&self, rt: Arc<R>) -> Running<Out>;
+    fn start<R: Runtime>(&self, rt: Arc<R>, input: Self::Input) -> Running<Out>;
 
     /// [`start`](Self::start) with options.
-    fn start_with<R: Runtime>(&self, rt: Arc<R>, opts: RunOptions) -> Running<Out>;
+    fn start_with<R: Runtime>(
+        &self,
+        rt: Arc<R>,
+        input: Self::Input,
+        opts: RunOptions,
+    ) -> Running<Out>;
 }
 
-impl<Out: Send + Sync + 'static> PlanStart<Out> for Plan<Out> {
-    fn try_start<R: Runtime>(&self, rt: Arc<R>) -> Result<Running<Out>, EngineError> {
-        self.try_start_with(rt, RunOptions::new())
+impl<Out: Send + Sync + 'static, In: Send + Sync + 'static> PlanStart<Out> for Plan<Out, In> {
+    type Input = In;
+
+    fn try_start<R: Runtime>(&self, rt: Arc<R>, input: In) -> Result<Running<Out>, EngineError> {
+        self.try_start_with(rt, input, RunOptions::new())
     }
 
     fn try_start_with<R: Runtime>(
         &self,
         rt: Arc<R>,
+        input: In,
         opts: RunOptions,
     ) -> Result<Running<Out>, EngineError> {
-        let machine = Machine::new(self)?.with_schedule(&opts.schedule);
-        let src = opts
-            .bodies
-            .unwrap_or_else(|| sdax::host::bodies_of::<Out, ()>(self));
+        // `with_input`, not `new`: this call *is* the value the input node's
+        // slot is seeded with, one line below.
+        let machine = Machine::with_input(self)?.with_schedule(&opts.schedule);
+        let src = match opts.bodies {
+            Some(src) => src,
+            None => sdax::host::bodies_of_with_input::<Out, In>(self, input),
+        };
         let (tx, rx) = unbounded_channel();
         let (done_tx, done_rx) = oneshot::channel();
         let record = opts.record.clone();
@@ -466,13 +500,13 @@ impl<Out: Send + Sync + 'static> PlanStart<Out> for Plan<Out> {
         })
     }
 
-    fn start<R: Runtime>(&self, rt: Arc<R>) -> Running<Out> {
-        self.start_with(rt, RunOptions::new())
+    fn start<R: Runtime>(&self, rt: Arc<R>, input: In) -> Running<Out> {
+        self.start_with(rt, input, RunOptions::new())
     }
 
-    fn start_with<R: Runtime>(&self, rt: Arc<R>, opts: RunOptions) -> Running<Out> {
+    fn start_with<R: Runtime>(&self, rt: Arc<R>, input: In, opts: RunOptions) -> Running<Out> {
         let name = self.name().to_string();
-        match self.try_start_with(rt, opts) {
+        match self.try_start_with(rt, input, opts) {
             Ok(r) => r,
             Err(e) => {
                 let ctl = Arc::new(Control {

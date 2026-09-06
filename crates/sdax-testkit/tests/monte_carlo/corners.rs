@@ -51,6 +51,10 @@ pub(crate) const CORNERS: &[(&str, usize)] = &[
     ("a spawn refused: the scope is stopping", 5),
     ("a spawn refused: a foreign template", 5),
     ("a nested template", 2),
+    // A root plan's own per-run input: the node dropped from the run, and the
+    // node that needs it starting anyway.
+    ("a root plan takes a per-run input", 300),
+    ("the root input's reader ran", 200),
 ];
 
 /// What the walk reached, by corner and by outcome.

@@ -28,7 +28,7 @@ fn takes_a_runtime<R: Runtime>(rt: &R) -> Time {
 #[test]
 fn tokio_runtime_implements_the_runtime_contract() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     let _guard = tokio_rt.enter();
     assert_eq!(takes_a_runtime(&rt), rt.clock().now());
 }
@@ -36,7 +36,7 @@ fn tokio_runtime_implements_the_runtime_contract() {
 #[test]
 fn a_spawned_task_runs_and_joins_as_done() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     let ran = Arc::new(AtomicU64::new(0));
     let r = ran.clone();
     let joined = tokio_rt.block_on(async move {
@@ -52,7 +52,7 @@ fn a_spawned_task_runs_and_joins_as_done() {
 #[test]
 fn an_aborted_task_joins_as_cancelled_and_the_abort_is_deferred() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     let reached_second_half = Arc::new(AtomicU64::new(0));
     let flag = reached_second_half.clone();
     let joined = tokio_rt.block_on(async move {
@@ -75,7 +75,7 @@ fn an_aborted_task_joins_as_cancelled_and_the_abort_is_deferred() {
 #[test]
 fn a_panicking_task_joins_as_panicked_and_the_panic_does_not_escape() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     let joined = tokio_rt.block_on(async move {
         let task = rt.spawn(Box::pin(async {
             panic!("boom");
@@ -93,7 +93,7 @@ fn a_panicking_task_joins_as_panicked_and_the_panic_does_not_escape() {
 #[test]
 fn a_blocking_body_runs_off_the_async_workers() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     let here = std::thread::current().id();
     let seen = Arc::new(std::sync::Mutex::new(None));
     let s = seen.clone();
@@ -118,7 +118,7 @@ fn a_blocking_body_runs_off_the_async_workers() {
 #[test]
 fn the_tokio_clock_only_moves_when_tokio_time_moves() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     tokio_rt.block_on(async move {
         let start = rt.clock().now();
         tokio::task::yield_now().await;
@@ -146,12 +146,13 @@ fn the_tokio_clock_only_moves_when_tokio_time_moves() {
 #[test]
 fn an_observer_can_be_installed_and_defaults_to_recording_nothing() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     rt.observer()
         .event(&TraceEvent::at(Time::ZERO, TraceKind::End(Outcome::Ok)));
 
     let recorder = Arc::new(sdax_testkit::TraceRecorder::new());
-    let rt = TokioRuntime::new(tokio_rt.handle().clone()).with_observer(recorder.clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone())
+        .with_observer(recorder.clone());
     rt.observer()
         .event(&TraceEvent::at(Time::ZERO, TraceKind::Ready));
     assert_eq!(recorder.len(), 1);
@@ -162,7 +163,7 @@ fn an_observer_can_be_installed_and_defaults_to_recording_nothing() {
 #[test]
 fn every_spawned_task_is_tracked_so_a_shutdown_can_wait_for_it() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     let done = Arc::new(AtomicU64::new(0));
     let d = done.clone();
     tokio_rt.block_on(async move {
@@ -181,7 +182,7 @@ fn every_spawned_task_is_tracked_so_a_shutdown_can_wait_for_it() {
 #[test]
 fn a_shutdown_that_runs_out_of_budget_says_what_is_still_running() {
     let tokio_rt = paused();
-    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
     tokio_rt.block_on(async move {
         let _task = rt.spawn(Box::pin(async {
             std::future::pending::<()>().await;
@@ -195,4 +196,82 @@ fn a_shutdown_that_runs_out_of_budget_says_what_is_still_running() {
             "one task was still running when the budget expired"
         );
     });
+}
+
+/// A multi-threaded runtime, for the two rows that are about which flavour a
+/// constructor takes. `rt-multi-thread` is a dev-dependency feature only.
+fn threaded() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_time()
+        .build()
+        .expect("runtime")
+}
+
+#[test]
+#[should_panic(expected = "current_thread_no_background_drain")]
+fn new_refuses_a_current_thread_handle_and_names_the_constructor_that_takes_one() {
+    let tokio_rt = paused();
+    // OD-CT-DRAIN: the flavour is a property of the handle, so it is settled
+    // once, here, and not re-derived per run. The refusal names the fix.
+    let _rt = TokioRuntime::new(tokio_rt.handle().clone());
+}
+
+#[test]
+fn new_takes_a_multi_thread_handle_in_silence() {
+    let tokio_rt = threaded();
+    let rt = TokioRuntime::new(tokio_rt.handle().clone());
+    let joined = tokio_rt.block_on(async move {
+        let task = rt.spawn(Box::pin(async {}));
+        task.join().await
+    });
+    assert!(matches!(joined, Joined::Done));
+}
+
+#[test]
+fn the_acknowledging_constructor_also_takes_a_multi_thread_handle() {
+    // Total on purpose: the promise it asks for — always await `shutdown()` —
+    // is correct on every flavour, so refusing the safe direction would refuse
+    // legitimate use for no gain. The name says which case it exists for.
+    let tokio_rt = threaded();
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone());
+    let joined = tokio_rt.block_on(async move {
+        let task = rt.spawn(Box::pin(async {}));
+        task.join().await
+    });
+    assert!(matches!(joined, Joined::Done));
+}
+
+#[test]
+fn a_current_thread_adapter_is_the_same_adapter_it_always_was() {
+    // Nothing about correct usage changes: this is the tracking, clock,
+    // observer and shutdown behaviour of the rows above, on the constructor a
+    // current-thread handle now has to go through.
+    let tokio_rt = paused();
+    let recorder = Arc::new(sdax_testkit::TraceRecorder::new());
+    let rt = TokioRuntime::current_thread_no_background_drain(tokio_rt.handle().clone())
+        .with_observer(recorder.clone());
+    assert_eq!(rt.tracked(), 0);
+
+    let done = Arc::new(AtomicU64::new(0));
+    let d = done.clone();
+    tokio_rt.block_on(async move {
+        let before = rt.clock().now();
+        let _task = rt.spawn(Box::pin(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            d.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(rt.tracked(), 1);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        rt.shutdown(Duration::from_secs(5)).await.expect("drained");
+        assert_eq!(rt.tracked(), 0);
+        // At least the 2 s advanced by hand; `start_paused` auto-advances to
+        // the next deadline as well, which is why this is a bound and the
+        // exact reading is asserted by `the_tokio_clock_only_moves_when_...`.
+        assert!(rt.clock().now().as_nanos() - before.as_nanos() >= 2_000_000_000);
+        rt.observer()
+            .event(&TraceEvent::at(Time::ZERO, TraceKind::Ready));
+    });
+    assert_eq!(done.load(Ordering::SeqCst), 1);
+    assert_eq!(recorder.len(), 1);
 }
