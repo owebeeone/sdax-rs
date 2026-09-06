@@ -203,8 +203,7 @@ impl Machine {
         match kind {
             Kind::Join => {
                 self.release_grants(n);
-                self.slots[n].st = St::Ready;
-                self.emit(n, TraceKind::Ready);
+                self.request_publication(n);
             }
             // A template has no body and never becomes `Ready` (contract § 1):
             // it is live, admitting instances, from the moment its imports are
@@ -255,7 +254,12 @@ impl Machine {
         self.t.scopes[scope].nodes.iter().any(|&n| {
             matches!(
                 self.slots[n].st,
-                St::Pending | St::Waiting | St::Running | St::Backoff | St::RetryRelease
+                St::Pending
+                    | St::Waiting
+                    | St::Running
+                    | St::Publishing
+                    | St::Backoff
+                    | St::RetryRelease
             )
         })
     }
@@ -281,11 +285,7 @@ impl Machine {
             }
             Some(c) => {
                 if self.slots[c].st == St::Running {
-                    self.slots[c].st = St::Ready;
-                    self.emit(c, TraceKind::Ready);
-                    let parent = self.t.nodes[c].scope;
-                    self.admit(parent);
-                    self.check_steady(parent);
+                    self.request_publication(c);
                 }
             }
         }

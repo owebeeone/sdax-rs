@@ -14,7 +14,7 @@ use sdax::host::sim::SimStep;
 use sdax::host::{BodySource, Clock, CxInner, InstanceId, RawKey, Runtime, Task, TaskHandle, Time};
 use sdax::{FaultKind, Kind, NodePath, Outcome, Report, Trace, TraceKind};
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
@@ -84,6 +84,7 @@ pub(crate) struct Driver<R: Runtime> {
     done: Option<oneshot::Sender<Finished>>,
     epoch: u64,
     ended: Option<Outcome>,
+    publications: VecDeque<Event>,
 }
 
 impl<R: Runtime> Driver<R> {
@@ -132,6 +133,7 @@ impl<R: Runtime> Driver<R> {
             done: Some(done),
             epoch: 0,
             ended: None,
+            publications: VecDeque::new(),
         }
     }
 
@@ -272,6 +274,21 @@ impl<R: Runtime> Driver<R> {
 
     /// Perform an effect list in order, then publish what a watcher may read.
     fn after(&mut self, event: String, fx: Vec<Effect>) {
+        self.perform_batch(event, fx);
+        while let Some(ack) = self.publications.pop_front() {
+            let described = format!("{ack:?}");
+            let effects = self.machine.step(ack);
+            self.perform_batch(described, effects);
+        }
+        self.ctl
+            .publish(&self.machine, &self.paths, self.live.len());
+        // All host publication obligations settle before bodies can observe
+        // readiness through the gate or child latches.
+        self.scope.publish(self.machine.spawn_table());
+        self.scope.resolve(&self.machine.instances());
+    }
+
+    fn perform_batch(&mut self, event: String, fx: Vec<Effect>) {
         let rendered: Vec<String> = if self.record.is_some() {
             fx.iter().map(|e| format!("{e:?}")).collect()
         } else {
@@ -298,12 +315,6 @@ impl<R: Runtime> Driver<R> {
                 }
             }
         }
-        self.ctl
-            .publish(&self.machine, &self.paths, self.live.len());
-        // The gate and the readiness latches are what a body reads from its
-        // own task; both are snapshots of the machine as of this step.
-        self.scope.publish(self.machine.spawn_table());
-        self.scope.resolve(&self.machine.instances());
     }
 
     /// The declaration key and instance behind a run key.
@@ -313,6 +324,12 @@ impl<R: Runtime> Driver<R> {
 
     fn perform(&mut self, e: Effect) {
         match e {
+            Effect::PublishReady { node } => {
+                let (declaration, instance) = self.origin(node);
+                let result = self.src.publish_ready(declaration, instance);
+                self.publications
+                    .push_back(Event::ReadyPublished { node, result });
+            }
             Effect::Spawn { node, attempt } => self.spawn_body(node, attempt),
             Effect::SpawnBlocking { node, attempt } => self.spawn_body(node, attempt),
             Effect::Abort(node) => self.abort(node),

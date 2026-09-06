@@ -381,6 +381,21 @@ async fn scripted_cleanup(inner: Arc<CxInner>, spec: Cleanup) -> Result<(), Erro
 }
 
 impl BodySource for ScriptedBodies {
+    /// Lifecycle-only acknowledgement: scripted bodies consume no typed
+    /// values, and `export` continues to return no fabricated output.
+    fn publish_ready(
+        &self,
+        node: RawKey,
+        _instance: Option<InstanceId>,
+    ) -> Result<(), sdax::Error> {
+        match self.nodes.get(&node).map(|entry| entry.kind) {
+            Some(Kind::Join | Kind::Component) => Ok(()),
+            _ => Err(Box::new(Scripted(
+                "publication names no structural declaration".into(),
+            ))),
+        }
+    }
+
     fn body(&self, node: RawKey, instance: Option<InstanceId>, cx: &Arc<CxInner>) -> Option<Task> {
         let ns = self.nodes.get(&node)?;
         let attempt = Cx::<Run>::new(cx.clone()).attempt() as usize;

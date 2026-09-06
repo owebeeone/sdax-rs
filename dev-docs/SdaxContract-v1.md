@@ -285,6 +285,15 @@ template — so the entry point does: `Machine::with_input` (what
 `start(rt, input)` and `cx.spawn` reach) admits it, `Machine::new` (what
 `Plan::simulate` and a driver that takes no input reach) refuses it.
 
+A component registration supplies no input. Admission checks every component in
+all declaration subtrees, including inside templates and nested templates, before
+any root effect. A component declaring input is refused even for `In = ()` or an
+unused input, with the full component/input path. A template registration supplies
+its own instance input and remains valid; this does not supply inputs to components
+inside it. Root input refusal and unresolved-root-import diagnostics retain their
+existing precedence. This is load validation, not a new authoring-time restriction
+or a component-input API.
+
 `L-IMPORTS`: a plan with unresolved imports started as a root is refused with
 the import list. `Plan::unresolved_imports()` is the decision procedure; Stage 2's
 `start` calls it before any effect. It returns `Vec<NodePath>` — the import
@@ -376,8 +385,10 @@ the parent instance; `EngineError::Templates` became
 `EngineError::TemplateAsScope`). The root input (`OD-ROOT-INPUT`) added two
 more: `bodies_of_with_input` beside `bodies_of`, and `Machine::with_input`
 beside `Machine::new`, which is now generic over `In` so a plan with a declared
-input can be *offered* to it and refused. `BodySource` is unchanged — the input
-is seeded when the source is built, not through the trait. A host item that
+input can be *offered* to it and refused. That input change left `BodySource`
+unchanged: input is seeded when the source is built. Structural publication now
+adds the required `BodySource::publish_ready` operation, `Effect::PublishReady`,
+`Event::ReadyPublished`, and host `NodeState::Publishing`. A host item that
 stops resolving at the crate root is the point of the split, and D-HOST-SPLIT
 witnesses it.
 
@@ -431,6 +442,36 @@ witnesses it.
      under a live run or a pending drainer — reports what it had: a
      `TraceKind::RuntimeDroppedWithLiveRuns` and a `Cancelled` report, and it
      latches readiness so nothing waits on a run that no longer exists.
+
+8. **Structural values are published before readiness.** `Effect::PublishReady`
+   names a join or component by its run key. Resolve it to its declaration key
+   and exact instance, then call
+   `BodySource::publish_ready(node, instance) -> Result<(), Error>`. A join and
+   an unexported unit component install `Arc<()>`; a component with a declared
+   export clones the child's actual `Arc<Out>` into the parent slot. An explicit
+   unit export is a declared export too: a missing or wrongly typed value is an
+   error, never a no-export fallback. Resolve the source and destination within
+   the same run/instance, and release the source slot lock before acquiring the
+   destination lock.
+
+   Finish the current effects batch in order. Queue its publication results in
+   a FIFO, then deliver `Event::ReadyPublished { node, result }` for each result,
+   performing each returned effects batch completely and appending further
+   publication results to that FIFO. Drain it before external/body/timer input
+   or publishing readiness and spawn-table snapshots. Recursively handling an
+   acknowledgement before finishing its original batch can abort a task before
+   its already-issued spawn was performed. Observers never perform publication.
+
+   The engine keeps structural nodes `Publishing` until acknowledgement; only
+   success permits `Ready` and dependent construction. Failure is a structural
+   fault under the containing scope's policy, with no synthetic body event.
+   Cancellation or another fault may terminalize a publishing node, but the
+   outstanding acknowledgement is still owed: it cannot resurrect readiness,
+   and cleanup/end/instance closure cannot overtake it, even if the shutdown
+   budget expires. Duplicate, unsolicited and wrong-kind acknowledgements are
+   rejected. Custom sources must implement the method explicitly. The pure
+   simulator and `ScriptedBodies` acknowledge a lifecycle-only model; their
+   success is not evidence of typed output transfer.
 
 **What the substrate adds.** Two facts about tokio that these rules do not
 imply, stated here because they are what a supervisor gets wrong: a

@@ -51,9 +51,9 @@ the only way a run can differ from its sibling is the value handed to `start`.
   contract § 10, obligation 6. `TokioDriver::run_with_input` is the case: it
   passes a real value to `start_with` and then hands the driver `ScriptedBodies`,
   which reads no slot.
-- **A template used as a *component*.** `Table::build` checks the root's nodes
-  only; `flatten` skips a child's `Kind::Input` without refusing, so a
-  `Plan::template::<()>` used as a component has always been accepted with its
-  input slot empty. Pre-existing, untouched, and out of this change's scope —
-  `PlanBuilder::component` takes `&Plan<O>`, so no plan with `In != ()` can
-  reach it.
+- **A template used as a *component*.** This was a pre-existing residue of the
+  root-input change and is now resolved by F2 (2026-09-06). Machine admission
+  recursively checks every component, including components inside nested template
+  declarations, and refuses its declared input before root effects. Unit and
+  unused inputs receive no implicit value. `SdaxFixer-Input-Log.md` records the
+  regression matrix and verification. The component API still supplies no input.

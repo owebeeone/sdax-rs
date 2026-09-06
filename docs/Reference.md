@@ -5,6 +5,24 @@
 `sdax_tokio::{TokioRuntime, PlanStart}`. Do not implement
 `sdax::host` (`Runtime`, `Clock`, `Observer`, `Machine`).
 
+## Install
+
+Before crates.io publication, install both crates from the same Git repository
+(read access is required while it is private):
+
+```toml
+[dependencies]
+sdax = { git = "https://github.com/owebeeone/sdax-rs", package = "sdax" }
+sdax-tokio = { git = "https://github.com/owebeeone/sdax-rs", package = "sdax-tokio" }
+
+[dev-dependencies]
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time", "test-util"] }
+```
+
+Cargo records the common resolved commit in your application's `Cargo.lock`.
+The Tokio dev-dependency supports the guide tests. Use registry dependency
+coordinates after both Rust crates are published.
+
 `Error` = `Box<dyn std::error::Error + Send + Sync + 'static>`.
 
 A **plan** is immutable, `Send + Sync`. `build` once; each `start` is

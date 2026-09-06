@@ -78,7 +78,7 @@ impl Machine {
                     self.emit(n, TraceKind::Interrupted { held: false });
                     self.flush_faults(n);
                 }
-                St::Running => self.interrupt(n, because),
+                St::Running | St::Publishing => self.interrupt(n, because),
                 _ => {}
             }
             // A component's inner scope stops admitting with the node, whether
@@ -123,6 +123,16 @@ impl Machine {
         }
         let key = self.t.nodes[n].key;
         match self.t.nodes[n].kind {
+            Kind::Join => {
+                self.slots[n].st = St::Skipped;
+                self.slots[n].because = because;
+                self.emit(
+                    n,
+                    TraceKind::Skipped {
+                        because: because.map(|b| self.t.nodes[b].path.clone()),
+                    },
+                );
+            }
             // T5: a blocking body is told to stop, and never aborted (T7) — a
             // thread cannot be dropped. `cx.is_stopping()` is how a blocking
             // body learns the run is ending (contract § 5, "all phases"); with

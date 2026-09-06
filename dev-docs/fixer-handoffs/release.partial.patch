@@ -1,0 +1,938 @@
+diff --git a/.github/workflows/publish.yml b/.github/workflows/publish.yml
+index 063f0db..0da0758 100644
+--- a/.github/workflows/publish.yml
++++ b/.github/workflows/publish.yml
+@@ -19,13 +19,26 @@ jobs:
+   test:
+     name: Test crate
+     runs-on: ubuntu-latest
++    outputs:
++      release_sha: ${{ steps.release_selection.outputs.release_sha }}
++      release_version: ${{ steps.release_selection.outputs.release_version }}
+     steps:
+       - uses: actions/checkout@v6
++        with:
++          fetch-depth: 0
+       - run: rustup component add rustfmt clippy
++      - run: rustup toolchain install 1.75 --profile minimal
++      - id: release_selection
++        run: |
++          python3 scripts/release_selection.py resolve \
++            --repo "$GITHUB_WORKSPACE" \
++            --tag "$RELEASE_TAG" \
++            --output "$GITHUB_OUTPUT"
+       - run: cargo fmt --check
+       - run: cargo test --workspace --locked
+       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+       - run: cargo package -p sdax --locked
++      - run: cargo +1.75 test --workspace --locked
+ 
+   publish:
+     name: Publish to crates.io
+@@ -34,33 +47,32 @@ jobs:
+     environment: crates-io
+     steps:
+       - uses: actions/checkout@v6
+-      - name: Require tag/crate version agreement
++        with:
++          ref: ${{ needs.test.outputs.release_sha }}
++          fetch-depth: 0
++      - run: rustup toolchain install 1.75 --profile minimal
++      - name: Re-check selected immutable source
++        run: |
++          python3 scripts/release_selection.py verify \
++            --repo "$GITHUB_WORKSPACE" \
++            --tag "$RELEASE_TAG" \
++            --expected-sha "${{ needs.test.outputs.release_sha }}"
++      - id: publish_plan
+         run: |
+-          for crate in sdax sdax-tokio; do
+-            version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' "crates/${crate}/Cargo.toml")
+-            test "$version" = "${RELEASE_TAG#v}"
+-          done
++          python3 scripts/release_selection.py publish-plan \
++            --repo "$GITHUB_WORKSPACE" \
++            --tag "$RELEASE_TAG" \
++            --expected-sha "${{ needs.test.outputs.release_sha }}" \
++            --output "$GITHUB_OUTPUT"
+       - name: Publish sdax if this immutable version is absent
++        if: steps.publish_plan.outputs.publish_sdax == 'true'
+         run: |
+-          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' crates/sdax/Cargo.toml)
+-          if curl --fail --silent --show-error \
+-            --header 'User-Agent: sdax-release-workflow' \
+-            "https://crates.io/api/v1/crates/sdax/$version" >/dev/null; then
+-            echo "sdax $version is already published"
+-          else
+-            cargo publish -p sdax --locked
+-          fi
++          CARGO_NET_GIT_FETCH_WITH_CLI=true cargo publish -p sdax --locked
+         env:
+           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+       - name: Publish sdax-tokio if this immutable version is absent
++        if: steps.publish_plan.outputs.publish_sdax_tokio == 'true'
+         run: |
+-          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' crates/sdax-tokio/Cargo.toml)
+-          if curl --fail --silent --show-error \
+-            --header 'User-Agent: sdax-release-workflow' \
+-            "https://crates.io/api/v1/crates/sdax-tokio/$version" >/dev/null; then
+-            echo "sdax-tokio $version is already published"
+-          else
+-            cargo publish -p sdax-tokio --locked
+-          fi
++          CARGO_NET_GIT_FETCH_WITH_CLI=true cargo publish -p sdax-tokio --locked
+         env:
+           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+diff --git a/RELEASE.md b/RELEASE.md
+index 946cfba..11f44c8 100644
+--- a/RELEASE.md
++++ b/RELEASE.md
+@@ -31,6 +31,25 @@ python3 scripts/release.py vX.Y.Z --push --github-release
+ `--github-release` requires `--push`. A pre-existing tag is accepted only when
+ it already points at the current release commit.
+ 
++The publish workflow now resolves `refs/tags/vX.Y.Z` exactly once, peels annotated
++and lightweight tags to a commit SHA, and uses that same commit for both test and
++publish. If the tag is moved after resolution, publish fails.
++
++When publishing, the workflow checks:
++
++- tag format `vX.Y.Z`
++- exact crate versions for `sdax` and `sdax-tokio`
++- `sdax-tokio` dependency requirement on `sdax`
++- crates.io presence for each crate version
++- crates.io transport/auth/server errors
++
++Existing versions are accepted only when:
++
++- `sdax` already published, or
++- `sdax-tokio` already published and its published metadata still expresses
++  dependency on the same `sdax` version.
++
++A publish call only proceeds when the version is confirmed absent for that crate.
+ Gates (same bar as CI):
+ 
+ - `cargo fmt --check`
+diff --git a/scripts/release_selection.py b/scripts/release_selection.py
+new file mode 100644
+index 0000000..e8639a9
+--- /dev/null
++++ b/scripts/release_selection.py
+@@ -0,0 +1,477 @@
++#!/usr/bin/env python3
++"""Helpers for immutable release selection in the publish workflow."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import re
++import subprocess
++import sys
++import urllib.error
++import urllib.request
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++try:
++    import tomllib
++except ModuleNotFoundError:  # pragma: no cover - older Python fallback
++    import tomli as tomllib  # type: ignore
++
++
++TAG_PATTERN = re.compile(r"^v\d+\.\d+\.\d+$")
++CRATE_TO_MANIFEST = {
++    "sdax": Path("crates/sdax/Cargo.toml"),
++    "sdax-tokio": Path("crates/sdax-tokio/Cargo.toml"),
++}
++RELEASE_SELECTION_OUTPUT_KEYS = (
++    "release_tag",
++    "release_version",
++    "release_sha",
++    "sdax_version",
++    "sdax_tokio_version",
++    "sdax_dependency_version",
++)
++
++
++class ReleaseSelectionError(RuntimeError):
++    """Domain error for invalid release inputs."""
++
++
++@dataclass(frozen=True)
++class ReleaseTarget:
++    """Resolved metadata for a candidate release tag."""
++
++    tag: str
++    version: str
++    sha: str
++    sdax_version: str
++    sdax_tokio_version: str
++    sdax_dependency_version: str
++
++
++@dataclass(frozen=True)
++class RegistryState:
++    """Presence/provenance of one published version on crates.io."""
++
++    status: str
++    http_status: int | None = None
++    payload: dict[str, Any] | None = None
++    message: str | None = None
++
++
++def fail(message: str, *, exit_code: int = 2) -> None:
++    print(f"release-selection: error: {message}", file=sys.stderr)
++    raise SystemExit(exit_code)
++
++
++def _run(command: list[str], *, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
++    """Run a command and return captured output."""
++
++    result = subprocess.run(
++        command,
++        cwd=str(cwd),
++        text=True,
++        capture_output=True,
++    )
++    if check and result.returncode != 0:
++        if result.stdout:
++            print(result.stdout, file=sys.stderr)
++        if result.stderr:
++            print(result.stderr, file=sys.stderr)
++        fail(f"command failed ({result.returncode}): {' '.join(command)}")
++    return result
++
++
++def _normalize_tag(tag: str) -> str:
++    if not TAG_PATTERN.fullmatch(tag):
++        fail(f"tag must look like vX.Y.Z, got {tag!r}")
++    return tag[1:]
++
++
++def _read_manifest_version(repo: Path, manifest: str) -> str:
++    path = repo / manifest
++    if not path.is_file():
++        fail(f"missing manifest: {path}")
++    try:
++        text = path.read_bytes().decode("utf-8")
++    except OSError as exc:
++        fail(f"failed to read {path}: {exc}")
++    data = tomllib.loads(text)
++    package = data.get("package")
++    if not isinstance(package, dict):
++        fail(f"{manifest} missing [package] table")
++    version = package.get("version")
++    if not isinstance(version, str):
++        fail(f"{manifest} missing package.version")
++    return version
++
++
++def _read_dependency_version(repo: Path, manifest: str, dependency: str) -> str:
++    path = repo / manifest
++    try:
++        data = tomllib.loads(path.read_bytes().decode("utf-8"))
++    except OSError as exc:
++        fail(f"failed to read {path}: {exc}")
++    except Exception as exc:
++        fail(f"failed to parse {path}: {exc}")
++
++    dependencies = data.get("dependencies")
++    if not isinstance(dependencies, dict):
++        fail(f"{manifest} missing [dependencies]")
++    entry = dependencies.get(dependency)
++    if isinstance(entry, str):
++        if not entry:
++            fail(f"dependency {dependency!r} in {manifest} has no version")
++        return entry
++    if not isinstance(entry, dict):
++        fail(f"dependency {dependency!r} in {manifest} is malformed")
++    version = entry.get("version")
++    if isinstance(version, str) and version:
++        return version
++    fail(f"dependency {dependency!r} in {manifest} has no version")
++
++
++def _git_commit_from_tag(repo: Path, tag: str) -> str:
++    result = _run(
++        ["git", "-C", str(repo), "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}"],
++        cwd=repo,
++        check=False,
++    )
++    if result.returncode != 0:
++        fail(f"{tag!r} does not resolve to a tag: {result.stderr.strip() or result.stdout.strip()}")
++    commit = result.stdout.strip()
++    if len(commit) < 40:
++        fail(f"{tag} resolves to an invalid commit {commit!r}")
++    return commit
++
++
++def resolve_release(repo: Path, tag: str) -> ReleaseTarget:
++    version = _normalize_tag(tag)
++    sha = _git_commit_from_tag(repo, tag)
++
++    sdax_version = _read_manifest_version(repo, "crates/sdax/Cargo.toml")
++    sdax_tokio_version = _read_manifest_version(repo, "crates/sdax-tokio/Cargo.toml")
++    sdax_dependency_version = _read_dependency_version(
++        repo,
++        "crates/sdax-tokio/Cargo.toml",
++        "sdax",
++    )
++
++    if sdax_version != version:
++        fail(f"crates/sdax version {sdax_version!r} does not match tag version {version!r}")
++    if sdax_tokio_version != version:
++        fail(
++            f"crates/sdax-tokio version {sdax_tokio_version!r} "
++            f"does not match tag version {version!r}"
++        )
++    if sdax_dependency_version != version:
++        fail(
++            f"crates/sdax-tokio dependency on sdax is {sdax_dependency_version!r}, "
++            f"not {version!r}"
++        )
++
++    return ReleaseTarget(
++        tag=tag,
++        version=version,
++        sha=sha,
++        sdax_version=sdax_version,
++        sdax_tokio_version=sdax_tokio_version,
++        sdax_dependency_version=sdax_dependency_version,
++    )
++
++
++def _crates_io_payload_mock() -> dict[str, Any] | None:
++    fixture = os.environ.get("SDAX_RELEASE_REGISTRY_FIXTURE")
++    if not fixture:
++        return None
++    try:
++        payload = json.loads(Path(fixture).read_text(encoding="utf-8"))
++    except OSError as exc:
++        fail(f"cannot read registry fixture {fixture!r}: {exc}")
++    except json.JSONDecodeError as exc:
++        fail(f"invalid registry fixture {fixture!r}: {exc}")
++    if not isinstance(payload, dict):
++        fail(f"registry fixture must be a JSON object, got {type(payload).__name__}")
++    return payload
++
++
++def _query_registry(crate: str, version: str) -> RegistryState:
++    mock = _crates_io_payload_mock()
++    if mock is not None:
++        entry = mock.get(crate)
++        if not isinstance(entry, dict):
++            fail(f"registry fixture missing {crate!r} entry")
++        status = entry.get("status")
++        if status not in {"present", "absent", "auth_error", "server_error", "transport_error"}:
++            fail(
++                f"registry fixture for {crate} has unknown status {status!r}; "
++                "expected present|absent|auth_error|server_error|transport_error"
++            )
++        payload = entry.get("payload")
++        if payload is not None and not isinstance(payload, dict):
++            fail(f"registry fixture for {crate} has non-dict payload")
++        message = entry.get("message")
++        if not isinstance(message, str) and message is not None:
++            fail(f"registry fixture message for {crate} must be text")
++        code = int(entry["http_status"]) if "http_status" in entry else None
++        return RegistryState(status=status, http_status=code, payload=payload, message=message)
++
++    url = f"https://crates.io/api/v1/crates/{crate}/{version}"
++    request = urllib.request.Request(url, headers={"User-Agent": "sdax-release-workflow"})
++    try:
++        with urllib.request.urlopen(request, timeout=30) as response:
++            body = response.read().decode("utf-8")
++            data = json.loads(body) if body else None
++            if not isinstance(data, dict):
++                fail(f"unexpected crates.io response for {crate} {version}")
++            return RegistryState(
++                status="present",
++                http_status=getattr(response, "status", None),
++                payload=data,
++            )
++    except urllib.error.HTTPError as exc:
++        if exc.code == 404:
++            return RegistryState(status="absent", http_status=exc.code)
++        if exc.code in {401, 403}:
++            return RegistryState(status="auth_error", http_status=exc.code, message=str(exc))
++        if 500 <= exc.code < 600:
++            return RegistryState(status="server_error", http_status=exc.code, message=str(exc))
++        return RegistryState(status="transport_error", http_status=exc.code, message=str(exc))
++    except (urllib.error.URLError, TimeoutError, OSError) as exc:
++        return RegistryState(status="transport_error", message=str(exc))
++    except json.JSONDecodeError as exc:
++        fail(f"invalid JSON from crates.io for {crate} {version}: {exc}")
++
++
++def _collect_dependencies(payload: dict[str, Any]) -> list[dict[str, Any]]:
++    roots = [payload]
++    version_payload = payload.get("version")
++    if isinstance(version_payload, dict):
++        roots.append(version_payload)
++    dependencies: list[dict[str, Any]] = []
++    for node in roots:
++        for key in ("dependencies", "deps"):
++            value = node.get(key)
++            if isinstance(value, list):
++                for item in value:
++                    if isinstance(item, dict):
++                        dependencies.append(item)
++    return dependencies
++
++
++def _sdax_dependency_req(payload: dict[str, Any] | None, *, expected_version: str) -> bool:
++    if not isinstance(payload, dict):
++        return False
++    for item in _collect_dependencies(payload):
++        name = item.get("name")
++        crate_id = item.get("crate_id")
++        if name not in {"sdax", None} and crate_id not in {"sdax", None}:
++            continue
++        req = item.get("req")
++        if not isinstance(req, str):
++            continue
++        if req == f"={expected_version}" or req == expected_version:
++            return True
++        continue
++    return False
++
++
++def _build_publish_plan(target: ReleaseTarget, *, expected_sha: str | None = None) -> tuple[dict[str, Any], list[tuple[str, list[str]]]]:
++    if expected_sha is not None and expected_sha != target.sha:
++        fail(
++            f"{target.tag} moved after selection: expected {expected_sha} but tag now points at "
++            f"{target.sha}"
++        )
++
++    sdax_state = _query_registry("sdax", target.version)
++    sdax_tokio_state = _query_registry("sdax-tokio", target.version)
++
++    publish_sdax = False
++    publish_sdax_tokio = False
++
++    if sdax_state.status == "absent":
++        publish_sdax = True
++    elif sdax_state.status in {"auth_error", "server_error", "transport_error"}:
++        fail(f"crates.io query for sdax failed: {sdax_state.status} ({sdax_state.message})")
++
++    if sdax_tokio_state.status == "absent":
++        publish_sdax_tokio = True
++    elif sdax_tokio_state.status == "present":
++        if not _sdax_dependency_req(
++            sdax_tokio_state.payload,
++            expected_version=target.version,
++        ):
++            fail(
++                f"sdax-tokio {target.version} exists without an sdax dependency matching "
++                f"{target.version}; expected provenance check"
++            )
++        publish_sdax_tokio = False
++    elif sdax_tokio_state.status in {"auth_error", "server_error", "transport_error"}:
++        fail(
++            f"crates.io query for sdax-tokio failed: "
++            f"{sdax_tokio_state.status} ({sdax_tokio_state.message})"
++        )
++
++    outputs = {
++        "publish_sdax": publish_sdax,
++        "publish_sdax_tokio": publish_sdax_tokio,
++        "sdax_registry_status": sdax_state.status,
++        "sdax_tokio_registry_status": sdax_tokio_state.status,
++        "sdax_tokio_dependency_ok": _sdax_dependency_req(
++            sdax_tokio_state.payload,
++            expected_version=target.version,
++        ) if sdax_tokio_state.status == "present" else None,
++        "release_sha": target.sha,
++        "release_version": target.version,
++        "release_tag": target.tag,
++    }
++
++    commands = []
++    if publish_sdax:
++        commands.append(("sdax", ["cargo", "publish", "-p", "sdax", "--locked"]))
++    if publish_sdax_tokio:
++        commands.append(("sdax-tokio", ["cargo", "publish", "-p", "sdax-tokio", "--locked"]))
++    return outputs, commands
++
++
++def _write_github_output(path: Path, values: dict[str, Any]) -> None:
++    with path.open("a", encoding="utf-8") as handle:
++        for key, value in values.items():
++            if isinstance(value, bool):
++                handle.write(f"{key}={str(value).lower()}\n")
++            elif value is None:
++                handle.write(f"{key}=\n")
++            else:
++                handle.write(f"{key}={value}\n")
++
++
++def _print_values(values: dict[str, Any], mode: str) -> None:
++    if mode == "json":
++        print(json.dumps(values, sort_keys=True))
++        return
++    for key, value in values.items():
++        if isinstance(value, bool):
++            value = str(value).lower()
++        print(f"{key}={value}")
++
++
++def _run_publish_commands(commands: list[tuple[str, list[str]]], *, command: str = "cargo") -> None:
++    for crate_name, args in commands:
++        full = [command, *args[1:]]
++        result = subprocess.run(
++            full,
++            text=True,
++            capture_output=True,
++        )
++        if result.returncode != 0:
++            if result.stdout:
++                print(result.stdout, file=sys.stderr)
++            if result.stderr:
++                print(result.stderr, file=sys.stderr)
++            fail(f"publish command failed for {crate_name}: {' '.join(full)}")
++
++
++def _cli_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--repo", default=".", help="repository root")
++    parser.add_argument(
++        "--output",
++        help="Path for GitHub Actions output-style key-value pairs",
++        default=None,
++    )
++    parser.add_argument(
++        "--format",
++        choices=("text", "json"),
++        default="text",
++        help="Standard output format",
++    )
++
++    subcommands = parser.add_subparsers(dest="command", required=True)
++
++    resolve_cmd = subcommands.add_parser("resolve", help="resolve tag and validate crate versions")
++    resolve_cmd.add_argument("tag")
++
++    verify_cmd = subcommands.add_parser("verify", help="resolve and require stable tag SHA")
++    verify_cmd.add_argument("tag")
++    verify_cmd.add_argument("--expected-sha", required=True, help="expected commit SHA from resolve")
++
++    plan_cmd = subcommands.add_parser("publish-plan", help="compute version publication plan")
++    plan_cmd.add_argument("tag")
++    plan_cmd.add_argument(
++        "--expected-sha",
++        required=True,
++        help="expected commit SHA from resolve",
++    )
++    plan_cmd.add_argument(
++        "--run-commands",
++        action="store_true",
++        help="run the selected `cargo publish` commands (default: off)",
++    )
++    plan_cmd.add_argument(
++        "--publish-command",
++        default="cargo",
++        help="command to run for publishing",
++    )
++
++    return parser
++
++
++def _write_outputs(values: dict[str, Any], output: str | None, output_format: str) -> None:
++    if output is not None:
++        _write_github_output(Path(output), values)
++    _print_values(values, output_format)
++
++
++def main() -> None:
++    parser = _cli_parser()
++    args = parser.parse_args()
++    repo = Path(args.repo).resolve()
++
++    command = args.command
++    if command == "resolve":
++        target = resolve_release(repo, args.tag)
++        values = {
++            "release_tag": target.tag,
++            "release_version": target.version,
++            "release_sha": target.sha,
++            "sdax_version": target.sdax_version,
++            "sdax_tokio_version": target.sdax_tokio_version,
++            "sdax_dependency_version": target.sdax_dependency_version,
++        }
++        _write_outputs(values, args.output, args.format)
++        return
++
++    if command == "verify":
++        target = resolve_release(repo, args.tag)
++        if args.expected_sha != target.sha:
++            fail(
++                f"{args.tag} moved since selection: expected {args.expected_sha[:8]} "
++                f"but now resolves to {target.sha[:8]}"
++            )
++        _write_outputs(
++            {
++                "release_tag": target.tag,
++                "release_version": target.version,
++                "release_sha": target.sha,
++            },
++            args.output,
++            args.format,
++        )
++        return
++
++    if command == "publish-plan":
++        target = resolve_release(repo, args.tag)
++        values, commands = _build_publish_plan(target, expected_sha=args.expected_sha)
++        _write_outputs(values, args.output, args.format)
++        if args.run_commands:
++            _run_publish_commands(commands, command=args.publish_command)
++        return
++
++    fail(f"unknown command {command!r}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/test_release_selection.py b/scripts/test_release_selection.py
+new file mode 100644
+index 0000000..811f6a3
+--- /dev/null
++++ b/scripts/test_release_selection.py
+@@ -0,0 +1,334 @@
++#!/usr/bin/env python3
++"""Release-selection regression tests.
++
++These tests keep all checks local, using temporary git repositories and a mocked
++crates.io payload fixture. No network access and no cargo publication calls hit the
++real environment.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++import sys
++import tempfile
++import textwrap
++import unittest
++from pathlib import Path
++
++
++SCRIPT = Path(__file__).resolve().parent / "release_selection.py"
++
++
++def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
++    command = ["git", "-C", str(repo), *args]
++    merged_env = os.environ.copy()
++    merged_env.setdefault("GIT_AUTHOR_NAME", "sdax-test")
++    merged_env.setdefault("GIT_AUTHOR_EMAIL", "sdax-test@example.com")
++    merged_env.setdefault("GIT_COMMITTER_NAME", "sdax-test")
++    merged_env.setdefault("GIT_COMMITTER_EMAIL", "sdax-test@example.com")
++    if env:
++        merged_env.update(env)
++    return subprocess.run(
++        command,
++        text=True,
++        capture_output=True,
++        env=merged_env,
++        check=False,
++    )
++
++
++def run_script(
++    repo: Path,
++    args: list[str],
++    *,
++    env: dict[str, str] | None = None,
++) -> subprocess.CompletedProcess[str]:
++    merged = os.environ.copy()
++    if env:
++        merged.update(env)
++    return subprocess.run(
++        [sys.executable, str(SCRIPT), *args],
++        cwd=str(repo),
++        text=True,
++        capture_output=True,
++        env=merged,
++        check=False,
++    )
++
++
++def parse_key_value_blob(blob: str) -> dict[str, str]:
++    out: dict[str, str] = {}
++    for line in blob.splitlines():
++        if "=" not in line:
++            continue
++        key, value = line.split("=", 1)
++        out[key] = value
++    return out
++
++
++class ReleaseSelectionTestCase(unittest.TestCase):
++    def write_repo(self, *, version: str = "0.1.0") -> Path:
++        repo = Path(tempfile.mkdtemp(prefix="sdax-release-"))
++        cargo_toml = textwrap.dedent(
++            f"""\
++            [workspace]
++            members = [
++                "crates/sdax",
++                "crates/sdax-tokio",
++            ]
++
++            [workspace.package]
++            version = "{version}"
++            rust-version = "1.75"
++            """
++        )
++        sdax = textwrap.dedent(
++            f"""\
++            [package]
++            name = "sdax"
++            version = "{version}"
++            edition = "2021"
++            """
++        )
++        sdax_tokio = textwrap.dedent(
++            f"""\
++            [package]
++            name = "sdax-tokio"
++            version = "{version}"
++            edition = "2021"
++
++            [dependencies]
++            sdax = {{ path = "../sdax", version = "{version}" }}
++            """
++        )
++        (repo / "Cargo.toml").write_text(cargo_toml, encoding="utf-8")
++        (repo / "crates").mkdir()
++        (repo / "crates" / "sdax").mkdir(parents=True)
++        (repo / "crates/sdax/Cargo.toml").write_text(sdax, encoding="utf-8")
++        (repo / "crates/sdax-tokio").mkdir(parents=True)
++        (repo / "crates/sdax-tokio/Cargo.toml").write_text(sdax_tokio, encoding="utf-8")
++
++        git(repo, "init")
++        git(repo, "add", "Cargo.toml", "crates/sdax/Cargo.toml", "crates/sdax-tokio/Cargo.toml")
++        git(repo, "commit", "-m", f"release fixture {version}")
++        return repo
++
++    def tag(self, repo: Path, name: str, *, annotated: bool = False) -> str:
++        if annotated:
++            result = git(repo, "tag", "-a", name, "-m", f"{name} release")
++        else:
++            result = git(repo, "tag", name)
++        if result.returncode != 0:
++            self.fail(result.stderr)
++        return repo / ".git" and repo
++
++    def assert_success(self, result: subprocess.CompletedProcess[str], *, context: str) -> dict[str, str]:
++        if result.returncode != 0:
++            self.fail(f"{context}: rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}")
++        return parse_key_value_blob(result.stdout)
++
++    def mk_registry_fixture(self, repo: Path, values: dict[str, object]) -> Path:
++        fixture = repo / "registry.json"
++        fixture.write_text(json.dumps(values), encoding="utf-8")
++        return fixture
++
++    def test_malformed_tag_rejected(self) -> None:
++        repo = self.write_repo()
++        result = run_script(repo, ["resolve", "bad-tag"])
++        self.assertEqual(result.returncode, 2)
++        self.assertIn("must look like vX.Y.Z", result.stderr)
++
++    def test_unknown_tag_rejected(self) -> None:
++        repo = self.write_repo()
++        result = run_script(repo, ["resolve", "v9.9.9"])
++        self.assertEqual(result.returncode, 2)
++        self.assertIn("does not resolve to a tag", result.stderr)
++
++    def test_lightweight_and_annotated_tags_resolve(self) -> None:
++        repo = self.write_repo()
++        git(repo, "tag", "v0.1.0")
++        head_commit = git(repo, "rev-parse", "HEAD").stdout.strip()
++
++        # add an annotated tag to the same commit
++        git(repo, "tag", "-d", "v0.1.0")
++        git(repo, "tag", "-a", "v0.1.0", "-m", "annotated")
++        result = run_script(repo, ["resolve", "v0.1.0"])
++        info = self.assert_success(result, context="annotated tag")
++        self.assertEqual(info["release_sha"], head_commit)
++
++    def test_dispatch_branch_newer_than_taged_release_uses_tag_commit(self) -> None:
++        repo = self.write_repo(version="0.2.0")
++        git(repo, "tag", "v0.2.0")
++        tagged_commit = git(repo, "rev-parse", "HEAD").stdout.strip()
++
++        (repo / "README.md").write_text("newer-commit\n", encoding="utf-8")
++        git(repo, "add", "README.md")
++        git(repo, "commit", "-m", "advance branch")
++
++        result = run_script(repo, ["resolve", "v0.2.0"])
++        info = self.assert_success(result, context="tag commit selection")
++        self.assertEqual(info["release_sha"], tagged_commit)
++
++    def test_tag_movement_is_refused(self) -> None:
++        repo = self.write_repo(version="0.3.0")
++        git(repo, "tag", "v0.3.0")
++        first_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
++
++        result = run_script(repo, ["--format", "json", "resolve", "v0.3.0"])
++        self.assertEqual(result.returncode, 0)
++        first = json.loads(result.stdout.strip())
++        self.assertEqual(first["release_sha"], first_sha)
++
++        (repo / "README.md").write_text("second\n", encoding="utf-8")
++        git(repo, "add", "README.md")
++        git(repo, "commit", "-m", "second commit")
++        git(repo, "tag", "-f", "v0.3.0")
++
++        moved = run_script(
++            repo,
++            ["verify", "v0.3.0", "--expected-sha", first_sha],
++        )
++        self.assertNotEqual(moved.returncode, 0)
++        self.assertIn("moved since selection", moved.stderr)
++
++    def test_publish_plan_records_all_absent_versions(self) -> None:
++        repo = self.write_repo()
++        git(repo, "tag", "v0.1.0")
++        fixture = self.mk_registry_fixture(
++            repo,
++            {
++                "sdax": {"status": "absent"},
++                "sdax-tokio": {"status": "absent"},
++            },
++        )
++        result = run_script(
++            repo,
++            ["publish-plan", "v0.1.0", "--expected-sha", git(repo, "rev-parse", "HEAD").stdout.strip()],
++            env={"SDAX_RELEASE_REGISTRY_FIXTURE": str(fixture)},
++        )
++        values = self.assert_success(result, context="publish absent")
++        self.assertEqual(values["publish_sdax"], "true")
++        self.assertEqual(values["publish_sdax_tokio"], "true")
++
++    def test_publish_plan_refuses_transport_error_for_sdax(self) -> None:
++        repo = self.write_repo()
++        git(repo, "tag", "v0.1.0")
++        fixture = self.mk_registry_fixture(
++            repo,
++            {
++                "sdax": {"status": "server_error", "http_status": 503, "message": "service unavailable"},
++                "sdax-tokio": {"status": "absent"},
++            },
++        )
++        result = run_script(
++            repo,
++            ["publish-plan", "v0.1.0", "--expected-sha", git(repo, "rev-parse", "HEAD").stdout.strip()],
++            env={"SDAX_RELEASE_REGISTRY_FIXTURE": str(fixture)},
++        )
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("sdax failed", result.stderr)
++
++    def test_publish_plan_existing_version_provenance(self) -> None:
++        repo = self.write_repo()
++        git(repo, "tag", "v0.1.0")
++        fixture = self.mk_registry_fixture(
++            repo,
++            {
++                "sdax": {"status": "present", "http_status": 200},
++                "sdax-tokio": {
++                    "status": "present",
++                    "payload": {
++                        "version": {
++                            "dependencies": [
++                                {"crate_id": "sdax", "req": "=0.1.0"},
++                            ]
++                        }
++                    },
++                    "http_status": 200,
++                },
++            },
++        )
++        result = run_script(
++            repo,
++            ["publish-plan", "v0.1.0", "--expected-sha", git(repo, "rev-parse", "HEAD").stdout.strip()],
++            env={"SDAX_RELEASE_REGISTRY_FIXTURE": str(fixture)},
++        )
++        values = self.assert_success(result, context="existing version provenance")
++        self.assertEqual(values["publish_sdax"], "false")
++        self.assertEqual(values["publish_sdax_tokio"], "false")
++
++    def test_publish_plan_existing_sdax_tokio_without_expected_sdax_dependency_fails(self) -> None:
++        repo = self.write_repo()
++        git(repo, "tag", "v0.1.0")
++        fixture = self.mk_registry_fixture(
++            repo,
++            {
++                "sdax": {"status": "present", "http_status": 200},
++                "sdax-tokio": {
++                    "status": "present",
++                    "payload": {
++                        "version": {
++                            "dependencies": [
++                                {"crate_id": "sdax", "req": "=0.0.9"},
++                            ]
++                        }
++                    },
++                    "http_status": 200,
++                },
++            },
++        )
++        result = run_script(
++            repo,
++            ["publish-plan", "v0.1.0", "--expected-sha", git(repo, "rev-parse", "HEAD").stdout.strip()],
++            env={"SDAX_RELEASE_REGISTRY_FIXTURE": str(fixture)},
++        )
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("provenance", result.stderr)
++
++    def test_publish_plan_runs_stubbed_publish_commands(self) -> None:
++        repo = self.write_repo()
++        git(repo, "tag", "v0.1.0")
++        fixture = self.mk_registry_fixture(
++            repo,
++            {
++                "sdax": {"status": "absent"},
++                "sdax-tokio": {"status": "absent"},
++            },
++        )
++        publish_stub = repo / "publish_stub.sh"
++        publish_stub.write_text(
++            textwrap.dedent(
++                """\
++                #!/usr/bin/env sh
++                printf '%s\n' "$*" >> "$PWD/publish_log.txt"
++                """
++            ),
++            encoding="utf-8",
++        )
++        (repo / "publish_log.txt").write_text("", encoding="utf-8")
++        publish_stub_path = publish_stub.as_posix()
++        os.chmod(publish_stub, 0o755)
++
++        result = run_script(
++            repo,
++            [
++                "publish-plan",
++                "v0.1.0",
++                "--expected-sha",
++                git(repo, "rev-parse", "HEAD").stdout.strip(),
++                "--run-commands",
++                "--publish-command",
++                publish_stub_path,
++            ],
++            env={"SDAX_RELEASE_REGISTRY_FIXTURE": str(fixture)},
++        )
++        self.assertEqual(result.returncode, 0, msg=result.stderr)
++        log = (repo / "publish_log.txt").read_text(encoding="utf-8").splitlines()
++        self.assertEqual(log[0], "publish -p sdax --locked")
++        self.assertEqual(log[1], "publish -p sdax-tokio --locked")
++
++
++if __name__ == "__main__":
++    unittest.main()

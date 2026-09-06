@@ -110,4 +110,4 @@ print("")
 print("ARCHITECTURE GATE PASSED")
 PYEOF
 
-cargo metadata --format-version 1 --offline | python3 "$CHECKER"
+cargo metadata --format-version 1 --locked --offline | python3 "$CHECKER"

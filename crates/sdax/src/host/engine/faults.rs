@@ -297,7 +297,7 @@ impl Machine {
 
     /// Attempts exhausted: the node is `Failed`, its faults are the report's,
     /// and the scope's policy applies.
-    fn node_failed(&mut self, n: usize) {
+    pub(super) fn node_failed(&mut self, n: usize) {
         self.slots[n].st = St::Failed;
         self.flush_faults(n);
         let scope = self.t.nodes[n].scope;
@@ -338,6 +338,7 @@ impl Machine {
                         | St::Running
                         | St::Backoff
                         | St::RetryRelease
+                        | St::Publishing
                         | St::Ready
                         | St::Finished
                 ),
@@ -350,7 +351,7 @@ impl Machine {
     /// with it: the component faults in its parent, once, and the parent's
     /// policy applies (contract § 13, `OD-INNER-POLICY`).
     fn component_faulted(&mut self, c: usize, inner: usize) {
-        if !matches!(self.slots[c].st, St::Running | St::Ready) {
+        if !matches!(self.slots[c].st, St::Running | St::Publishing | St::Ready) {
             return;
         }
         self.slots[c].st = St::Failed;

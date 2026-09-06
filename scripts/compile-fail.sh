@@ -14,7 +14,7 @@ export CARGO_TARGET_DIR="$TARGET"
 echo "== toolchain"
 rustc --version
 echo "== building the rlib the witnesses link against"
-cargo build -p sdax --offline >/dev/null
+cargo build -p sdax --locked --offline >/dev/null
 
 RLIB=$(ls "$TARGET"/debug/libsdax.rlib "$TARGET"/debug/deps/libsdax-*.rlib 2>/dev/null | head -n1)
 if [ -z "$RLIB" ]; then

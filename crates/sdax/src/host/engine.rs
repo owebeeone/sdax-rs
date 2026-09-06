@@ -34,6 +34,7 @@ mod exits;
 mod faults;
 mod instances;
 mod machine;
+mod publication;
 mod settle;
 mod state;
 mod table;
@@ -59,6 +60,14 @@ pub enum JoinedLabel {
 /// Something that happened, told to the machine.
 #[derive(Debug)]
 pub enum Event {
+    /// The host completed a structural value transfer requested by
+    /// [`Effect::PublishReady`]. This is not a body event.
+    ReadyPublished {
+        /// Structural node's run key.
+        node: RawKey,
+        /// Whether its value was installed before any dependent can start.
+        result: Result<(), crate::Error>,
+    },
     /// A body was spawned and has been polled at least once.
     Started(RawKey),
     /// The body registered a value through `hold` (T2).
@@ -116,6 +125,13 @@ pub enum Event {
 /// Something the host must do, returned by the machine.
 #[derive(Debug)]
 pub enum Effect {
+    /// Install a join or component value through `BodySource::publish_ready`.
+    /// Finish this effects batch, then acknowledge with [`Event::ReadyPublished`]
+    /// before external events or readiness snapshots. No body is spawned.
+    PublishReady {
+        /// Structural node's run key; resolve its declaration and instance.
+        node: RawKey,
+    },
     /// Spawn an async body.
     Spawn {
         /// Which node.

@@ -14,6 +14,7 @@ use crate::host::engine::{Event, Machine};
 use crate::key::RawKey;
 use crate::plan::{Kind, Plan};
 use crate::report::{Report, Trace};
+use std::collections::VecDeque;
 
 /// A script that does not fit the plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +102,7 @@ pub struct Simulator {
     pub(super) machine: Machine,
     pub(super) nodes: Vec<NodeScript>,
     pub(super) queue: Vec<Queued>,
+    pub(super) publications: VecDeque<Event>,
     pub(super) seq: u64,
     pub(super) now: Time,
     pub(super) trace: Trace,
@@ -167,6 +169,7 @@ impl Simulator {
             machine,
             nodes: Vec::new(),
             queue: Vec::new(),
+            publications: VecDeque::new(),
             seq: 0,
             now: Time::ZERO,
             trace: Trace::default(),
@@ -288,17 +291,26 @@ impl Simulator {
                 (described, self.machine.step(ev))
             }
         };
+        self.perform_batch(event, effects);
+        while let Some(ack) = self.publications.pop_front() {
+            let described = format!("{ack:?}");
+            let effects = self.machine.step(ack);
+            self.perform_batch(described, effects);
+        }
+        self.release_awaits();
+        self.steps.last()
+    }
+
+    fn perform_batch(&mut self, event: String, effects: Vec<crate::host::engine::Effect>) {
         let rendered: Vec<String> = effects.iter().map(|e| format!("{e:?}")).collect();
         for e in effects {
             self.perform(e);
         }
-        self.release_awaits();
         self.steps.push(SimStep {
             at: self.now,
             event,
             effects: rendered,
         });
-        self.steps.last()
     }
 
     /// Run to the end, or until nothing is left to deliver.
@@ -399,5 +411,41 @@ impl<Out, In> Plan<Out, In> {
         let mut sim = Simulator::with_input(self, script)?;
         sim.run();
         Ok(sim.trace().clone())
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use crate::{Mode, Policy, Shutdown};
+
+    #[test]
+    fn publications_are_drained_before_the_next_scheduled_event() {
+        let mut builder = Plan::builder("Publication");
+        let first = builder.join("first", ());
+        let second = builder.join("second", ());
+        let third = builder.join("third", first);
+        let plan = builder
+            .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
+            .unwrap();
+        let mut sim = Simulator::new(&plan, &Script::default()).unwrap();
+        sim.step().unwrap();
+        let acknowledgements: Vec<_> = sim
+            .steps()
+            .iter()
+            .filter(|step| step.event.starts_with("ReadyPublished"))
+            .collect();
+        assert_eq!(acknowledgements.len(), 3);
+        for (step, key) in acknowledgements
+            .iter()
+            .zip([first.raw(), second.raw(), third.raw()])
+        {
+            assert!(step
+                .event
+                .starts_with(&format!("ReadyPublished {{ node: {key:?},")));
+        }
+        assert!(sim.rejections().is_empty());
+        sim.run();
+        assert!(sim.ended());
     }
 }

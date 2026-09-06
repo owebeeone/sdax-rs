@@ -134,12 +134,30 @@ pub(super) enum RootInput {
     Absent,
 }
 
+/// Check the entire declaration tree before admission, including templates
+/// that may never be instantiated. Only a template registration supplies its
+/// child's declared input; a component never does, even for an unused `()`.
+fn check_component_inputs(ir: &PlanIr, prefix: &NodePath) -> Result<(), EngineError> {
+    for node in &ir.nodes {
+        let Some(child) = &node.child else { continue };
+        let path = path_of(prefix, node);
+        if node.kind == Kind::Component {
+            if let Some(input) = child.nodes.iter().find(|n| n.kind == Kind::Input) {
+                return Err(EngineError::TemplateAsScope(path.child(&input.name)));
+            }
+        }
+        check_component_inputs(child, &path)?;
+    }
+    Ok(())
+}
+
 impl Table {
     /// Flatten a root plan. Refuses a plan whose declared input nothing
     /// supplies a value for ([`RootInput::Absent`]), a root with unresolved
     /// imports (`L-IMPORTS`), and one child plan used as two components: the
     /// engine addresses a *declaration* by [`RawKey`], which a plan used twice
-    /// cannot keep unique.
+    /// cannot keep unique. Also refuses declared component inputs throughout
+    /// the declaration tree, including uninstantiated templates.
     pub fn build(ir: &PlanIr, input: RootInput) -> Result<Table, EngineError> {
         if input == RootInput::Absent {
             if let Some(n) = ir.nodes.iter().find(|n| n.kind == Kind::Input) {
@@ -155,6 +173,7 @@ impl Table {
         if !imports.is_empty() {
             return Err(EngineError::UnresolvedImports(imports));
         }
+        check_component_inputs(ir, &NodePath::default())?;
         let mut t = Table {
             nodes: Vec::new(),
             scopes: Vec::new(),

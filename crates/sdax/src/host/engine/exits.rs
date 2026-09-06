@@ -53,7 +53,7 @@ impl Machine {
     /// line after `started = true`, and `started` is never cleared. There is
     /// an inner graph left to tear down, which is what opens the release.
     pub(super) fn end_component_attempt(&mut self, c: usize) {
-        if self.slots[c].st != St::Running {
+        if !matches!(self.slots[c].st, St::Running | St::Publishing) {
             return;
         }
         // `St::Running ⟹ started`: `St::Running` is assigned in exactly one

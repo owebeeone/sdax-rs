@@ -109,7 +109,9 @@ pub enum NodeState {
         /// When the next one starts.
         until: Time,
     },
-    /// The body returned `Ok` (a service: serving; a component: inner steady).
+    /// A structural value transfer is awaiting host acknowledgement.
+    Publishing,
+    /// The body returned `Ok` (a service: serving; a component: value published).
     Ready,
     /// A template, admitting instances. A template has no body and never
     /// becomes `Ready` (contract § 1); it is live from the moment its imports
@@ -161,6 +163,7 @@ pub(super) enum St {
     Backoff,
     /// A held attempt failed; its release runs before the next attempt.
     RetryRelease,
+    Publishing,
     Ready,
     /// A template that admits instances.
     Live,
@@ -184,6 +187,8 @@ pub(super) enum St {
 /// Per-node bookkeeping.
 pub(super) struct Slot {
     pub st: St,
+    /// An issued host transfer still needs acknowledgement, even if cancelled.
+    pub publication_pending: bool,
     pub attempt: u32,
     pub held: bool,
     /// An `Abort` or `Signal` was emitted for the in-flight body.
@@ -222,6 +227,7 @@ impl Slot {
     pub fn new() -> Slot {
         Slot {
             st: St::Pending,
+            publication_pending: false,
             attempt: 0,
             held: false,
             cancelling: false,

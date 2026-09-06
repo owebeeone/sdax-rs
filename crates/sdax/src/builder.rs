@@ -6,7 +6,9 @@
 //! declaration.
 
 use crate::cx::Release;
-use crate::host::bodies::{Bodies, ErasedBlocking, ErasedImport, ErasedPrepare, ErasedRelease};
+use crate::host::bodies::{
+    Bodies, ErasedBlocking, ErasedImport, ErasedPrepare, ErasedRelease, ReadyValue,
+};
 use crate::key::{Deps, Key, RawKey, Slots};
 use crate::plan::{
     next_plan_id, Attrs, Kind, NodeDecl, Plan, PlanIr, Pool, PoolDecl, Template, SEMANTICS,
@@ -47,6 +49,7 @@ pub(crate) struct Build {
     pub(crate) blocking: Vec<Option<ErasedBlocking>>,
     /// One entry per import node: the plan the value comes from, and the copy.
     pub(crate) imports: Vec<(u64, ErasedImport)>,
+    pub(crate) ready_values: Vec<(RawKey, ReadyValue)>,
     /// The bodies of every component plan used, in declaration order.
     pub(crate) children: Vec<Arc<Bodies>>,
     pub(crate) export: Option<RawKey>,
@@ -65,6 +68,7 @@ impl Build {
             release: Vec::new(),
             blocking: Vec::new(),
             imports: Vec::new(),
+            ready_values: Vec::new(),
             children: Vec::new(),
             export: None,
             input: None,
@@ -242,15 +246,28 @@ impl<Out, In> PlanBuilder<Out, In> {
     pub fn join<D: Deps>(&mut self, name: &str, deps: D) -> Key<()> {
         let mut decl = self.b.decl(name, Kind::Join);
         decl.needs = deps.raw_keys();
+        self.b.ready_values.push((decl.key, ReadyValue::Unit));
         self.b.commit(decl, None, None, None)
     }
 
     /// Use a plan as one node of this plan, instantiated once per run.
-    pub fn component<O>(&mut self, name: &str, plan: &Plan<O>) -> Key<O> {
+    pub fn component<O: Send + Sync + 'static>(&mut self, name: &str, plan: &Plan<O>) -> Key<O> {
         let mut decl = self.b.decl(name, Kind::Component);
         decl.needs = plan.ir.imports();
         decl.child = Some(plan.ir.clone());
         decl.attrs.release = crate::plan::ReleaseStyle::Inner;
+        let value = match plan.ir.export {
+            None => ReadyValue::Unit,
+            Some(source) => ReadyValue::Export {
+                source,
+                read: Box::new(move |slots| {
+                    slots
+                        .get::<O>(source)
+                        .map(|value| Box::new(value) as Box<dyn std::any::Any + Send + Sync>)
+                }),
+            },
+        };
+        self.b.ready_values.push((decl.key, value));
         self.b.children.push(plan.bodies.clone());
         self.b.commit(decl, None, None, None)
     }
@@ -350,6 +367,7 @@ impl<Out, In> PlanBuilder<Out, In> {
                 release: self.b.release,
                 blocking: self.b.blocking,
                 imports: self.b.imports,
+                ready_values: self.b.ready_values,
                 children: self.b.children,
             }),
             _t: PhantomData,

@@ -2,6 +2,23 @@
 
 Add the crates, write a plan, start it on tokio, read the report.
 
+```toml
+[dependencies]
+sdax = { git = "https://github.com/owebeeone/sdax-rs", package = "sdax" }
+sdax-tokio = { git = "https://github.com/owebeeone/sdax-rs", package = "sdax-tokio" }
+
+[dev-dependencies]
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time", "test-util"] }
+```
+
+The Rust crates are not yet published on crates.io. Until the Git repository is
+public, cloning it requires read access. Cargo records the common resolved Git
+commit in your application's `Cargo.lock`. The direct Tokio dev-dependency
+enables the runtime and paused-time support used by the complete test below.
+
+After both crates are published, replace the two SDAX Git dependencies with
+registry dependencies, retaining the Tokio dev-dependency:
+
 ```sh
 cargo add sdax sdax-tokio
 ```

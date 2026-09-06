@@ -185,6 +185,10 @@ struct BlockingCleanup {
 }
 
 impl BodySource for BlockingCleanup {
+    fn publish_ready(&self, node: RawKey, instance: Option<InstanceId>) -> Result<(), Error> {
+        self.inner.publish_ready(node, instance)
+    }
+
     fn body(&self, node: RawKey, instance: Option<InstanceId>, cx: &Arc<CxInner>) -> Option<Task> {
         self.inner.body(node, instance, cx)
     }

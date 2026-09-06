@@ -66,6 +66,9 @@ impl PlanView {
             pools: Vec::new(),
         };
         let mut resolver = Resolver::default();
+        if let Some(input) = ir.input {
+            resolver.record(input, Resolution::SuppliedInput);
+        }
         flatten(ir, &NodePath::default(), &mut v, &mut resolver);
         v
     }
@@ -198,17 +201,33 @@ fn is_inside(inner: &NodePath, outer: &NodePath) -> bool {
         && inner.segments().starts_with(outer.segments())
 }
 
+/// Preserve supplied-input provenance through arbitrarily nested imports.
+#[derive(Clone)]
+enum Resolution {
+    Path(NodePath),
+    SuppliedInput,
+}
+
+impl Resolution {
+    fn path(self) -> Option<NodePath> {
+        match self {
+            Self::Path(path) => Some(path),
+            Self::SuppliedInput => None,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Resolver {
-    /// Maps a child plan's import node to the parent path it stands for.
-    imports: Vec<(RawKey, NodePath)>,
+    /// An import can name a lifecycle node or an already-supplied input.
+    imports: Vec<(RawKey, Resolution)>,
 }
 
 impl Resolver {
-    fn record(&mut self, key: RawKey, path: NodePath) {
+    fn record(&mut self, key: RawKey, path: Resolution) {
         self.imports.push((key, path));
     }
-    fn resolve(&self, key: RawKey) -> Option<NodePath> {
+    fn resolve(&self, key: RawKey) -> Option<Resolution> {
         self.imports
             .iter()
             .rev()
@@ -237,7 +256,7 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
                             .map(|d| d.name.clone())
                             .unwrap_or_else(|| src.idx.to_string()),
                     );
-                    res.record(n.key, target);
+                    res.record(n.key, Resolution::Path(target));
                 }
             }
         }
@@ -276,26 +295,22 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
                 .attrs
                 .exclusive
                 .iter()
-                .map(|k| resolve_need(ir, prefix, res, *k))
+                .filter_map(|k| resolve_need(ir, prefix, res, *k).path())
                 .collect(),
             shared: n
                 .attrs
                 .shared
                 .iter()
-                .map(|k| resolve_need(ir, prefix, res, *k))
+                .filter_map(|k| resolve_need(ir, prefix, res, *k).path())
                 .collect(),
         };
         let mut needs = Vec::new();
         for k in &n.needs {
-            // A need on *this* plan's own input is not an edge when the plan is
-            // the root: the value is in the run's slots before the first step,
-            // so there is no node to wait for and none to show. Inside a
-            // template or a component the same key stands for the node that
-            // instantiates the plan, which the resolver recorded below.
-            if ir.input == Some(*k) && res.resolve(*k).is_none() {
+            // Only supplied input has no lifecycle node. Unknown keys still
+            // retain their diagnostic path rather than being silently hidden.
+            let Some(to) = resolve_need(ir, prefix, res, *k).path() else {
                 continue;
-            }
-            let to = resolve_need(ir, prefix, res, *k);
+            };
             out.edges.push(Edge {
                 from: path.clone(),
                 to: to.clone(),
@@ -338,22 +353,22 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
                 res.record(key, target);
             }
             if let Some(input) = child.input {
-                res.record(input, path.clone());
+                res.record(input, Resolution::Path(path.clone()));
             }
             flatten(child, &path, out, res);
         }
     }
 }
 
-fn resolve_need(ir: &PlanIr, prefix: &NodePath, res: &Resolver, k: RawKey) -> NodePath {
+fn resolve_need(ir: &PlanIr, prefix: &NodePath, res: &Resolver, k: RawKey) -> Resolution {
     if let Some(p) = res.resolve(k) {
         return p;
     }
-    match ir.node(k) {
+    Resolution::Path(match ir.node(k) {
         Some(d) if prefix.segments().is_empty() => NodePath::root(&d.name),
         Some(d) => prefix.child(&d.name),
         None => NodePath::root(&format!("{}/{}", k.plan, k.idx)),
-    }
+    })
 }
 
 /// A node's locks, resolved to the paths they really name.

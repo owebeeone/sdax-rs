@@ -14,8 +14,9 @@ use crate::plan::Kind;
 use crate::report::{Report, TraceKind};
 
 impl Machine {
-    /// In-flight bodies that must be joined before the scope's cleanup may
-    /// begin (P-17: no release before the joins). A component counts while
+    /// In-flight bodies and publication acknowledgements that must settle
+    /// before cleanup may begin (P-17: no release before the joins). Publication
+    /// remains outstanding after lifecycle cancellation. A component counts while
     /// its inner scope still has in-flight bodies, and a template counts for
     /// every live instance the same way.
     pub(super) fn in_flight(&self, scope: usize) -> usize {
@@ -23,15 +24,17 @@ impl Machine {
             .nodes
             .iter()
             .filter(|&&n| {
-                self.slots[n].st == St::Running
-                    && match self.t.nodes[n].inner {
+                self.slots[n].publication_pending
+                    || match self.t.nodes[n].inner {
                         Some(inner) => {
-                            matches!(
-                                self.scopes[inner].st,
-                                RunState::Admitting | RunState::Steady
-                            ) || self.in_flight(inner) > 0
+                            (self.slots[n].st == St::Running
+                                && matches!(
+                                    self.scopes[inner].st,
+                                    RunState::Admitting | RunState::Steady
+                                ))
+                                || self.in_flight(inner) > 0
                         }
-                        None => true,
+                        None => self.slots[n].st == St::Running,
                     }
             })
             .count();
@@ -91,7 +94,7 @@ impl Machine {
 
     /// Whether `d`'s cleanup has not ended (INV-5 waits for the end).
     pub(super) fn blocks_release(&self, d: usize) -> bool {
-        matches!(
+        self.slots[d].publication_pending || matches!(
             self.slots[d].st,
             St::Pending
                 | St::Waiting
@@ -114,10 +117,11 @@ impl Machine {
     }
 
     pub(super) fn gate_open(&self, n: usize) -> bool {
-        self.t.nodes[n]
-            .dependents
-            .iter()
-            .all(|&d| !self.blocks_release(d))
+        !self.slots[n].publication_pending
+            && self.t.nodes[n]
+                .dependents
+                .iter()
+                .all(|&d| !self.blocks_release(d))
     }
 
     /// `Settling → Cleanup` once nothing is in flight; a component's inner
@@ -259,6 +263,9 @@ impl Machine {
     }
 
     fn open_component(&mut self, c: usize) {
+        if self.slots[c].publication_pending {
+            return;
+        }
         let inner = self.t.nodes[c].inner.expect("component");
         if self.slots[c].st != St::Releasing {
             // The component's own attempt ends before its release opens. An
@@ -411,7 +418,10 @@ impl Machine {
         // inner scope with neither, so the component's `ReleaseOk` had no
         // start and its attempt was an orphan (INV-15). `sweep` below asks
         // `try_cleanup` to open it as soon as the gate allows.
-        if self.scopes[scope].st == RunState::Settling && self.t.scopes[scope].component.is_none() {
+        if self.scopes[scope].st == RunState::Settling
+            && self.t.scopes[scope].component.is_none()
+            && self.in_flight(scope) == 0
+        {
             self.scopes[scope].st = RunState::Cleanup;
         }
         self.sweep();

@@ -99,6 +99,23 @@ raising it.
 
 ## All gates, before you finish
 
+Python 3.11+ and Cargo 1.96.0 are used for the verification tools. The libraries
+retain their Rust 1.75 minimum. Local checks, CI and release preparation share
+the inventory in `scripts/check_all.py`:
+
+```sh
+python3 -B scripts/check_all.py --allow-dirty
+```
+
+This runs the eight baseline gates below, lockfile validation, the Python
+release/package regression tests, the external consumer checks (local paths
+and pinned local Git), and fresh package-content checks. The core archive is
+also built; the adapter archive uses Cargo's temporary staging registry for
+content inspection. A real adapter registry package/build remains mandatory
+in the publication workflow after the core is available.
+
+The baseline commands remain available individually:
+
 ```sh
 cargo fmt --check
 cargo test --workspace --locked --offline
@@ -110,8 +127,10 @@ cargo package -p sdax --locked --offline --allow-dirty
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --offline
 ```
 
-The last one is not in CI yet; run it anyway. Every public item is documented,
-so a broken intra-doc link is a real defect.
+Every public item is documented, so a broken intra-doc link is a real defect.
+CI and publication run the complete shared inventory and separate Rust 1.75
+library builds (`python3 -B scripts/check_all.py --msrv-only`). An unavailable
+local 1.75 toolchain is reported as pending, never replaced by a newer result.
 
 `check-guide-quotes.sh` is the one that keeps `docs/` honest: every
 `rust,guide:<name>` fence must be the whole file

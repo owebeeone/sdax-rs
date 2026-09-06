@@ -46,6 +46,32 @@ pub type ErasedImport = Box<dyn Fn(&Slots, &mut Slots) + Send + Sync>;
 /// Read the exported slot of a finished run, still erased.
 pub type ErasedExport = Box<dyn Fn(&Slots) -> Option<Box<dyn Any + Send + Sync>> + Send + Sync>;
 
+/// The value a structural node installs before it becomes ready.
+pub(crate) enum ReadyValue {
+    Unit,
+    Export { source: RawKey, read: ErasedExport },
+}
+
+#[derive(Debug)]
+struct PublicationError {
+    node: RawKey,
+    instance: Option<InstanceId>,
+    source: Option<RawKey>,
+    reason: &'static str,
+}
+
+impl std::fmt::Display for PublicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot publish {:?} in {:?} from {:?}: {}",
+            self.node, self.instance, self.source, self.reason
+        )
+    }
+}
+
+impl std::error::Error for PublicationError {}
+
 /// What the driver got for a node: a future to poll, or a closure for the
 /// blocking pool.
 ///
@@ -94,6 +120,13 @@ pub trait BodySource: Send + Sync + 'static {
     /// Record what a finished body registered, so dependents can read it.
     fn store(&self, node: RawKey, instance: Option<InstanceId>, value: Box<dyn Any + Send + Sync>);
 
+    /// Install a join's unit value or a component's exported value before
+    /// acknowledging the engine's publication request. `node` is a declaration
+    /// key and `instance` identifies its exact scope copy. Missing or wrongly
+    /// typed values must return an error; success permits dependent bodies to
+    /// read the slot. This is not a body execution or completion.
+    fn publish_ready(&self, node: RawKey, instance: Option<InstanceId>) -> Result<(), Error>;
+
     /// The plan's exported value, erased: `Arc<Out>` in a box, if the export
     /// slot is filled.
     fn export(&self) -> Option<Box<dyn Any + Send + Sync>>;
@@ -134,6 +167,7 @@ pub struct Bodies {
     /// One entry per import node: which plan the value comes from, and how to
     /// copy it into this plan's slots.
     pub(crate) imports: Vec<(u64, ErasedImport)>,
+    pub(crate) ready_values: Vec<(RawKey, ReadyValue)>,
     /// The bodies of the child plans this plan uses — components and templates
     /// alike — in declaration order.
     pub(crate) children: Vec<Arc<Bodies>>,
@@ -334,6 +368,22 @@ impl PlanBodies {
             .map(|s| (s.bodies.clone(), s.slots.clone(), None))
     }
 
+    /// Resolve only the requested run or instance, without ancestor fallback.
+    fn find_exact(&self, plan: u64, instance: Option<InstanceId>) -> Option<Found> {
+        if let Some(id) = instance {
+            let inst = self.instance(id)?;
+            return inst
+                .scopes
+                .iter()
+                .find(|s| s.bodies.plan == plan)
+                .map(|s| (s.bodies.clone(), s.slots.clone(), Some(id)));
+        }
+        self.scopes
+            .iter()
+            .find(|s| s.bodies.plan == plan)
+            .map(|s| (s.bodies.clone(), s.slots.clone(), None))
+    }
+
     /// Copy every import of this scope down from the scope that declared it.
     ///
     /// Cheap (each copy is an `Arc::clone`) and always correct: T1 starts a
@@ -392,6 +442,44 @@ impl BodySource for PlanBodies {
                 .expect("slots poisoned")
                 .set_erased(node, value);
         }
+    }
+
+    fn publish_ready(&self, node: RawKey, instance: Option<InstanceId>) -> Result<(), Error> {
+        let fail = |source, reason| -> Error {
+            Box::new(PublicationError {
+                node,
+                instance,
+                source,
+                reason,
+            })
+        };
+        let (bodies, destination, _) = self
+            .find_exact(node.plan, instance)
+            .ok_or_else(|| fail(None, "destination scope unavailable"))?;
+        let value = bodies
+            .ready_values
+            .iter()
+            .find(|(key, _)| *key == node)
+            .map(|(_, value)| value)
+            .ok_or_else(|| fail(None, "node has no structural value"))?;
+        let value: Box<dyn Any + Send + Sync> = match value {
+            ReadyValue::Unit => Box::new(Arc::new(())),
+            ReadyValue::Export { source, read } => {
+                let (source_bodies, source_slots, source_instance) = self
+                    .find_exact(source.plan, instance)
+                    .ok_or_else(|| fail(Some(*source), "export scope unavailable"))?;
+                self.refresh_imports(&source_bodies, &source_slots, source_instance);
+                let slots = source_slots.lock().expect("slots poisoned");
+                read(&slots)
+                    .ok_or_else(|| fail(Some(*source), "export missing or wrongly typed"))?
+            }
+        };
+        // The source lock above is released before taking the destination lock.
+        destination
+            .lock()
+            .expect("slots poisoned")
+            .set_erased(node, value);
+        Ok(())
     }
 
     fn export(&self) -> Option<Box<dyn Any + Send + Sync>> {

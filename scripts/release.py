@@ -3,10 +3,11 @@
 
 Automates:
 
-  1. Gate the tree (fmt, lockfile, clippy, tests, ``cargo package -p sdax``).
+  1. Gate the tree with the shared offline ``scripts/check_all.py`` inventory.
   2. Bump ``version`` in the workspace and every crate manifest, and refresh
      ``Cargo.lock``.
-  3. Commit on ``main``: ``chore(release): sdax X.Y.Z``.
+  3. Gate the bumped tree, then commit on ``main``: ``chore(release): sdax X.Y.Z``
+     (through ``gwz`` when this repository is a workspace member).
   4. Tag that commit ``vX.Y.Z`` (lightweight). An existing tag is NEVER moved.
   5. Optionally ``--push`` main + tag atomically, and ``--github-release``
      (creates the GitHub Release that triggers crates.io publish).
@@ -29,14 +30,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from release_selection import ReleaseError, TAG_PATTERN, resolve, validate_versions
+
 REPO = Path(__file__).resolve().parent.parent
-TAG_PATTERN = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
 MANIFESTS = (
     REPO / "Cargo.toml",
     REPO / "crates" / "sdax" / "Cargo.toml",
@@ -118,6 +121,14 @@ def warn_if_behind_upstream(branch: str) -> None:
 
 
 def working_tree_clean() -> None:
+    workspace = workspace_root()
+    if workspace:
+        require_tools("gwz")
+        result = run(["gwz", "--root", workspace, "status", "--json"], capture=True)
+        status = json.loads(result.stdout)
+        if status.get("errors") or status.get("workspace_git_status", {}).get("clean") is not True:
+            fail("gwz workspace must be clean before releasing")
+        return
     status = git(["status", "--porcelain"], capture=True).stdout
     if status.strip():
         fail("working tree is not clean -- commit or stash changes first:\n" + status.rstrip())
@@ -151,7 +162,7 @@ def bump_versions(old: str, new: str) -> bool:
 def refresh_cargo_lock() -> bool:
     lock = REPO / "Cargo.lock"
     before = lock.read_text(encoding="utf-8") if lock.is_file() else ""
-    run(["cargo", "generate-lockfile"], cwd=REPO)
+    run(["cargo", "generate-lockfile", "--offline"], cwd=REPO)
     after = lock.read_text(encoding="utf-8")
     if after == before:
         log("Cargo.lock already matches Cargo.toml")
@@ -160,45 +171,40 @@ def refresh_cargo_lock() -> bool:
     return True
 
 
-def assert_lock_current() -> None:
-    result = run(
-        ["cargo", "metadata", "--format-version", "1", "--locked"],
-        cwd=REPO,
-        capture=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        return
-    stderr = result.stderr or ""
-    if result.stderr:
-        print(result.stderr, file=sys.stderr)
-    if "lock file" not in stderr and "Cargo.lock" not in stderr:
-        fail("`cargo metadata --locked` failed before release gates")
-    fail("Cargo.lock is out of sync with Cargo.toml. Run `cargo generate-lockfile` and commit it.")
-
-
-def run_fmt_check() -> None:
-    result = run(["cargo", "fmt", "--check"], cwd=REPO, check=False)
-    if result.returncode != 0:
-        print(
-            "\nrelease: rustfmt check failed. From the sdax-rs repo root:\n  cargo fmt\n",
-            file=sys.stderr,
-        )
-        fail(f"command failed ({result.returncode}): cargo fmt --check")
-
-
-def run_gates(*, no_test: bool) -> None:
-    run_fmt_check()
-    assert_lock_current()
-    run(
-        ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"],
-        cwd=REPO,
-    )
+def run_gates(*, no_test: bool, allow_dirty: bool = False) -> None:
+    command = [sys.executable, "-B", REPO / "scripts/check_all.py"]
     if no_test:
-        log("skipping `cargo test`")
+        command.append("--no-test")
+    if allow_dirty:
+        command.append("--allow-dirty")
+    run(command, cwd=REPO)
+
+
+def validate_tree_versions(version: str) -> None:
+    try:
+        validate_versions(lambda path: (REPO / path).read_text(), version)
+    except (ReleaseError, KeyError, ValueError) as error:
+        fail(str(error))
+
+
+def workspace_root() -> Path | None:
+    return next((path for path in REPO.parents if (path / "gwz.conf/gwz.yml").is_file()), None)
+
+
+def commit_release(paths: list[str], version: str) -> None:
+    message = f"chore(release): sdax {version}"
+    workspace = workspace_root()
+    if workspace:
+        require_tools("gwz")
+        run(["gwz", "--root", workspace, "add", *[REPO / path for path in paths]])
+        # Include the root so GWZ commits its generated lock/integrity changes
+        # alongside the member. Otherwise a successful release leaves staged
+        # workspace metadata behind and its clean-tree retry refuses.
+        run(["gwz", "--root", workspace, "--target", str(REPO.relative_to(workspace)),
+             "--target", "@root", "commit", "-m", message])
     else:
-        run(["cargo", "test", "--workspace", "--locked"], cwd=REPO)
-    run(["cargo", "package", "-p", "sdax", "--locked"], cwd=REPO)
+        git(["add", *paths])
+        git(["commit", "-m", message])
 
 
 def ensure_tag(tag: str, target: str) -> None:
@@ -220,6 +226,12 @@ def ensure_tag(tag: str, target: str) -> None:
 
 
 def push_release(branch: str, tag: str, *, expected_head: str) -> None:
+    try:
+        selected = resolve(REPO, tag)
+    except ReleaseError as error:
+        fail(str(error))
+    if selected.sha != expected_head:
+        fail("local release tag no longer points at the checked release commit")
     result = run(
         [
             "git",
@@ -229,7 +241,7 @@ def push_release(branch: str, tag: str, *, expected_head: str) -> None:
             "--atomic",
             "origin",
             f"{expected_head}:refs/heads/{branch}",
-            f"{expected_head}:refs/tags/{tag}",
+            f"{selected.tag_object}:refs/tags/{tag}",
         ],
         capture=True,
         check=False,
@@ -261,6 +273,7 @@ def create_github_release(tag: str) -> None:
             "release",
             "create",
             tag,
+            "--verify-tag",
             "--repo",
             GITHUB_REPO,
             "--title",
@@ -318,6 +331,7 @@ def main() -> None:
                 f"{current}, not {version}"
             )
         log(f"{args.tag} already exists at {args.branch} HEAD ({head[:10]}); release already cut")
+        validate_tree_versions(version)
         run_gates(no_test=args.no_test)
         if args.push:
             push_release(args.branch, args.tag, expected_head=head)
@@ -325,6 +339,7 @@ def main() -> None:
             create_github_release(args.tag)
         return
 
+    validate_tree_versions(read_package_version())
     run_gates(no_test=args.no_test)
 
     current = read_package_version()
@@ -332,11 +347,11 @@ def main() -> None:
         if not bump_versions(current, version):
             fail(f"Cargo.toml version is {current}, expected a bump to {version}")
         refresh_cargo_lock()
-        run(["cargo", "test", "--workspace", "--locked"], cwd=REPO)
+        validate_tree_versions(version)
+        run_gates(no_test=args.no_test, allow_dirty=True)
         rels = [str(path.relative_to(REPO)) for path in MANIFESTS]
         rels.append("Cargo.lock")
-        git(["add", *rels])
-        git(["commit", "-m", f"chore(release): sdax {version}\n"])
+        commit_release(rels, version)
         head = git(["rev-parse", "HEAD"], capture=True).stdout.strip()
         log(f"release commit -> {head[:10]}  (sdax {version})")
     else:

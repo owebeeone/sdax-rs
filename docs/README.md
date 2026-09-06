@@ -20,18 +20,20 @@ purpose, not an application trimmed for the page.
 
 | I want to… | Read… |
 |---|---|
-| Install and run a three-node plan | [Quick Start](QuickStart.md) |
-| Understand the graph, kinds, and policy | [Concepts](Concepts.md) |
-| Not leak a connection | [Cleanup](Cleanup.md) |
-| Declare every kind of node | [Authoring](Authoring.md) |
-| Start, stop, cancel, and drop a run | [Running](Running.md) |
-| Read `build` findings and a `Report` | [Errors](Errors.md) |
-| Inspect a plan or simulate a run | [Inspect](Inspect.md) |
-| Spawn a template at run time | [Instances](Instances.md) |
-| See a request, a service graph, a pipeline | [Cookbook](Cookbook.md) |
-| API reference | [Reference](Reference.md) |
+| Install and run a three-node plan | [Quick Start](https://github.com/owebeeone/sdax-rs/blob/main/docs/QuickStart.md) |
+| Understand the graph, kinds, and policy | [Concepts](https://github.com/owebeeone/sdax-rs/blob/main/docs/Concepts.md) |
+| Not leak a connection | [Cleanup](https://github.com/owebeeone/sdax-rs/blob/main/docs/Cleanup.md) |
+| Declare every kind of node | [Authoring](https://github.com/owebeeone/sdax-rs/blob/main/docs/Authoring.md) |
+| Start, stop, cancel, and drop a run | [Running](https://github.com/owebeeone/sdax-rs/blob/main/docs/Running.md) |
+| Read `build` findings and a `Report` | [Errors](https://github.com/owebeeone/sdax-rs/blob/main/docs/Errors.md) |
+| Inspect a plan or simulate a run | [Inspect](https://github.com/owebeeone/sdax-rs/blob/main/docs/Inspect.md) |
+| Spawn a template at run time | [Instances](https://github.com/owebeeone/sdax-rs/blob/main/docs/Instances.md) |
+| See a request, a service graph, a pipeline | [Cookbook](https://github.com/owebeeone/sdax-rs/blob/main/docs/Cookbook.md) |
+| API reference | [Reference](https://github.com/owebeeone/sdax-rs/blob/main/docs/Reference.md) |
 
-Install with `cargo add sdax sdax-tokio`. The author surface is
+Use the [Quick Start dependency table](QuickStart.md) before crates.io
+publication. After both Rust crates are published, install with
+`cargo add sdax sdax-tokio`. The author surface is
 `sdax::prelude` plus `sdax_tokio::{TokioRuntime, PlanStart}`. Start a
 run with `plan.start(rt, input)` — `()` if the plan has none, a typed
 value if you built it with `Plan::with_input`. Item-by-item

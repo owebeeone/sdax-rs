@@ -107,18 +107,15 @@ impl Machine {
             .collect()
     }
 
-    /// The nodes of one instance: run key, declaration key, path and kind.
+    /// All nodes of one instance, including component descendants, in table
+    /// order: run key, declaration key, path and kind. Separately spawned
+    /// nested instances belong to their own identity and are excluded.
     pub fn instance_nodes(&self, id: InstanceId) -> Vec<(RawKey, RawKey, NodePath, Kind)> {
-        let Some(inst) = self.instances.iter().find(|i| i.id == id) else {
-            return Vec::new();
-        };
-        self.t.scopes[inst.scope]
+        self.t
             .nodes
             .iter()
-            .map(|&n| {
-                let node = &self.t.nodes[n];
-                (node.key, node.decl, node.path.clone(), node.kind)
-            })
+            .filter(|node| node.instance == Some(id))
+            .map(|node| (node.key, node.decl, node.path.clone(), node.kind))
             .collect()
     }
 

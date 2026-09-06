@@ -18,7 +18,9 @@ impl Machine {
     /// Refuses a plan that declares a per-run input (nothing would ever fill
     /// its slot, so the nodes that need it could never start), a root plan with
     /// unresolved imports (`L-IMPORTS`), and one child plan used as two
-    /// components. [`Machine::with_input`] is the constructor for a run that
+    /// components. Components declaring input are refused throughout the
+    /// declaration tree, including inside templates, before any effect.
+    /// [`Machine::with_input`] is the constructor for a run that
     /// does supply one.
     pub fn new<Out, In>(plan: &Plan<Out, In>) -> Result<Machine, super::EngineError> {
         Table::build(plan.ir(), RootInput::Absent).map(Machine::from_table)
@@ -35,7 +37,9 @@ impl Machine {
     /// from the first step.
     ///
     /// A plan that declares no input is accepted here too — there is simply
-    /// nothing to seed.
+    /// nothing to seed. Supplying root input does not supply a component's
+    /// declared input; those are refused before any effects, including inside
+    /// template declarations.
     pub fn with_input<Out, In>(plan: &Plan<Out, In>) -> Result<Machine, super::EngineError> {
         Table::build(plan.ir(), RootInput::Supplied).map(Machine::from_table)
     }
@@ -97,6 +101,9 @@ impl Machine {
     pub fn step(&mut self, event: Event) -> Vec<Effect> {
         let described = format!("{event:?}");
         let result = match event {
+            Event::ReadyPublished { node, result } => self
+                .node(node)
+                .and_then(|n| self.on_ready_published(n, result)),
             Event::Started(k) => self.body_node(k).and_then(|n| self.on_started(n)),
             Event::Held(k) => self.body_node(k).and_then(|n| {
                 if !self.t.nodes[n].kind.can_hold() {
@@ -384,6 +391,7 @@ impl Machine {
                 until: s.backoff_until,
             },
             St::RetryRelease => NodeState::Releasing,
+            St::Publishing => NodeState::Publishing,
             St::Ready => NodeState::Ready,
             St::Live => NodeState::Live,
             St::StoppingInstances => NodeState::Stopping,

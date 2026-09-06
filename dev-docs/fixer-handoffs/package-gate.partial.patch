@@ -1,0 +1,322 @@
+diff --git a/scripts/check-package-contents.py b/scripts/check-package-contents.py
+new file mode 100755
+index 0000000..f6235af
+--- /dev/null
++++ b/scripts/check-package-contents.py
+@@ -0,0 +1,316 @@
++#!/usr/bin/env python3
++"""Validate distributable crate archive contents.
++
++Checks:
++- `sdax` and `sdax-tokio` archives contain the canonical README.
++- `sdax` and `sdax-tokio` archives contain byte-for-byte canonical `LICENSE-MIT`
++  and `LICENSE-APACHE-2.0` files.
++- For `sdax-tokio`, real registry-backed verification is attempted first and a
++  local staged fixture is used when the dependency graph cannot be resolved locally
++  (for offline first-release sequencing).
++- Negative fixtures are run by mutating generated archives:
++  - one missing license
++  - one mutated license
++"""
++
++from __future__ import annotations
++
++import argparse
++import re
++import shutil
++import subprocess
++import tarfile
++import tempfile
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++CORE_PACKAGE = "sdax"
++ADAPTER_PACKAGE = "sdax-tokio"
++LICENSE_FILES = ("LICENSE-MIT", "LICENSE-APACHE-2.0")
++README_NAME = "README.md"
++
++CORE_PREREQ_NOTE = (
++    "Real adapter check currently requires sdax available through the crates.io index "
++    "for registry resolution."
++)
++
++
++class PackageCheckError(RuntimeError):
++    pass
++
++
++def parse_version(cargo_toml: Path) -> str:
++    text = cargo_toml.read_text(encoding="utf-8")
++    match = re.search(r'^\s*version\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE)
++    if not match:
++        raise PackageCheckError(f"Cannot parse version from {cargo_toml}")
++    return match.group(1)
++
++
++def run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(
++        command,
++        cwd=str(cwd),
++        text=True,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.STDOUT,
++        check=False,
++    )
++
++
++def canonical_texts() -> dict[str, bytes]:
++    return {name: (ROOT / name).read_bytes() for name in LICENSE_FILES}
++
++
++def canonical_readme() -> bytes:
++    return (ROOT / README_NAME).read_bytes()
++
++
++def locate_archive(workspace: Path, package_name: str, version: str) -> Path:
++    return workspace / "target" / "package" / f"{package_name}-{version}.crate"
++
++
++def package_offline(workspace: Path, package_name: str, version: str, *, allow_dirty: bool) -> Path:
++    command = ["cargo", "package", "-p", package_name, "--locked", "--offline"]
++    if allow_dirty:
++        command.append("--allow-dirty")
++
++    result = run(command, cwd=workspace)
++    if result.returncode != 0:
++        raise PackageCheckError(f"cargo package -p {package_name} failed\n{result.stdout}")
++
++    archive = locate_archive(workspace, package_name, version)
++    if not archive.exists():
++        raise PackageCheckError(f"cargo package succeeded but archive missing: {archive}")
++    return archive
++
++
++def canonical_member_bytes(archive_path: Path, suffix: str) -> bytes:
++    with tarfile.open(archive_path, "r:gz") as tar:
++        matches = [m for m in tar.getmembers() if m.isfile() and m.name.endswith(f"/{suffix}")]
++        if not matches:
++            raise PackageCheckError(f"missing {suffix} in {archive_path}")
++        if len(matches) > 1:
++            raise PackageCheckError(f"found multiple {suffix} candidates in {archive_path}")
++        member = matches[0]
++        with tar.extractfile(member) as source:
++            if source is None:
++                raise PackageCheckError(f"cannot read {suffix} from {archive_path}")
++            return source.read()
++
++
++def validate_archive(archive_path: Path, *, crate_name: str, version: str) -> None:
++    licenses = canonical_texts()
++    readme = canonical_readme()
++
++    with tarfile.open(archive_path, "r:gz") as tar:
++        members = {m.name for m in tar.getmembers() if m.isfile()}
++
++    for name, expected in licenses.items():
++        canonical_member = f"{crate_name}-{version}/{name}"
++        if canonical_member not in members:
++            raise PackageCheckError(f"{crate_name} {version} archive missing {canonical_member}")
++        actual = canonical_member_bytes(archive_path, name)
++        if actual != expected:
++            raise PackageCheckError(
++                f"{crate_name} {version} archive has non-canonical {name} contents"
++            )
++
++    canonical_readme_name = f"{crate_name}-{version}/{README_NAME}"
++    if canonical_readme_name not in members:
++        raise PackageCheckError(f"{crate_name} {version} archive missing {canonical_readme_name}")
++    actual_readme = canonical_member_bytes(archive_path, README_NAME)
++    if actual_readme != readme:
++        raise PackageCheckError(
++            f"{crate_name} {version} archive has non-canonical {README_NAME} contents"
++        )
++
++
++def mutate_archive_contents(
++    original: Path,
++    *,
++    remove: str | None = None,
++    mutate: str | None = None,
++) -> Path:
++    if remove is None and mutate is None:
++        raise ValueError("remove or mutate is required")
++
++    mutated = original.parent / f"{original.stem}.mutated.crate"
++    canonical = canonical_texts()
++
++    with tempfile.TemporaryDirectory() as temp_dir:
++        extracted = Path(temp_dir) / original.stem
++        with tarfile.open(original, "r:gz") as source:
++            source.extractall(extracted)
++
++        package_root = next((p for p in extracted.iterdir() if p.is_dir()), None)
++        if package_root is None:
++            raise PackageCheckError(f"unexpected archive content for {original}")
++
++        touched = False
++        for path in package_root.rglob("*"):
++            if not path.is_file():
++                continue
++            if remove is not None and path.name == remove:
++                path.unlink()
++                touched = True
++                continue
++            if mutate is not None and path.name == mutate:
++                path.write_bytes(canonical[mutate] + b"\nMUTATED\n")
++                touched = True
++
++        if not touched:
++            raise PackageCheckError(f"mutation did not match in {original}")
++
++        with tarfile.open(mutated, "w:gz") as destination:
++            destination.add(package_root, arcname=package_root.name)
++
++    return mutated
++
++
++def run_negative_fixtures(archive: Path, *, crate_name: str, version: str) -> None:
++    for name in LICENSE_FILES:
++        without = mutate_archive_contents(archive, remove=name)
++        try:
++            validate_archive(without, crate_name=crate_name, version=version)
++        except PackageCheckError:
++            pass
++        else:
++            raise PackageCheckError(f"negative fixture unexpectedly passed: removed {name}")
++
++        altered = mutate_archive_contents(archive, mutate=name)
++        try:
++            validate_archive(altered, crate_name=crate_name, version=version)
++        except PackageCheckError:
++            pass
++        else:
++            raise PackageCheckError(f"negative fixture unexpectedly passed: altered {name}")
++
++
++def build_staged_adapter_fixture(workspace: Path, *, allow_dirty: bool) -> Path:
++    with tempfile.TemporaryDirectory() as temp_dir:
++        staged = Path(temp_dir)
++        staged_crates = staged / "crates"
++        staged_crates.mkdir(parents=True, exist_ok=True)
++
++        shutil.copy2(workspace / "Cargo.toml", staged / "Cargo.toml")
++        shutil.copy2(workspace / "README.md", staged / "README.md")
++        shutil.copy2(workspace / "Cargo.lock", staged / "Cargo.lock")
++        shutil.copytree(workspace / "crates" / "sdax", staged_crates / "sdax")
++        shutil.copytree(workspace / "crates" / "sdax-tokio", staged_crates / "sdax-tokio")
++        shutil.copytree(workspace / "crates" / "sdax-testkit", staged_crates / "sdax-testkit")
++
++        staged_package_dir = staged_crates / ADAPTER_PACKAGE
++        version = parse_version(staged_package_dir / "Cargo.toml")
++        staged_archive = workspace / "target" / "package" / f"{ADAPTER_PACKAGE}-{version}.crate"
++        staged_archive.parent.mkdir(parents=True, exist_ok=True)
++
++        with tarfile.open(staged_archive, "w:gz") as tar:
++            for path in staged_package_dir.rglob("*"):
++                if not path.is_file():
++                    continue
++                if "/target/" in str(path):
++                    continue
++                relative = path.relative_to(staged_package_dir)
++                tar.add(path, arcname=f"{ADAPTER_PACKAGE}-{version}/{relative}")
++
++        return staged_archive
++
++
++def validate_real_or_staged_adapter(
++    workspace: Path,
++    package_name: str,
++    version: str,
++    *,
++    allow_dirty: bool,
++    require_real_adapter: bool,
++) -> None:
++    archive = locate_archive(workspace, package_name, version)
++    if archive.exists():
++        try:
++            validate_archive(archive, crate_name=package_name, version=version)
++            run_negative_fixtures(archive, crate_name=package_name, version=version)
++            print(f"PASS  real {package_name} archive: {archive}")
++            return
++        except PackageCheckError as error:
++            print(f"INFO  existing real archive failed gate: {error}")
++
++    try:
++        archive = package_offline(workspace, package_name, version, allow_dirty=allow_dirty)
++        validate_archive(archive, crate_name=package_name, version=version)
++        run_negative_fixtures(archive, crate_name=package_name, version=version)
++        print(f"PASS  real {package_name} archive: {archive}")
++        return
++    except PackageCheckError as error:
++        if require_real_adapter or "no matching package named `sdax`" not in str(error):
++            raise
++
++        print(
++            "INFO  cannot run real adapter registry check yet: "
++            f"{CORE_PREREQ_NOTE} Running staged fixture."
++        )
++        staged = build_staged_adapter_fixture(workspace, allow_dirty=allow_dirty)
++        validate_archive(staged, crate_name=package_name, version=version)
++        run_negative_fixtures(staged, crate_name=package_name, version=version)
++        print(f"PASS  staged fixture archive: {staged}")
++        print(
++            "PREREQ  First-release requirement: publish `sdax` to crates.io first, "
++            "then run `cargo package -p sdax-tokio --locked --offline` as a registry check "
++            "before adapter publication."
++        )
++
++
++def check_core(workspace: Path, package_name: str, version: str, *, allow_dirty: bool) -> None:
++    archive = locate_archive(workspace, package_name, version)
++    if not archive.exists():
++        archive = package_offline(workspace, package_name, version, allow_dirty=allow_dirty)
++    validate_archive(archive, crate_name=package_name, version=version)
++    run_negative_fixtures(archive, crate_name=package_name, version=version)
++    print(f"PASS  real {package_name} archive: {archive}")
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Validate package archive contents")
++    parser.add_argument("--workspace", default=str(ROOT), help="Path to sdax-rs checkout")
++    parser.add_argument(
++        "--allow-dirty",
++        action="store_true",
++        help="pass --allow-dirty when calling cargo package",
++    )
++    parser.add_argument(
++        "--require-real-adapter",
++        action="store_true",
++        help="fail if adapter cannot complete real registry-backed verification",
++    )
++    return parser.parse_args()
++
++
++def main() -> int:
++    args = parse_args()
++    workspace = Path(args.workspace).resolve()
++
++    core_version = parse_version(workspace / "crates" / CORE_PACKAGE / "Cargo.toml")
++    adapter_version = parse_version(workspace / "crates" / ADAPTER_PACKAGE / "Cargo.toml")
++
++    check_core(
++        workspace,
++        CORE_PACKAGE,
++        core_version,
++        allow_dirty=args.allow_dirty,
++    )
++
++    validate_real_or_staged_adapter(
++        workspace,
++        ADAPTER_PACKAGE,
++        adapter_version,
++        allow_dirty=args.allow_dirty,
++        require_real_adapter=args.require_real_adapter,
++    )
++
++    print("PASS  package-content checks completed")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

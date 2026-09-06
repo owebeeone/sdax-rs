@@ -1,0 +1,206 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index cdfebef..99bb7a0 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -15,10 +15,8 @@ jobs:
+     steps:
+       - uses: actions/checkout@v6
+       - run: rustup component add rustfmt clippy
+-      - run: cargo fmt --check
+-      - run: cargo test --workspace --locked
+-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+-      - run: cargo package -p sdax --locked
++      - run: cargo fetch --locked
++      - run: python3 scripts/check-all.py
+ 
+   # Every manifest claims `rust-version = "1.75"`. Until this job existed that
+   # claim was respected by construction and never measured: no toolchain older
+diff --git a/scripts/release.py b/scripts/release.py
+index 9d3172b..2250a42 100755
+--- a/scripts/release.py
++++ b/scripts/release.py
+@@ -187,18 +187,13 @@ def run_fmt_check() -> None:
+         fail(f"command failed ({result.returncode}): cargo fmt --check")
+ 
+ 
+-def run_gates(*, no_test: bool) -> None:
+-    run_fmt_check()
+-    assert_lock_current()
+-    run(
+-        ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"],
+-        cwd=REPO,
+-    )
++def run_gates(*, no_test: bool, allow_dirty: bool = False) -> None:
++    command = [sys.executable, REPO / "scripts" / "check-all.py"]
+     if no_test:
+-        log("skipping `cargo test`")
+-    else:
+-        run(["cargo", "test", "--workspace", "--locked"], cwd=REPO)
+-    run(["cargo", "package", "-p", "sdax", "--locked"], cwd=REPO)
++        command.append("--no-test")
++    if allow_dirty:
++        command.append("--allow-dirty")
++    run(command, cwd=REPO)
+ 
+ 
+ def ensure_tag(tag: str, target: str) -> None:
+@@ -332,7 +327,9 @@ def main() -> None:
+         if not bump_versions(current, version):
+             fail(f"Cargo.toml version is {current}, expected a bump to {version}")
+         refresh_cargo_lock()
+-        run(["cargo", "test", "--workspace", "--locked"], cwd=REPO)
++        # Verify the changed versions with the same bar, before committing or
++        # tagging. Only this local bump is allowed to be uncommitted here.
++        run_gates(no_test=args.no_test, allow_dirty=True)
+         rels = [str(path.relative_to(REPO)) for path in MANIFESTS]
+         rels.append("Cargo.lock")
+         git(["add", *rels])
+diff --git a/scripts/check-all.py b/scripts/check-all.py
+new file mode 100644
+index 0000000..41c706c
+--- /dev/null
++++ b/scripts/check-all.py
+@@ -0,0 +1,64 @@
++#!/usr/bin/env python3
++"""Run the shared local, CI and release gates, stopping at the first failure.
++
++Dependencies must already be cached. CI prepares them with cargo fetch --locked.
++--allow-dirty is for a local review or the release script's uncommitted version
++bump; clean release verification omits it. --no-test skips only the Rust suite.
++This command never commits, tags, pushes or publishes.
++"""
++
++import argparse
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parent.parent
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--allow-dirty", action="store_true")
++    parser.add_argument("--no-test", action="store_true")
++    args = parser.parse_args(argv)
++    cargo_flags = ["--locked", "--offline"]
++    commands = [
++        ["cargo", "fmt", "--check"],
++        ["cargo", "metadata", "--format-version", "1", *cargo_flags],
++        ["cargo", "clippy", "--workspace", "--all-targets", *cargo_flags,
++         "--", "-D", "warnings"],
++    ]
++    if not args.no_test:
++        commands.append(["cargo", "test", "--workspace", *cargo_flags])
++    package = ["cargo", "package", "-p", "sdax", *cargo_flags]
++    if args.allow_dirty:
++        package.append("--allow-dirty")
++    commands.extend([
++        package,
++        ["./scripts/check-architecture.sh"],
++        ["./scripts/compile-fail.sh"],
++        ["./scripts/check-guide-quotes.sh"],
++        ["cargo", "doc", "--workspace", "--no-deps", *cargo_flags],
++        [sys.executable, "scripts/check-consumer-guide.py"],
++        [sys.executable, "scripts/check-package-contents.py"],
++        [sys.executable, "scripts/test_release_selection.py"],
++        [sys.executable, "scripts/test_check_all.py"],
++    ])
++    for command in commands:
++        env = os.environ.copy()
++        if command[:2] == ["cargo", "doc"]:
++            env["RUSTDOCFLAGS"] = (env.get("RUSTDOCFLAGS", "") + " -D warnings").strip()
++        print("check: " + " ".join(command), flush=True)
++        result = subprocess.run(
++            command, cwd=ROOT, env=env,
++            stdout=subprocess.DEVNULL if command[:2] == ["cargo", "metadata"] else None,
++        )
++        if result.returncode:
++            print("check: failed: " + " ".join(command), file=sys.stderr)
++            return result.returncode
++    print("All shared checks passed.")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/test_check_all.py b/scripts/test_check_all.py
+new file mode 100644
+index 0000000..bb3f975
+--- /dev/null
++++ b/scripts/test_check_all.py
+@@ -0,0 +1,73 @@
++#!/usr/bin/env python3
++"""Exercise gate failure propagation and the release script's gate handoff."""
++
++import importlib.util
++from pathlib import Path
++import subprocess
++import unittest
++from unittest.mock import patch
++
++
++def load(name, path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++ROOT = Path(__file__).resolve().parent.parent
++gates = load("sdax_check_all", ROOT / "scripts/check-all.py")
++release = load("sdax_release", ROOT / "scripts/release.py")
++
++
++class GateTests(unittest.TestCase):
++    def test_failure_stops_before_later_commands(self):
++        calls = []
++
++        def fail_second(command, **kwargs):
++            calls.append(command)
++            return subprocess.CompletedProcess(command, 23 if len(calls) == 2 else 0)
++
++        with patch.object(gates.subprocess, "run", side_effect=fail_second):
++            self.assertEqual(gates.main([]), 23)
++        self.assertEqual(len(calls), 2)
++
++    def test_no_test_keeps_non_test_release_gates(self):
++        with patch.object(gates.subprocess, "run") as run:
++            run.return_value = subprocess.CompletedProcess([], 0)
++            self.assertEqual(gates.main(["--no-test"]), 0)
++        commands = [call.args[0] for call in run.call_args_list]
++        self.assertFalse(any(c[:2] == ["cargo", "test"] for c in commands))
++        for expected in (
++            "check-architecture.sh", "compile-fail.sh", "check-guide-quotes.sh",
++            "check-consumer-guide.py", "check-package-contents.py",
++            "test_release_selection.py",
++        ):
++            self.assertTrue(any(any(str(a).endswith(expected) for a in c)
++                                for c in commands), expected)
++        self.assertTrue(any(c[:2] == ["cargo", "doc"] for c in commands))
++        self.assertTrue(any(c[:2] == ["cargo", "package"] for c in commands))
++
++    def test_rustdoc_warnings_are_errors_without_losing_existing_flags(self):
++        with patch.dict(gates.os.environ, {"RUSTDOCFLAGS": "--cfg consumer"}):
++            with patch.object(gates.subprocess, "run") as run:
++                run.return_value = subprocess.CompletedProcess([], 0)
++                self.assertEqual(gates.main([]), 0)
++        doc = next(c for c in run.call_args_list if c.args[0][:2] == ["cargo", "doc"])
++        self.assertEqual(doc.kwargs["env"]["RUSTDOCFLAGS"], "--cfg consumer -D warnings")
++
++    def test_release_uses_shared_gates_with_only_explicit_dirty_allowance(self):
++        with patch.object(release, "run") as run:
++            release.run_gates(no_test=False)
++            release.run_gates(no_test=True, allow_dirty=True)
++        self.assertEqual(len(run.call_args_list), 2)
++        first, second = (list(map(str, c.args[0])) for c in run.call_args_list)
++        self.assertTrue(first[1].endswith("scripts/check-all.py"))
++        self.assertNotIn("--allow-dirty", first)
++        self.assertNotIn("--no-test", first)
++        self.assertIn("--allow-dirty", second)
++        self.assertIn("--no-test", second)
++
++
++if __name__ == "__main__":
++    unittest.main()

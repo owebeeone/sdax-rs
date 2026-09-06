@@ -14,6 +14,14 @@ impl Simulator {
     pub(super) fn perform(&mut self, effect: Effect) {
         let now = self.now;
         match effect {
+            Effect::PublishReady { node } => {
+                // Scripts model lifecycle only: there are no typed slots to
+                // transfer. Acknowledge after the complete effects batch.
+                self.publications.push_back(Event::ReadyPublished {
+                    node,
+                    result: Ok(()),
+                });
+            }
             Effect::Spawn { node, .. } | Effect::SpawnBlocking { node, .. } => {
                 // A run driver holds one task handle per node: when the
                 // machine gives up on an attempt and starts the next, the old
