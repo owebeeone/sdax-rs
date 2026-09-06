@@ -126,8 +126,24 @@ fn r04_a_declared_pool_bounds_the_blocking_steps_and_the_bound_is_measured() {
         2,
         "the pool's limit is the high-water mark, and it is reached"
     );
-    assert_eq!(hw.now.load(Ordering::SeqCst), 0);
-    assert_eq!(rt.tracked(), 0);
+    // Not a snapshot of `tracked()` or of `now`, for the reason spelled out in
+    // `r07` below: a `Running` resolves before the driver's own tidy-up is
+    // reaped, and a blocking body's `exit()` runs on a pool thread the run does
+    // not wait for. Both assertions passed on a 12-core box and failed on CI's
+    // 4 cores at `now: 1` — the S-07 defect class, in the sibling assertion the
+    // S-07 remediation did not reach. `shutdown` is the documented orphan check
+    // and is a bound rather than an instant, so it is what is asserted; only
+    // then is the pool's occupancy meaningfully zero.
+    assert_eq!(
+        tokio_rt.block_on(rt.shutdown(secs(5))),
+        Ok(()),
+        "INV-15: every pool thread and driver task has finished"
+    );
+    assert_eq!(
+        hw.now.load(Ordering::SeqCst),
+        0,
+        "the pool is empty once everything it spawned has finished"
+    );
 }
 
 /// `R-05` — F-05: a blocking step whose `within` expires does not

@@ -393,3 +393,24 @@ already stale before this round — Stage 3's two Monte Carlo walks alone are
 **Deferred to the lane owner:** either re-measure the number in `AGENTS.md` or
 say what the budget is now meant to bound. It is the same class of defect as
 S-10 and S-15, in the file that sets the rule.
+
+## S-07b — the sibling snapshot assertion, found by CI (2026-09-06)
+
+`R-04`'s `assert_eq!(hw.now, 0)` and `assert_eq!(rt.tracked(), 0)` are the same defect the
+S-07 row fixed in `R-07`: an instant-in-time assertion taken while a pool thread may still be
+running `exit()`. The S-07 remediation reached `R-07` and not its sibling.
+
+**RED:** the first CI run after the push (`owebeeone/sdax-rs`, run 34003416805, ubuntu-latest,
+4 cores) failed with `assertion left == right failed / left: 1 / right: 0` at
+`substrate.rs:130`. It had passed on the 12-core development machine every time, including
+the remediation's own gate runs — the race needs fewer cores than the test has bodies.
+
+**GREEN:** both snapshots replaced by the documented idiom — a bounded
+`rt.shutdown(secs(5)) == Ok(())` quiescence check, after which the pool's occupancy is
+meaningfully zero. Verified locally and under `taskset -c 0-3` (5 runs).
+
+**Lesson for the log:** every remaining snapshot assertion of a concurrent counter is a
+suspect. The reviewer said so at S-07; the fix was applied to one site rather than to the
+class. The other two `tracked()` assertions (`substrate.rs:173`, `:217`) are on
+single-threaded paths and were left, deliberately — noted here so the next round does not
+have to rediscover why.
