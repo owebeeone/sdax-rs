@@ -19,3 +19,27 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo package -p sdax --locked
+
+  # Every manifest claims `rust-version = "1.75"`. Until this job existed that
+  # claim was respected by construction and never measured: no toolchain older
+  # than 1.85 is installed on the development machine and the local loop runs
+  # offline, so `dev-docs/Stage0Report.md` § 7 could only record it as
+  # unverified. A published crate's `rust-version` is a promise to every
+  # consumer, so the runner keeps it honest.
+  #
+  # `cargo build`, not `cargo test`: the promise is that a **consumer** can
+  # compile the library on 1.75. The test suites are ours, they are free to use
+  # anything the development toolchain offers, and `sdax-tokio`'s dev-only
+  # `rt-multi-thread` feature has no bearing on what a consumer compiles.
+  # `--locked` so this measures the pinned dependency versions and not whatever
+  # a fresh resolve would pick.
+  msrv:
+    name: MSRV 1.75 builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install 1.75 --profile minimal
+      - run: rustup default 1.75
+      - run: rustc --version
+      - run: cargo build -p sdax --locked
+      - run: cargo build -p sdax-tokio --locked
