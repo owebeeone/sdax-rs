@@ -409,8 +409,23 @@ the remediation's own gate runs — the race needs fewer cores than the test has
 `rt.shutdown(secs(5)) == Ok(())` quiescence check, after which the pool's occupancy is
 meaningfully zero. Verified locally and under `taskset -c 0-3` (5 runs).
 
-**Lesson for the log:** every remaining snapshot assertion of a concurrent counter is a
-suspect. The reviewer said so at S-07; the fix was applied to one site rather than to the
-class. The other two `tracked()` assertions (`substrate.rs:173`, `:217`) are on
-single-threaded paths and were left, deliberately — noted here so the next round does not
-have to rediscover why.
+**And then it happened again.** The paragraph that stood here claimed the two remaining
+`tracked()` assertions in `substrate.rs` were on single-threaded paths and safe. That was
+wrong, and the next CI run (34003544046) failed on the first of them — `r05`, `tracked()`
+measured **2** — which is the sharpest case in the file, because the whole point of `r05` is
+a thread that outlives its own `within`, so a non-zero count at the instant the run resolves
+is exactly what the test should expect. Fixed the same way; the third site (`r06`) was
+converted too, pre-emptively, since its bodies are async today but the assertion would rot
+the moment one moved to the blocking pool.
+
+**The class, audited properly this time.** Ten further `tracked()` assertions exist across
+`adapter.rs`, `driver.rs`, `review_observer.rs`, `review_edges.rs` and `spike.rs`. Every one
+of them sits in a test built on `paused()` / `new_current_thread`, where `block_on` returning
+means nothing else can still be running, so the snapshot is deterministic and is a real
+assertion. Only tests on `live()` **with** work that can outlive the run — which in this
+workspace means the blocking pool — are exposed, and those were the three in `substrate.rs`.
+That is the rule to apply to any new assertion of this shape.
+
+**Lesson, twice learned:** a reviewer naming a defect *class* is naming a class. Fixing the
+instance it cites and reasoning casually about the rest cost two CI round trips. The
+classification above is cheap; the guess was not.

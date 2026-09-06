@@ -185,8 +185,20 @@ fn r05_a_blocking_within_does_not_oversubscribe_its_pool() {
         1,
         "cpu(1): the timed-out thread keeps its grant until it returns"
     );
-    assert_eq!(hw.now.load(Ordering::SeqCst), 0);
-    assert_eq!(rt.tracked(), 0, "INV-15: every thread was joined");
+    // Quiescence, not a snapshot — see the note in `r04`. This site is the
+    // sharpest case of the class: the whole point of the test is a thread that
+    // outlives its own `within`, so `tracked()` is *expected* to be non-zero at
+    // the instant the run resolves. It measured 2 on CI's four cores.
+    assert_eq!(
+        tokio_rt.block_on(rt.shutdown(secs(5))),
+        Ok(()),
+        "INV-15: every thread was joined"
+    );
+    assert_eq!(
+        hw.now.load(Ordering::SeqCst),
+        0,
+        "the timed-out thread returned and left the pool"
+    );
     assert_eq!(report.outcome, Outcome::Ok, "{report:?}");
 }
 
@@ -230,7 +242,11 @@ fn r06_panics_in_a_body_and_in_a_release_are_recorded_never_re_raised() {
         .map(|f| (f.node.to_string(), f.kind.label()))
         .collect();
     assert_eq!(cleanup, vec![("R".to_string(), FaultLabel::Panic)]);
-    assert_eq!(rt.tracked(), 0);
+    // Quiescence, not a snapshot — see the note in `r04`. The panicking bodies
+    // here are async, so this site has never failed, but the assertion is the
+    // same shape and would rot the same way the moment a body moves to the
+    // blocking pool.
+    assert_eq!(tokio_rt.block_on(rt.shutdown(secs(5))), Ok(()));
     // The runtime survived both: a second run on it is unaffected.
     let again = tokio_rt.block_on(async { tiny().start(rt.clone()).await });
     assert_eq!(again.outcome, Outcome::Ok);
