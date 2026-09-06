@@ -15,6 +15,8 @@
 
 #[path = "guide/blocking_pipeline.rs"]
 mod blocking_pipeline;
+#[path = "guide/current_thread_start.rs"]
+mod current_thread_start;
 #[path = "guide/fail_and_release.rs"]
 mod fail_and_release;
 #[path = "guide/inspect_plan.rs"]
