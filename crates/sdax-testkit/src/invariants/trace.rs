@@ -476,13 +476,27 @@ pub fn check_trace<Out>(
     view: &PlanView,
     report: &sdax::Report<Out>,
 ) -> Vec<Violation> {
+    check_trace_with_slack(trace, view, report, std::time::Duration::ZERO)
+}
+
+/// [`check_trace`], forgiving `slack` of engine time on INV-8's bound alone.
+///
+/// Every other rule is about order and presence and is exact on any clock;
+/// INV-8 is about a duration, so it is the only one an inexact clock can break
+/// by itself. See [`check_report_with_slack`](super::check_report_with_slack).
+pub fn check_trace_with_slack<Out>(
+    trace: &Trace,
+    view: &PlanView,
+    report: &sdax::Report<Out>,
+    slack: std::time::Duration,
+) -> Vec<Violation> {
     let mut out = check_trace_prefix(trace, view);
     // Global over the whole trace, so once at the end rather than at every
     // prefix: the prefix pass is already quadratic.
     out.extend(super::check_arbitration(trace, view));
     out.extend(super::check_scopes(trace, view));
     out.extend(super::check_instance_releases(trace, view));
-    out.extend(super::check_report(trace, view, report));
+    out.extend(super::check_report_with_slack(trace, view, report, slack));
     let _ = occurrences(trace, view);
     out
 }

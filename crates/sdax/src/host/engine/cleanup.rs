@@ -443,7 +443,24 @@ impl Machine {
     }
 
     /// An obligation ended: gates elsewhere may have opened.
+    ///
+    /// Not only cleanup gates. An **abandonment** ends an obligation by
+    /// [`release_grants`](Self::release_grants) and nothing else — no
+    /// `after_settle`, because the node never settles — so a lock or a pool
+    /// slot the abandoned node held becomes free here and nowhere else. A
+    /// waiter for it lives in whatever scope named the resource, which for an
+    /// imported one is not the abandoned node's scope; and a scope whose own
+    /// budget abandoned something can have a *parent* that is still admitting.
+    /// Without this, an inner service abandoned at its `stop_within` left a
+    /// waiter outside the component `Waiting` for a lock nobody held, for the
+    /// rest of the run and with an empty `on` — the same shape `admit_all`
+    /// was written for, reached down a different path (MC seed
+    /// `9106096978137470251`).
+    ///
+    /// `admit_all` starts nothing in a scope that is not `Admitting` or
+    /// `Steady`, so the budget's own `abandon_all` sweep is unaffected.
     pub(super) fn after_cleanup(&mut self, _n: usize) {
+        self.admit_all();
         self.sweep();
     }
 

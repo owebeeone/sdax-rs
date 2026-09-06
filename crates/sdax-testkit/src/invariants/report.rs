@@ -12,6 +12,7 @@ use super::trace::{attempt, expected_steps, is_body_end, is_cleanup_end, is_clea
 use super::{violation, Violation};
 use sdax::host::InstanceId;
 use sdax::{Kind, NodePath, Phase, PlanView, RecordOrder, Report, Trace, TraceEvent, TraceKind};
+use std::time::Duration;
 
 /// The instance a record belongs to, from its order.
 fn record_instance(o: &RecordOrder) -> Option<InstanceId> {
@@ -24,8 +25,27 @@ fn about(node: &NodePath, occ: &Occ, rec_node: &NodePath, rec: &RecordOrder) -> 
 }
 
 /// The report against the trace, per copy: INV-3, INV-8, INV-9, INV-10,
-/// INV-15, INV-18 and INV-20.
+/// INV-15, INV-18 and INV-20, with no allowance for an inexact clock.
 pub fn check_report<Out>(trace: &Trace, view: &PlanView, report: &Report<Out>) -> Vec<Violation> {
+    check_report_with_slack(trace, view, report, Duration::ZERO)
+}
+
+/// [`check_report`], forgiving `slack` of engine time on INV-8's bound.
+///
+/// INV-8 is the one rule whose subject is a *duration*, so it is the one rule
+/// a clock that is not exact can break on its own: a real timer fires at or
+/// after its deadline, never before, and a compressed clock multiplies that
+/// overshoot by the compression factor. `slack` is the substrate's measured
+/// slop expressed in engine time, so the assertion still says "the engine did
+/// not wait longer than the budget" and no longer says "the scheduler is
+/// punctual". Pass [`Duration::ZERO`] on an exact clock — that is what
+/// [`check_report`] does, and it is what `start_paused` deserves.
+pub fn check_report_with_slack<Out>(
+    trace: &Trace,
+    view: &PlanView,
+    report: &Report<Out>,
+    slack: Duration,
+) -> Vec<Violation> {
     let mut out = Vec::new();
     let c = Ctx { trace, view };
     let evs = &trace.events;
@@ -52,10 +72,14 @@ pub fn check_report<Out>(trace: &Trace, view: &PlanView, report: &Report<Out>) -
     if let (Some(budget), Some(end)) = (view.shutdown.budget(), evs.last()) {
         if let Some(s) = evs.iter().find(|e| matches!(e.kind, TraceKind::Settling)) {
             let elapsed = end.at.checked_duration_since(s.at).unwrap_or_default();
-            if elapsed > budget {
+            if elapsed > budget + slack {
+                let over = elapsed - budget;
                 out.push(violation(
                     "INV-8",
-                    format!("{elapsed:?} elapsed from Settling to End, over the budget {budget:?}"),
+                    format!(
+                        "{elapsed:?} elapsed from Settling to End, {over:?} over the budget \
+                         {budget:?} and over the clock slack {slack:?}"
+                    ),
                 ));
             }
         }

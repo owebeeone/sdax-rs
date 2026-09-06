@@ -39,8 +39,8 @@ mod trace;
 
 pub use arbitration::{check_arbitration, check_scopes, check_whys};
 pub use containment::{check_containment, check_instance_releases};
-pub use report::check_report;
-pub use trace::{check_trace, check_trace_prefix};
+pub use report::{check_report, check_report_with_slack};
+pub use trace::{check_trace, check_trace_prefix, check_trace_with_slack};
 
 use sdax::host::{Clock, Time};
 use sdax::{NodePath, PlanView};

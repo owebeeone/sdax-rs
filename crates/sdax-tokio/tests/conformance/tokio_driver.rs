@@ -107,6 +107,8 @@ impl TokioDriver {
             rejections: rec.rejections,
             spawns: bodies.spawns(),
             stuck,
+            // Paused time: the engine clock is exact, so INV-8 is too.
+            clock_slack: Duration::ZERO,
             keys,
         }))
     }

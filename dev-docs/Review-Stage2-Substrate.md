@@ -599,3 +599,82 @@ late, every time).
 Disk: 12 GB free before, 11 GB after (six debug test binaries in the
 worktree's own `target/`); no target directory was added. The worktree is
 otherwise untouched: `git status` shows only this file and the six probes.
+
+---
+
+# Remediation
+
+<!-- Appended 2026-09-06 by the remediation round. The reviewer's text above is
+     unchanged; this section is the disposition. The evidence — the RED output
+     per finding, the measurements, the walk results — is in
+     dev-docs/Stage2-Substrate-Remediation-Log.md. -->
+
+Worked at `7c6257c` (Stage 3 landed; 302 tests green, seven gates green), the
+LBT-007 way: the case written as a test first, watched failing with the
+predicted symptom, then whatever was actually wrong changed. Result: **310
+tests, all seven gates green**. Nothing was committed, tagged or pushed.
+
+| id | sev | disposition | one line |
+|---|---|---|---|
+| S-01 | major | **fixed** | The refusal latches the readiness state when the handle is built, so `ready()` and `RunHandle::ready()` both answer `Err(Failed)` at once. `OD-REFUSED-READY`. |
+| S-02 | major | **fixed** | Every observer callback runs under a panic boundary; a panic is `TraceKind::ObserverPanicked` in the trace and the driver keeps going. The § 10 obligation stands, the run no longer pays for it. `OD-OBSERVER-PANIC`. |
+| S-03 | major | **fixed** | `impl Drop for Driver`: the event, a `Cancelled` report with the trace so far, and the readiness latch — in **both** drop orders, because it is the driver's own future that is dropped either way. `OD-DRIVER-DROPPED`. |
+| S-04 | minor | **fixed** | `TaskHandle::abort()` is a no-op for a blocking task, so the wrapper stays on the tracker until the thread returns (`OD-BLOCK-ABORT`); `blocking_job` takes an `announce` flag and a cleanup passes `false`. Your fix, both halves. |
+| S-05 | minor | **fixed** | With S-02, plus `finish` now latches and sends to the awaiter **before** telling the observer — your first suggestion — so `report()` cannot reach the awaiter at all. |
+| S-06 | minor | **fixed** | `DoubleHold` outranks the body's own `Err`; a panic still outranks both, because its payload is carried nowhere else. `OD-DOUBLE-HOLD-ERR`. |
+| S-07 | minor | **fixed (test)** | Measured again here: **246 of 300**, max 2. `R-07` now waits for quiescence — `shutdown(5 s) == Ok(())` — rather than dropping the assertion. `finish()` was **not** made async: it cannot help, because the driver task itself is still tracked when it sends `done`. |
+| S-08 | note | **document fixed** | Contract `T7d`, next to T7/T7b/T7c, plus the crate docs and `TokioRuntime::shutdown`'s rustdoc, which is where `Err(n)` is read. Stated, not re-executed: your B1 ran it and the probe is preserved. |
+| S-09 | note | **document fixed** | `running.rs` module docs, `Running`'s own, and the crate docs: the drainer is a task, so on `current_thread` it makes no progress between `block_on` calls, and `C-14`'s virtual sleep is that fact. |
+| S-10 | minor | **fixed (test)** | `R-05` now asserts `rt.shutdown(5 s) == Ok(())` per execution, bounds `running.await` with a 30-second real timeout and derives `stuck` from it. The module doc no longer claims a check it does not have. |
+| S-11 | minor | **implemented, at a lower compression** | Your reading was right and your number was conservative: measured here, a bare 20 ms sleep on two workers is 1–11 ms late (median 5.8 ms), so at ×200 the slop is 0.2–2.2 engine seconds and no assertion survives. The checker takes the allowance as a parameter now; a second test runs the two budget-relevant programs at **×20 with 0.5 engine seconds of slack** and checks every invariant, INV-8 included. It has teeth: with the allowance at zero the same run reports 40 ms of overshoot on a 3-second budget, so the slack is ×12 the observed error and a sixth of the smallest budget. **0 failures in 30 runs** (180 executions). `OD-INV8-CLOCK` is amended, and says *absent* for the ×200 pass rather than implying tolerance. |
+| S-12 | minor | **fixed** | A rejection is now `TraceKind::Rejected(what)` as well as a record and a stderr line, so it reaches the observer and travels with the report. `OD-REJECT-VISIBLE`. Your point that `RequestDuringCleanup` should not be reused is taken; the variant is new. |
+| S-13 | note | **document fixed, not executed** | Contract § 10 and the crate docs now say it. Not executed for the reason you gave: a profile change rebuilds the workspace, and the disk budget for this round did not allow it. |
+| S-14 | note | **document fixed** | `OD-REPORT-OBSERVER` now reads "every run **that was launched**", with `C-11` as the reason; same correction in `Observer::report`'s rustdoc and in `Running`'s. |
+| S-15 | note | **document fixed** | Three call sites and they are named; `close_and_wait` is gone from the comment; `Drop`'s reason is replaced by the true one — it can run on a thread with no runtime *and* on a caller's own clock, where a fresh reading would not be on the run's scale. |
+| S-16 | note | **fixed** | `with_clock` wraps the caller's clock so `seen` is still fed; `Snapshot::live` is renamed `contexts` and documented as "nodes that have ever had a body", with `tracked()` named as the liveness count. |
+| S-17 | note | **fixed (test)** | `REPEATS = 3`, `SDAX_R05_REPEATS` to raise it, **in the fast loop** rather than as an `#[ignore]` job: `R-05` costs 0.28 s a pass, three passes plus S-11's new test bring the file to 0.98 s, and a repetition count nobody runs is not repetition. |
+
+## Two predictions that did not reproduce as written
+
+Neither is a defect in the finding; both are recorded because the brief asks for
+them and because a future reader comparing the report to the tests would trip.
+
+- **S-02, `ready()` hangs.** True for a panic on `Ready` (your A2). The
+  regression test uses B7's shape — a panic on `Settling`, after readiness — and
+  there `ready()` had already returned, so that assertion passed even at RED.
+  The empty `Cancelled` report is what failed. The bound is kept in the test so
+  a regression that moves the panic earlier shows as a timeout, not a stall.
+- **S-04, `outcome = Cancelled`.** On this tree the same run ends `Ok` with the
+  abandoned release in `incomplete` — a shutdown a `Resident` plan answers is a
+  clean end, which is T7b working. The tracker claim, which is the finding, held
+  exactly as filed.
+
+## What the re-run walks then found
+
+Re-running `monte_carlo_big` at 50 000 cases on seeds outside the fixed one —
+which this remediation round was asked to do, and which the fast loop's 3 000
+cases had never reached — surfaced a defect in the **machine**, not the adapter:
+
+> `WHY: S1 is Waiting at t=6s and names no reason` (seed 1, case 48 702)
+
+`abandon` frees a node's grants with `release_grants` and nothing else — it
+never reaches `after_settle`, because the node never settles — and its caller's
+`after_cleanup` only swept cleanups. So a service abandoned at its `stop_within`
+inside a component left a step *outside* the component waiting for ever on a
+lock nobody held, with an empty `on`. It reproduces with this round's work
+stashed, so it predates it. Fixed in `cleanup.rs` (`after_cleanup` re-admits),
+pinned as seed `9106096978137470251`, and the walks are clean after it:
+50 000 cases × 3 seeds pure, 20 000 × 3 and 2 000 × 2 on the adapter, and the
+pinned-seed replays.
+
+## Not taken up
+
+- **`finish()` made async** (your S-07 fix). It would not make
+  "`Running` resolved" imply "every driver-owned task is gone", because the
+  driver task itself is still tracked when it sends `done`. `shutdown` is the
+  check that can carry the claim, and it is what `R-07` asserts now.
+- **Your § 5 probes 2, 3 and 4** — a body whose poll never returns, a service
+  restart racing its own `ServeEnded`, `R-05` under `stress -c 8`. Deferred to
+  the owner of the next substrate round: 2 leaves a permanently stuck worker in
+  the test process, 3 needs an interleaving neither of us could force
+  deterministically, and 4 needs a loaded box this round did not have.

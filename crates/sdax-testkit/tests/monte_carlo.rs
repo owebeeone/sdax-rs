@@ -405,6 +405,10 @@ const SEEDS_THAT_FOUND_BUGS: &[(u64, &str)] = &[
         11779147375297488456,
         "sim: a timed-out blocking attempt's late outcome ended the next attempt",
     ),
+    (
+        9106096978137470251,
+        "machine: a lock freed by an abandonment was never offered to its waiters",
+    ),
 ];
 
 #[test]

@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 
+mod observer;
+
 /// A body error the driver itself raises.
 #[derive(Debug)]
 struct DriverError(&'static str);
@@ -333,11 +335,11 @@ impl<R: Runtime> Driver<R> {
                     self.scope.ended(id, outcome);
                     self.src.close_instance(id);
                 }
-                self.rt.observer().event(&ev);
+                self.notify(&ev);
                 self.trace.events.push(*ev);
             }
             Effect::End(outcome) => self.ended = Some(outcome),
-            Effect::Reject(r) => self.ctl.reject(format!("{} — {}", r.reason, r.event)),
+            Effect::Reject(r) => self.reject(r),
             Effect::SpawnInstance {
                 template,
                 parent,
@@ -385,9 +387,10 @@ impl<R: Runtime> Driver<R> {
                 watch,
                 true,
             )))),
-            Some(Task::Blocking(f)) => {
-                Some(self.rt.spawn_blocking(blocking_job(tx, node, epoch, f)))
-            }
+            Some(Task::Blocking(f)) => Some(
+                self.rt
+                    .spawn_blocking(blocking_job(tx, node, epoch, f, true)),
+            ),
             None => {
                 let _ = tx.send(Msg::Body {
                     node,
@@ -434,9 +437,13 @@ impl<R: Runtime> Driver<R> {
                 false,
                 false,
             )))),
-            Some(Task::Blocking(f)) => {
-                Some(self.rt.spawn_blocking(blocking_job(tx, node, epoch, f)))
-            }
+            // A cleanup announces nothing: the machine has no body in flight
+            // for a node whose release it just opened, and would refuse a
+            // `Started` for it (D1, `run_body`'s `announce`).
+            Some(Task::Blocking(f)) => Some(
+                self.rt
+                    .spawn_blocking(blocking_job(tx, node, epoch, f, false)),
+            ),
             None => {
                 let _ = tx.send(Msg::Body {
                     node,
@@ -488,35 +495,6 @@ impl<R: Runtime> Driver<R> {
         }));
         if let Some(old) = self.timers.insert(id, task) {
             old.abort();
-        }
-    }
-
-    fn emit_dropped(&mut self) {
-        let ev = sdax::TraceEvent::at(self.machine.now(), sdax::TraceKind::DroppedWhileRunning);
-        self.rt.observer().event(&ev);
-        self.trace.events.push(ev);
-    }
-
-    /// The run is over: no timer of ours may outlive it (INV-15), the report
-    /// reaches the observer, and whoever is awaiting gets it.
-    fn finish(&mut self) {
-        for (_, t) in self.timers.drain() {
-            t.abort();
-        }
-        let outcome = self.ended.unwrap_or(Outcome::Cancelled);
-        let mut report: Report<()> = self.machine.take_report().unwrap_or_else(|| {
-            // No `End`: the loop left with nothing to deliver. Saying so is
-            // better than inventing a clean report.
-            self.ctl
-                .reject("the run stopped short of End with nothing left to deliver".to_string());
-            Report::empty(outcome)
-        });
-        report.trace = Some(self.trace.clone());
-        self.rt.observer().report(&report);
-        self.ctl.ended(report.outcome);
-        let out = self.src.export();
-        if let Some(done) = self.done.take() {
-            let _ = done.send((report, out));
         }
     }
 }

@@ -210,6 +210,24 @@ pub enum TraceKind {
     RequestDuringCleanup,
     /// The runtime was dropped with live runs.
     RuntimeDroppedWithLiveRuns,
+    /// An [`Observer`](crate::host::Observer) callback panicked and the driver
+    /// caught it.
+    ///
+    /// The contract forbids it (§ 10), so this is a defect in the observer —
+    /// but an unguarded panic on the driver's task would orphan every live
+    /// body, which is exactly what INV-15 exists to prevent, so the driver
+    /// contains it and says so here instead. The note sits immediately before
+    /// the event whose delivery panicked, and never after `End` (T8); the
+    /// event itself is still in the trace, and the run goes on.
+    ObserverPanicked,
+    /// The machine refused an event the driver fed it (D1): a driver bug,
+    /// carrying the refusal and the event that drew it.
+    ///
+    /// Emitted by the driver, not by the machine — the machine's answer is
+    /// [`Effect::Reject`](crate::host::engine::Effect::Reject), and what a
+    /// driver does with it is the driver's own. A conforming driver never
+    /// produces one.
+    Rejected(String),
     /// The run ended.
     End(Outcome),
 }

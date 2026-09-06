@@ -2,13 +2,40 @@
 //!
 //! This is the only crate in the workspace that may mention tokio types, and
 //! the only one that may spawn a raw task. Everywhere else a raw spawn creates
-//! work the engine does not own (`X5`), which `clippy.toml` refuses; the two
-//! call sites here carry a scoped `#[allow]` and say why.
+//! work the engine does not own (`X5`), which `clippy.toml` refuses; the three
+//! call sites here — one in [`spawn`](Runtime::spawn) and two in
+//! [`spawn_blocking`](Runtime::spawn_blocking), which spawns a pool job and a
+//! tracked task to await it — carry a scoped `#[allow]` and say why.
 //!
 //! [`TokioRuntime`] is the [`Runtime`] contract on this substrate: spawning,
 //! task handles, the clock and the observer. [`PlanStart`] is the run driver:
 //! `plan.start(rt)` gives a [`Running`] whose drop cancels the run and leaves
 //! one tracked drainer to finish the release graph.
+//!
+//! # What this substrate adds to the contract
+//!
+//! Three facts about tokio that the engine's own rules do not imply, and that
+//! a supervisor has to know:
+//!
+//! - **A blocking body that never returns blocks `Runtime::drop` for ever.**
+//!   `spawn_blocking` work cannot be aborted (T7, T7c): the engine abandons
+//!   the node at the budget and says so — [`shutdown`](TokioRuntime::shutdown)
+//!   answers `Err(n)`, honestly — but `tokio::runtime::Runtime`'s own `Drop`
+//!   waits indefinitely for pool work, so a supervisor that drops its runtime
+//!   after such a run hangs there. `shutdown_timeout` and
+//!   `shutdown_background` do not.
+//! - **The drainer needs a driver thread.** Dropping a live [`Running`] leaves
+//!   the release graph to the driver task, which is a task like any other. On
+//!   a `current_thread` runtime it makes no progress between `block_on` calls:
+//!   drop a `Running` inside a `block_on` that then returns and nothing is
+//!   released until the next one. Give the drainer its budget inside a
+//!   `block_on`, or use a multi-threaded runtime. Tearing the runtime down
+//!   under it is reported, never silent (`TraceKind::RuntimeDroppedWithLiveRuns`).
+//! - **Panics are caught only if the profile unwinds.** The engine's promise
+//!   that a body panic is a fault and never re-raised rests on `catch_unwind`.
+//!   Under `panic = "abort"` there is nothing to catch: a body panic aborts the
+//!   process, and `FaultKind::Panic` is unreachable. Nothing in this workspace
+//!   sets that profile.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -62,8 +89,14 @@ impl TokioRuntime {
     /// The engine only ever reads time through [`Clock`], so a run can be put
     /// on a compressed clock — which is how the suite runs against a
     /// multi-threaded runtime, where `start_paused` is not available.
+    ///
+    /// The clock is wrapped so that it still records its readings for
+    /// [`Drop`](Self::drop), which has no runtime to read a fresh time from.
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = clock;
+        self.clock = Arc::new(SeenClock {
+            inner: clock,
+            seen: self.seen.clone(),
+        });
         self
     }
 
@@ -86,6 +119,11 @@ impl TokioRuntime {
     ///
     /// `Ok(())` means everything finished. `Err(n)` means the budget expired
     /// with `n` tasks still running — the honest answer, not a silent success.
+    ///
+    /// `Err(n)` on a run with a blocking body is not always recoverable: a
+    /// blocking body cannot be aborted (T7), so a body that never returns
+    /// keeps its thread for ever and, unlike this call, `Runtime::drop` waits
+    /// for it without a budget. See the crate docs.
     ///
     /// This is the *runtime's* shutdown, not a run's: it is what a process
     /// calls after every [`Running`] has ended or been dropped, to see whether
@@ -110,17 +148,24 @@ impl Drop for TokioRuntime {
     /// silent: whatever they were doing, nobody is left to join them (INV-15).
     ///
     /// The time is the last reading anything took from this clock, not a fresh
-    /// one: `Drop` can run outside the runtime, where tokio's own clock
-    /// panics.
+    /// one: `Drop` can run on a thread with no runtime and on a clock of the
+    /// caller's own ([`with_clock`](Self::with_clock)), and a reading taken
+    /// there would not be on the same scale as the run's. This is why a custom
+    /// clock is wrapped rather than stored as given.
+    ///
+    /// This covers the order in which the adapter is dropped before the
+    /// runtime. The other order — the runtime torn down first, taking the
+    /// driver task with it — is covered by the run driver's own `Drop`, which
+    /// reports the same event and hands over the report.
     fn drop(&mut self) {
         if self.tracker.is_empty() {
             return;
         }
         let at = Time::from_nanos(self.seen.load(Ordering::SeqCst));
-        self.observer.event(&TraceEvent::at(
-            at,
-            sdax::TraceKind::RuntimeDroppedWithLiveRuns,
-        ));
+        let ev = TraceEvent::at(at, sdax::TraceKind::RuntimeDroppedWithLiveRuns);
+        // § 10 forbids an observer to panic; one that does must not turn a
+        // report of a lost run into a panic out of a `Drop`.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.observer.event(&ev)));
     }
 }
 
@@ -129,10 +174,13 @@ impl Runtime for TokioRuntime {
 
     fn spawn(&self, fut: BoxFuture<'static, ()>) -> TokioTask {
         // The one place a raw spawn is correct: the task is tracked, so the
-        // engine still owns it and `close_and_wait` can account for it.
+        // engine still owns it and `shutdown` can account for it.
         #[allow(clippy::disallowed_methods)]
         let handle = self.handle.spawn(self.tracker.track_future(fut));
-        TokioTask { handle }
+        TokioTask {
+            handle,
+            blocking: false,
+        }
     }
 
     fn spawn_blocking(&self, f: Box<dyn FnOnce() + Send>) -> TokioTask {
@@ -144,7 +192,10 @@ impl Runtime for TokioRuntime {
         let handle = self.handle.spawn(self.tracker.track_future(async move {
             let _ = inner.await;
         }));
-        TokioTask { handle }
+        TokioTask {
+            handle,
+            blocking: true,
+        }
     }
 
     fn clock(&self) -> &dyn Clock {
@@ -159,10 +210,23 @@ impl Runtime for TokioRuntime {
 /// A handle to one task this adapter spawned.
 pub struct TokioTask {
     handle: tokio::task::JoinHandle<()>,
+    /// A pool job, awaited by the tracked task `handle` names. A thread cannot
+    /// be taken back, so this handle has no abort to offer.
+    blocking: bool,
 }
 
 impl TaskHandle for TokioTask {
     fn abort(&self) {
+        if self.blocking {
+            // T7: a `spawn_blocking` thread cannot be aborted. Aborting the
+            // tracked task that awaits it would abort only the *wrapper* and
+            // detach the thread, so `tracked()` would read zero and
+            // `shutdown()` would say `Ok` while the thread worked on — the one
+            // claim INV-15 rests on, false. The request is dropped instead and
+            // the wrapper stays until the thread returns, which is what the
+            // engine's own abandonment already assumes (T7c).
+            return;
+        }
         // A request, not an event: tokio's abort takes effect between polls,
         // which is why the engine always joins before treating a node as
         // settled (T5).
@@ -223,6 +287,29 @@ impl Clock for TokioClock {
 
     fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> {
         Box::pin(tokio::time::sleep(d))
+    }
+}
+
+/// A [`Clock`] of the caller's own, still recording its readings.
+///
+/// [`TokioRuntime::drop`] timestamps its event from the last reading anything
+/// took, because it may run where no clock can be read. A custom clock handed
+/// to [`with_clock`](TokioRuntime::with_clock) is wrapped in this so that the
+/// reading is the run's own, not `Time::ZERO`.
+struct SeenClock {
+    inner: Arc<dyn Clock>,
+    seen: Arc<AtomicU64>,
+}
+
+impl Clock for SeenClock {
+    fn now(&self) -> Time {
+        let t = self.inner.now();
+        self.seen.fetch_max(t.as_nanos(), Ordering::SeqCst);
+        t
+    }
+
+    fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> {
+        self.inner.sleep(d)
     }
 }
 

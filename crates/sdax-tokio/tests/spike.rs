@@ -362,6 +362,7 @@ fn one_case(seed: u64) -> String {
         whys: rec2.whys,
         rejections: Vec::new(),
         stuck: false,
+        clock_slack: std::time::Duration::ZERO,
         keys,
     });
     if let Some(p) = driven.problems() {

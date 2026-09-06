@@ -125,17 +125,28 @@ pub trait Runtime: Send + Sync + 'static {
 
 /// A sink for trace events. Called from engine context; an implementation must
 /// not block and must not panic.
+///
+/// **A panic is still contained.** The obligation is real — an observer that
+/// blocks holds up the run, and one that panics is a defect — but a driver
+/// runs these callbacks on the task that owns every live body, so an unguarded
+/// panic there would detach all of them and end the run in silence, which is
+/// what INV-15 exists to prevent. A conforming driver therefore catches it,
+/// records [`TraceKind::ObserverPanicked`](crate::TraceKind::ObserverPanicked)
+/// and keeps driving. The observer's own copy of the event is lost; nothing
+/// else is.
 pub trait Observer: Send + Sync {
     /// Record one event.
     fn event(&self, e: &TraceEvent);
 
     /// The run's report, once it has ended.
     ///
-    /// The driver calls this on every run, awaited or dropped: a dropped
-    /// [`Running`](../../sdax_tokio/struct.Running.html) has nobody left to
-    /// hand a report to, and losing it would break INV-9 exactly when the run
-    /// went least well (`C-14`). The default does nothing, so an observer that
-    /// only wants events is unaffected.
+    /// The driver calls this on every run **it launched**, awaited or dropped:
+    /// a dropped [`Running`](../../sdax_tokio/struct.Running.html) has nobody
+    /// left to hand a report to, and losing it would break INV-9 exactly when
+    /// the run went least well (`C-14`). A handle that was never polled
+    /// launched nothing, so there is no run and no report — that is `C-11`,
+    /// and it is why "every run" is not "every handle". The default does
+    /// nothing, so an observer that only wants events is unaffected.
     fn report(&self, _r: &crate::report::Report<()>) {}
 }
 

@@ -9,6 +9,16 @@
 //! tracked by the runtime — to abort the bodies, join them and run the release
 //! graph inside the shutdown budget. That is the drainer: one engine-owned
 //! task, not a detached one (C-14, INV-15).
+//!
+//! **The drainer is a task, so it needs a driver thread.** On a
+//! `current_thread` runtime it makes no progress between `block_on` calls: drop
+//! a `Running` inside a `block_on` that then returns and nothing is released
+//! until the next one, however much wall time passes. Give it its budget inside
+//! a `block_on` — which is what `C-14` does, with a 60-second virtual sleep —
+//! or use a multi-threaded runtime. Tearing the runtime down under a pending
+//! drainer ends the run where it stood and says so, in either drop order:
+//! `TraceKind::RuntimeDroppedWithLiveRuns` and a `Cancelled` report, from the
+//! driver's own `Drop`.
 
 use crate::body::{Msg, Tx};
 use crate::driver::{Driver, Finished};
@@ -28,10 +38,9 @@ use tokio::sync::oneshot;
 /// One `why` answer recorded at a time, for a harness that reads a run back.
 pub type WhyAt = (Time, String, Vec<(String, Reason)>);
 
-/// Everything a harness wants to see of a run, recorded as it happens.
-///
-/// Off by default: it costs one `Debug` rendering per effect and one state
-/// read per node per step. [`RunOptions::record`] turns it on.
+/// Everything a harness wants to see of a run, recorded as it happens. Off by
+/// default: it costs one `Debug` rendering per effect and one state read per
+/// node per step. [`RunOptions::record`] turns it on.
 #[derive(Default)]
 pub struct RunRecord {
     /// Every event fed and every effect returned, rendered, in order.
@@ -49,8 +58,12 @@ pub struct Snapshot {
     pub at: Time,
     /// The root scope's run state.
     pub run: RunState,
-    /// How many nodes the driver has a task or a context for.
-    pub live: usize,
+    /// How many nodes the driver has built a body context for. It never
+    /// decreases — an entry stays after the node settles, so that a late
+    /// message can still be matched to its attempt by epoch — so this is
+    /// "nodes that have ever had a body" and not a count of live tasks. What is
+    /// still running is [`TokioRuntime::tracked`](crate::TokioRuntime::tracked).
+    pub contexts: usize,
     /// Every node's state — empty unless [`RunOptions::observe_states`] asked
     /// for it, because it costs one read per node per step.
     pub nodes: Vec<(NodePath, NodeState)>,
@@ -68,7 +81,7 @@ pub(crate) struct Control {
 }
 
 impl Control {
-    pub(crate) fn publish(&self, m: &Machine, paths: &[(RawKey, NodePath)], live: usize) {
+    pub(crate) fn publish(&self, m: &Machine, paths: &[(RawKey, NodePath)], contexts: usize) {
         let nodes = if self.states {
             paths
                 .iter()
@@ -80,7 +93,7 @@ impl Control {
         *self.snap.lock().expect("snapshot poisoned") = Snapshot {
             at: m.now(),
             run: m.run_state(),
-            live,
+            contexts,
             nodes,
         };
         if m.run_state() == RunState::Steady {
@@ -112,6 +125,26 @@ impl Control {
 
     fn send(&self, ev: Event) {
         let _ = self.tx.send(Msg::Request(ev));
+    }
+
+    /// A control block attached to nothing, so a driver can be built in a unit
+    /// test. No plan or body source can make the machine refuse an event a
+    /// conforming driver feeds it, so `S-12`'s rejection is handed over by hand.
+    #[cfg(test)]
+    pub(crate) fn detached(tx: Tx) -> Control {
+        Control {
+            tx,
+            states: false,
+            snap: Mutex::new(Snapshot {
+                at: Time::ZERO,
+                run: RunState::Planned,
+                contexts: 0,
+                nodes: Vec::new(),
+            }),
+            ready_sig: StopSignal::new(),
+            ready_state: Mutex::new(None),
+            record: None,
+        }
     }
 }
 
@@ -208,7 +241,9 @@ enum State {
 ///
 /// A `Future` whose output is the [`Report`]. Dropping it before it resolves
 /// cancels the run and leaves the drainer to finish the release graph; the
-/// report still reaches the [`Observer`](sdax::host::Observer).
+/// report still reaches the [`Observer`](sdax::host::Observer). A handle dropped
+/// before its **first poll** launched nothing, so there is no run, no report
+/// and no event (C-11); the module docs say what the drainer needs.
 #[must_use = "a run does nothing until the Running handle is polled; dropping it cancels the run"]
 pub struct Running<Out> {
     state: State,
@@ -238,6 +273,9 @@ impl<Out: Send + Sync + 'static> Running<Out> {
     /// Takes `&mut self` because it *starts* the run if nothing has yet: a
     /// handle nobody ever polls never spawns anything, and waiting for the
     /// readiness of a run that was never started would wait forever.
+    ///
+    /// A plan the machine refused answers `Err(Outcome::Failed)` at once, so
+    /// this call is as total as [`start`](PlanStart::start) is.
     pub async fn ready(&mut self) -> Result<(), Outcome> {
         self.launch();
         Stop::on(self.ctl.ready_sig.clone()).await;
@@ -397,7 +435,7 @@ impl<Out: Send + Sync + 'static> PlanStart<Out> for Plan<Out> {
             snap: Mutex::new(Snapshot {
                 at: Time::ZERO,
                 run: RunState::Planned,
-                live: 0,
+                contexts: 0,
                 nodes: Vec::new(),
             }),
             ready_sig: StopSignal::new(),
@@ -436,24 +474,31 @@ impl<Out: Send + Sync + 'static> PlanStart<Out> for Plan<Out> {
         let name = self.name().to_string();
         match self.try_start_with(rt, opts) {
             Ok(r) => r,
-            Err(e) => Running {
-                state: State::Done,
-                ctl: Arc::new(Control {
+            Err(e) => {
+                let ctl = Arc::new(Control {
                     tx: unbounded_channel().0,
                     states: false,
                     snap: Mutex::new(Snapshot {
                         at: Time::ZERO,
                         run: RunState::Planned,
-                        live: 0,
+                        contexts: 0,
                         nodes: Vec::new(),
                     }),
                     ready_sig: StopSignal::new(),
                     ready_state: Mutex::new(None),
                     record: None,
-                }),
-                refused: Some((name, e)),
-                _out: std::marker::PhantomData,
-            },
+                });
+                // The refusal *is* the run's outcome, so it latches here:
+                // without it `ready()` awaited a signal only a driver could
+                // request, and a refused run has no driver.
+                ctl.ended(Outcome::Failed);
+                Running {
+                    state: State::Done,
+                    ctl,
+                    refused: Some((name, e)),
+                    _out: std::marker::PhantomData,
+                }
+            }
         }
     }
 }

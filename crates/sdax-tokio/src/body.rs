@@ -84,13 +84,19 @@ impl Future for Guarded {
 }
 
 /// What the machine is told a finished body did.
+///
+/// A body that registered twice in one attempt broke the seam's one-value
+/// rule, and it broke it whatever it then returned: only the last value can be
+/// discharged and the first is dropped with the body's locals, unreleased and
+/// unrecorded. So `DoubleHold` outranks the body's own `Err` — the error is
+/// the body's opinion of its work, the double hold is the engine's observation
+/// that the seam was broken, and only one of them can be the attempt's fault.
+/// A panic still outranks both: its payload is carried nowhere else.
 fn outcome_event(node: RawKey, cx: &Arc<CxInner>, out: Outcome) -> Event {
     match out {
         Err(payload) => Event::NodeErr(node, FaultKind::Panic(payload)),
+        Ok(_) if cx.hold_count() > 1 => Event::NodeErr(node, FaultKind::DoubleHold),
         Ok(Err(e)) => Event::NodeErr(node, FaultKind::Error(e)),
-        // A body that registered twice in one attempt broke the seam's
-        // one-value rule; the engine says so rather than picking one.
-        Ok(Ok(())) if cx.hold_count() > 1 => Event::NodeErr(node, FaultKind::DoubleHold),
         Ok(Ok(())) => Event::NodeOk(node),
     }
 }
@@ -162,18 +168,26 @@ pub(crate) async fn run_serve(
 /// It cannot be aborted (T7), so nothing here listens for a cancel; the
 /// machine fails the attempt at its deadline and the driver drops whatever
 /// this sends afterwards, by epoch.
+///
+/// `announce` carries the same rule as [`run_body`]'s: `Event::Started`
+/// belongs to a prepare attempt, and a host `BodySource` may hand back a
+/// blocking *cleanup*, for which the machine has no body in flight and would
+/// rightly refuse one (D1).
 pub(crate) fn blocking_job(
     tx: Tx,
     node: RawKey,
     epoch: u64,
     f: Box<dyn FnOnce() -> Result<(), Error> + Send>,
+    announce: bool,
 ) -> Box<dyn FnOnce() + Send> {
     Box::new(move || {
-        let _ = tx.send(Msg::Body {
-            node,
-            epoch,
-            ev: Event::Started(node),
-        });
+        if announce {
+            let _ = tx.send(Msg::Body {
+                node,
+                epoch,
+                ev: Event::Started(node),
+            });
+        }
         let out = catch_unwind(AssertUnwindSafe(f));
         let ev = match out {
             Err(payload) => Event::NodeErr(node, FaultKind::Panic(payload)),

@@ -302,5 +302,16 @@ fn r07_concurrent_runs_of_one_plan_share_no_slots_and_no_pools() {
         RUNS,
         "a pool of one per run, not one pool for all of them"
     );
-    assert_eq!(rt.tracked(), 0);
+    // Not `tracked() == 0`. On two workers a `Running` resolves before the
+    // driver's own tidy-up is reaped — its result crosses a oneshot, and the
+    // aborted budget timer and the driver task itself are still on the
+    // tracker: measured non-zero in 246 of 300 runs of a two-node plan (max
+    // 2). The assertion used to pass by luck. `shutdown` is the documented
+    // orphan check and is a bound rather than a snapshot, so that is what is
+    // asserted; the run's own end is what `running.await` already proved.
+    assert_eq!(
+        tokio_rt.block_on(rt.shutdown(secs(5))),
+        Ok(()),
+        "INV-15: everything the four runs spawned has finished"
+    );
 }

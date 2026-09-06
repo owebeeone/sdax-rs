@@ -3,10 +3,13 @@
 //! driver — plus, after every step, the independent trace checker.
 
 use crate::eol::Eol;
-use crate::invariants::{check_trace, check_trace_prefix, check_whys, Violation};
+use crate::invariants::{
+    check_trace, check_trace_prefix, check_trace_with_slack, check_whys, Violation,
+};
 use sdax::host::sim::{ScriptError, SimStep, Simulator, SpawnOutcome};
 use sdax::host::{RawKey, Time};
 use sdax::{Plan, PlanView, Reason, Report, Script, Trace};
+use std::time::Duration;
 
 /// One `why` answer, recorded at a time: when, which node, and what it was
 /// waiting for.
@@ -170,6 +173,15 @@ pub struct Recorded<Out> {
     pub spawns: Vec<SpawnOutcome>,
     /// The run stopped short of `End`.
     pub stuck: bool,
+    /// How much engine time INV-8's bound forgives, for a run measured on a
+    /// clock that is not exact.
+    ///
+    /// [`Duration::ZERO`] on a virtual or scripted clock, which is every run
+    /// this crate drives itself. A real clock, compressed or not, fires a
+    /// timer at or after its deadline and never before, so a driver measured
+    /// on one overshoots by the scheduler's own slop; this is that slop, in
+    /// the engine's units, and nothing else is relaxed by it.
+    pub clock_slack: Duration,
     /// The key behind each node path.
     pub keys: Vec<(String, RawKey)>,
 }
@@ -204,7 +216,7 @@ impl<Out> Driven<Out> {
             }
         }
         if !r.stuck {
-            for v in check_trace(&trace, &r.view, &r.report) {
+            for v in check_trace_with_slack(&trace, &r.view, &r.report, r.clock_slack) {
                 if !violations.contains(&v) {
                     violations.push(v);
                 }
