@@ -1,0 +1,16 @@
+{
+  "behavior": "passed",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--manifest-path",
+    "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/runs/control-e83255b48913451d840c1e6449a46574/control/r2/0/Cargo.toml"
+  ],
+  "compile": "passed",
+  "diagnostic": "passed",
+  "duration_seconds": 4.7812898750416934,
+  "returncode": 0,
+  "structural_review": "pending"
+}

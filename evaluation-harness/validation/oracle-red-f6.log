@@ -1,0 +1,26 @@
+
+running 1 test
+test assertions::behavior ... FAILED
+
+failures:
+
+---- assertions::behavior stdout ----
+
+thread 'assertions::behavior' (47200811) panicked at /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f6.rs:6:228:
+assertion `left == right` failed: outcome: failed
+faults: session (prepare) inner node session/shard/aggregate faulted
+faults: session/shard (prepare) inner node session/shard/aggregate faulted
+faults: session/shard/aggregate (run) aggregation refused: checksum mismatch: sector 19
+cleanup_failures: session/shard/red (release) red cleanup leaf
+cleanup_failures: session/shard/blue (release) blue cleanup leaf
+
+  left: 3
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    assertions::behavior
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

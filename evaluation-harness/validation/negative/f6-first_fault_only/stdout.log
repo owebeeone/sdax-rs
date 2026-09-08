@@ -1,0 +1,25 @@
+
+running 2 tests
+test assertions::diagnostics ... FAILED
+test assertions::behavior ... FAILED
+
+failures:
+
+---- assertions::diagnostics stdout ----
+
+thread 'assertions::diagnostics' (47270712) panicked at /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f6.rs:63:9:
+missing aggregation refused: inner node session/shard/aggregate faulted
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- assertions::behavior stdout ----
+
+thread 'assertions::behavior' (47270711) panicked at /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f6.rs:43:9:
+missing run: inner node session/shard/aggregate faulted
+
+
+failures:
+    assertions::behavior
+    assertions::diagnostics
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

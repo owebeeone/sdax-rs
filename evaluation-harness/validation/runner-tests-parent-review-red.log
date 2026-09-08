@@ -1,0 +1,57 @@
+../Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test-artifacts/runner-8zftxs52/runs/run-586e91d0cc5a4a23a53324d8362a3d82
+/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test-artifacts/runner-8zftxs52/runs/run-586e91d0cc5a4a23a53324d8362a3d82
+/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test-artifacts/runner-8zftxs52/runs/run-803049a3f7f045de86132f62edb4fe77
+......E.....EFF....
+======================================================================
+ERROR: test_incomplete_test_inventory_cannot_pass_dimension (test_runner.RunnerTests.test_incomplete_test_inventory_cannot_pass_dimension)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test_runner.py", line 271, in test_incomplete_test_inventory_cannot_pass_dimension
+    result = runner.classify_build(124, 'test assertions::behavior_first ... ok\nRunner: cargo test timeout\n',
+                                   {'behavior_first', 'behavior_second'})
+TypeError: classify_build() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_resume_corrupt_response_preserves_raw_evidence (test_runner.RunnerTests.test_resume_corrupt_response_preserves_raw_evidence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test_runner.py", line 265, in test_resume_corrupt_response_preserves_raw_evidence
+    first, answer, diagnostics, records = runner.resume_trial(self.root, 'm', 't', events)
+                                          ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/runner.py", line 353, in resume_trial
+    answer = json.loads((directory / 'response.json').read_text()).get('message', {}).get('content', '')
+             ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/json/decoder.py", line 361, in raw_decode
+    obj, end = self.scan_once(s, idx)
+               ~~~~~~~~~~~~~~^^^^^^^^
+json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+
+======================================================================
+FAIL: test_resume_persists_every_uncertain_charged_slot (test_runner.RunnerTests.test_resume_persists_every_uncertain_charged_slot)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test_runner.py", line 250, in test_resume_persists_every_uncertain_charged_slot
+    self.assertEqual(len(records), 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+
+======================================================================
+FAIL: test_resume_retains_zero_call_budget_failure (test_runner.RunnerTests.test_resume_retains_zero_call_budget_failure)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test_runner.py", line 239, in test_resume_retains_zero_call_budget_failure
+    self.assertEqual(first, 3)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^
+AssertionError: 0 != 3
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.025s
+
+FAILED (failures=2, errors=2)
+/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/test-artifacts/runner-8zftxs52/runs/run-803049a3f7f045de86132f62edb4fe77

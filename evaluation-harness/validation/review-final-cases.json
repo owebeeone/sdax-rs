@@ -1,0 +1,86 @@
+{
+  "cases": [
+    {
+      "id": "e1",
+      "track": "reconstructed_exposed",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/e1.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/e1.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/e1.rs",
+      "provenance": "newly reconstructed from documented failure categories; original raw prompt/source unavailable"
+    },
+    {
+      "id": "e2",
+      "track": "reconstructed_exposed",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/e2.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/e2.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/e2.rs",
+      "provenance": "newly reconstructed from documented failure categories; original raw prompt/source unavailable"
+    },
+    {
+      "id": "f1",
+      "track": "fresh",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f1.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f1.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f1.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source"
+    },
+    {
+      "id": "f2",
+      "track": "fresh",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f2.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f2.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f2.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source"
+    },
+    {
+      "id": "f3",
+      "track": "fresh",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f3.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f3.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f3.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source"
+    },
+    {
+      "id": "f4",
+      "track": "fresh",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f4.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f4.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f4.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source"
+    },
+    {
+      "id": "f5",
+      "track": "fresh",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f5.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f5.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f5.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source"
+    },
+    {
+      "id": "f6",
+      "track": "fresh",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f6.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f6.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f6.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source"
+    },
+    {
+      "id": "r1",
+      "track": "reduction_repeat",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f1.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f1.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f1.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source",
+      "repeat_of": "f1"
+    },
+    {
+      "id": "r2",
+      "track": "reduction_repeat",
+      "task": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/tasks/f5.md",
+      "assertions": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f5.rs",
+      "control": "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/controls/f5.rs",
+      "provenance": "newly authored independent scenario; not derived from original prompts or generated source",
+      "repeat_of": "f5"
+    }
+  ]
+}

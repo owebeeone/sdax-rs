@@ -1,0 +1,9 @@
+{
+  "source": "/Users/owebeeone/limbo/sdax-wz-authoring/sdax-rs/docs/AI-Authoring.md",
+  "selection": "first two complete level-two sections, mechanically in document order",
+  "full_bytes_including_label": 15535,
+  "reduced_bytes_including_label": 3213,
+  "full_sha256": "4f84015b15a0a6576da87333ca5ddd398f8de227f0a84ef14a84dc07fb1a0b4d",
+  "reduced_sha256": "106ac9619d2d6cc60892a6bd0c7b83909d62d10d63e8a5c9b0dcb3eb5e5d4ab5",
+  "inference_calls": 0
+}
