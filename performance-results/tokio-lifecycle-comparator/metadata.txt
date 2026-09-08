@@ -1,0 +1,9 @@
+measurement_kind=correctness-only handwritten Tokio lifecycle comparator
+source_commit=d20b7c39b1bc6e509f8799dee43f2e364c0d6c8f
+source_revision=3b6229329a8d057979b1d2d580dcfaecc17ef0e6cf3f7f21accbbc87d39e3cee
+fixture_revision=7e442c2829a899e1f284a34d4c0a30201216a40b33e09933820e2ac2adc55e61
+compiler=rustc 1.96.0 (ac68faa20 2026-05-25)
+host=aarch64-apple-darwin
+runtime=tokio-current-thread
+timing=not run
+allocations=not measured

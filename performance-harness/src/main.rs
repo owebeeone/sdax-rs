@@ -1,12 +1,13 @@
 mod alloc;
 mod fixtures;
 mod measure;
+mod tokio_lifecycle;
 
 use fixtures::*;
 use measure::{allocated, timed, Sample};
 use sdax::host::engine::{Effect, Event, Machine};
 use sdax::host::{bodies_of_with_input, Observer};
-use sdax::{Outcome, Plan};
+use sdax::{Outcome, Phase, Plan, TraceKind};
 use sdax_tokio::{PlanStart, TokioRuntime};
 use std::collections::VecDeque;
 use std::future::Future;
@@ -105,6 +106,9 @@ fn verify() {
     let executor = runtime();
     let rt = adapter(&executor, None);
 
+    tokio_lifecycle::verify(&executor);
+    eprintln!("fixture verification: handwritten Tokio lifecycle comparator ok");
+
     for shape in [Shape::Chain, Shape::Wide, Shape::Sparse] {
         let spec = GraphSpec::generate(shape, 10);
         let plan = graph(&spec, false);
@@ -116,18 +120,51 @@ fn verify() {
     eprintln!("fixture verification: graphs ok");
 
     let releases = Arc::new(AtomicU64::new(0));
+    let plan = tiny_resource(releases.clone(), false);
+    let (report, _) = run_finite(&executor, rt.clone(), &plan, 41);
+    assert_eq!(report.outcome, Outcome::Ok);
+    assert_eq!(report.output.as_deref(), Some(&42));
+    assert!(report.is_clean(), "{report}");
+    assert_eq!(releases.load(Ordering::Acquire), 1);
+    eprintln!("fixture verification: normal resource release ok");
+
+    let releases = Arc::new(AtomicU64::new(0));
     let plan = startup_failure(releases.clone());
-    let (report, _) = run_finite(&executor, rt.clone(), &plan, 1);
+    let (report, _) = run_finite(&executor, rt.clone(), &plan, 41);
     assert_eq!(report.outcome, Outcome::Failed);
+    assert_eq!(report.output, None);
+    assert_eq!(report.faults.len(), 1);
+    assert_eq!(report.faults[0].node.leaf(), "failed");
+    assert_eq!(report.faults[0].phase, Phase::Run);
+    assert_eq!(report.faults[0].kind.to_string(), "fixture startup failure");
+    assert!(report.cleanup_failures.is_empty());
     assert_eq!(releases.load(Ordering::Acquire), 1);
     eprintln!("fixture verification: startup failure ok");
 
     let downstream = Arc::new(AtomicU64::new(0));
     let upstream = Arc::new(AtomicU64::new(0));
     let plan = cleanup_error_keeps_upstream(downstream.clone(), upstream.clone());
-    let (report, _) = run_finite(&executor, rt.clone(), &plan, 1);
+    let (report, _) = run_finite(&executor, rt.clone(), &plan, 41);
     assert_eq!(report.outcome, Outcome::Ok);
+    assert_eq!(report.output.as_deref(), Some(&41));
+    assert!(report.faults.is_empty());
     assert_eq!(report.cleanup_failures.len(), 1);
+    assert_eq!(report.cleanup_failures[0].node.leaf(), "downstream");
+    assert_eq!(report.cleanup_failures[0].phase, Phase::ReleaseBody);
+    assert_eq!(
+        report.cleanup_failures[0].kind.to_string(),
+        "fixture downstream release failure"
+    );
+    let release_order: Vec<_> = report
+        .trace
+        .as_ref()
+        .expect("full trace")
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, TraceKind::ReleaseStart))
+        .map(|event| event.node.as_ref().expect("release node").leaf())
+        .collect();
+    assert_eq!(release_order, ["downstream", "upstream"]);
     assert_eq!(downstream.load(Ordering::Acquire), 1);
     assert_eq!(upstream.load(Ordering::Acquire), 1);
     eprintln!("fixture verification: cleanup failure ok");
@@ -141,6 +178,9 @@ fn verify() {
         await_cancel_after(running, handle, acquired.clone(), 1).await
     });
     assert_eq!(report.outcome, Outcome::Cancelled);
+    assert_eq!(report.output, None);
+    assert!(report.faults.is_empty());
+    assert!(report.cleanup_failures.is_empty());
     assert_eq!(released.load(Ordering::Acquire), 1);
     eprintln!("fixture verification: cancellation ok");
 

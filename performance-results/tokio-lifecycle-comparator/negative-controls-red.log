@@ -1,0 +1,74 @@
+   Compiling pin-project-lite v0.2.17
+   Compiling slab v0.4.12
+   Compiling futures-core v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling bytes v1.12.1
+   Compiling futures-sink v0.3.34
+   Compiling sdax v0.1.0 (/Users/owebeeone/limbo/sdax-wz-performance/sdax-rs/crates/sdax)
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling tokio-util v0.7.19
+   Compiling sdax-tokio v0.1.0 (/Users/owebeeone/limbo/sdax-wz-performance/sdax-rs/crates/sdax-tokio)
+   Compiling sdax-performance-harness v0.0.0 (/Users/owebeeone/limbo/sdax-wz-performance/sdax-rs/performance-harness)
+error[E0425]: cannot find function `normal_expected` in this scope
+   --> src/tokio_lifecycle.rs:383:35
+    |
+383 |         assert_eq!(check(&value, &normal_expected()), Ok(()));
+    |                                   ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `check` in this scope
+   --> src/tokio_lifecycle.rs:383:20
+    |
+383 |         assert_eq!(check(&value, &normal_expected()), Ok(()));
+    |                    ^^^^^ not found in this scope
+
+error[E0425]: cannot find function `normal_expected` in this scope
+   --> src/tokio_lifecycle.rs:385:35
+    |
+385 |         assert_eq!(check(&value, &normal_expected()), Err("events"));
+    |                                   ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `check` in this scope
+   --> src/tokio_lifecycle.rs:385:20
+    |
+385 |         assert_eq!(check(&value, &normal_expected()), Err("events"));
+    |                    ^^^^^ not found in this scope
+
+error[E0425]: cannot find function `startup_expected` in this scope
+   --> src/tokio_lifecycle.rs:389:35
+    |
+389 |         assert_eq!(check(&value, &startup_expected()), Err("faults"));
+    |                                   ^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `check` in this scope
+   --> src/tokio_lifecycle.rs:389:20
+    |
+389 |         assert_eq!(check(&value, &startup_expected()), Err("faults"));
+    |                    ^^^^^ not found in this scope
+
+error[E0425]: cannot find function `cleanup_expected` in this scope
+   --> src/tokio_lifecycle.rs:393:35
+    |
+393 |         assert_eq!(check(&value, &cleanup_expected()), Err("disposed"));
+    |                                   ^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `check` in this scope
+   --> src/tokio_lifecycle.rs:393:20
+    |
+393 |         assert_eq!(check(&value, &cleanup_expected()), Err("disposed"));
+    |                    ^^^^^ not found in this scope
+
+error[E0425]: cannot find function `cancelled_expected` in this scope
+   --> src/tokio_lifecycle.rs:397:35
+    |
+397 |         assert_eq!(check(&value, &cancelled_expected()), Err("active"));
+    |                                   ^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `check` in this scope
+   --> src/tokio_lifecycle.rs:397:20
+    |
+397 |         assert_eq!(check(&value, &cancelled_expected()), Err("active"));
+    |                    ^^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `sdax-performance-harness` (bin "sdax-performance-harness" test) due to 10 previous errors

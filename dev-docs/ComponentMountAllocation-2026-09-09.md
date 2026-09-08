@@ -62,7 +62,14 @@ behavior.
 - `cargo test --workspace --locked --offline`: passed.
 - `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`: passed.
 - Workspace and standalone harness formatting plus `git diff --check`: passed.
-- Rust 1.75 build: pending native validation. The local toolchain entry is unusable;
-  no installation or repair is part of this lane.
-- Lifecycle-equivalent handwritten Tokio comparators and host-reserved timing remain
-  open work from the remediation plan.
+- Native validation of candidate library snapshot `d20b7c3` passed independently
+  on Windows x64 and Pi arm64 at source revision
+  `3b6229329a8d057979b1d2d580dcfaecc17ef0e6cf3f7f21accbbc87d39e3cee`:
+  each host reports
+  446 tests passed, 0 failed and 2 ignored, and both libraries build with Rust
+  1.75. The retained Windows logs are at
+  `/Users/owebeeone/limbo/sdax-wz/artifacts/remediation-20260909/native-performance/`;
+  Pi logs are under its `pi/` directory. No native timing was measured.
+- Handwritten Tokio lifecycle correctness controls are recorded in
+  [the comparator checkpoint](TokioLifecycleComparator-2026-09-09.md).
+  Host-reserved timing remains open work from the remediation plan.
