@@ -1,6 +1,8 @@
 # sdax improvement plan
 
-Latest continuation: [dynamic graph compaction](GraphCompactionCheckpoint-2026-09-08.md).
+Latest continuation: [bounded authoring evaluation](IndependentEvaluationResults-2026-09-09.md) and
+[Pi/Windows performance measurements](PerformanceMeasurementResults-2026-09-09.md).
+The [remediation plan](AuthoringRemediationPlan-2026-09-08.md) records the remaining failed gates and next work.
 The earlier measurements and status statements below apply to their named revisions.
 
 Date: 8 September 2026. Baseline: `bdea94200ae743fc94ea76987cfd4f6927e0ff8d`.

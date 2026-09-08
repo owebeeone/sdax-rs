@@ -1,7 +1,7 @@
 # Authoring remediation and parallel validation plan
 
 Date: 8 September 2026. Baseline: `ce339a59eefcd136562b16f4f20035c29ef0c988`,
-pushed to GitHub `main`. Status (9 September): all four implementation lanes were integrated and pushed; all eleven shared checks and ten frozen controls passed. The [completed model evaluation](IndependentEvaluationResults-2026-09-09.md) fails the adoption gate: Gemma has no executable passes, and Qwen has one executable pass that fails structural review. Performance measurement results are being finalized; this mission is not complete.
+pushed to GitHub `main`. Status (9 September): all four implementation lanes were integrated and pushed; all eleven shared checks and ten frozen controls passed. The [completed model evaluation](IndependentEvaluationResults-2026-09-09.md) fails the adoption gate: Gemma has no executable passes, and Qwen has one executable pass that fails structural review. The [completed Pi and Windows measurements](PerformanceMeasurementResults-2026-09-09.md) confirm the component-copy allocation reduction, but small-workload timing flags remain order-sensitive. This mission is not complete.
 
 This is the next execution plan under [the improvement plan](SdaxImprovementPlan-2026-09-08.md).
 It preserves that plan's acceptance criteria. The immediately preceding result is
@@ -291,3 +291,26 @@ Label unexecuted work as pending and post-fix-only tests as regression guards.
 This plan does not introduce durable workflows, general actors, borrowed task
 scopes, or a total-history memory bound. Full trace/history retention remains a
 documented limitation. Local lane member commits are authorized; pushing remains a separate owner-requested action.
+
+## Continuation after the 9 September bounded wave
+
+The scheduled evaluation and scoped measurements are complete and retained in
+the two result reports linked above. All 59 model calls are accounted for; the
+single disk-interrupted Gemma call remains consumed. The evaluation budget is
+closed, not available for replacement calls or another tuning pass.
+
+Next authoring work should test the concrete hypotheses in the independent
+report: lazy resource acquisition, separate closure captures, explicit fixture
+type imports, typed input/export order, unknown-outcome recovery, and complete
+resident-service declarations. The current fresh tasks are now exposed; a new
+adoption claim needs separately frozen new tasks and a new authorized budget.
+These generated-program failures do not establish runtime library defects.
+
+For performance, the four-case lifecycle comparison now includes measured-thread
+peak/net-retained allocation, disposal and drain controls. SDAX's small-case
+median is 7.81–9.13 times the handwritten Tokio comparator, with full SDAX trace
+cost included. Windows dynamic allocation traffic did not grow. The small-graph
+and sparse-tail order sensitivity remains an unresolved measurement limit; no
+overall performance pass is claimed. Resident/dynamic lifecycle comparator
+extensions, process-wide peaks and precise wakeup accounting remain outside the
+completed bounded captures.

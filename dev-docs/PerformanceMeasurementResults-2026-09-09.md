@@ -15,9 +15,9 @@ The candidate library remains
 Both Pi full captures and the Windows allocation-only captures used fixture
 revision
 `7341fedb1370a331c151cbaf066d938e8333c04a886e44714c4ed36138e6193a`,
-locked dependencies, rustc 1.96.0 aarch64, the release profile, one
-current-thread Tokio worker and full SDAX tracing. Each direction used 40
-execution samples, eight warmups and 20 build samples on Pi. The Windows run is
+locked dependencies, the release profile, one current-thread Tokio worker and
+full SDAX tracing. Pi used rustc 1.96.0 aarch64; each direction used 40 execution
+samples, eight warmups and 20 build samples. The Windows run is
 described separately below.
 
 All 212 workload groups were present on both sources and all checksum sets
