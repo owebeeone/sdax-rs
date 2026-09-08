@@ -247,6 +247,42 @@ pub fn repeated_typed_components(mounts: usize) -> Plan<u64, u64> {
         .expect("repeated typed component fixture")
 }
 
+pub fn repeated_resource_components(mounts: usize, releases: Arc<AtomicU64>) -> Plan<u64, u64> {
+    assert!(mounts > 0);
+    let mut child = Plan::with_input::<u64>("resource_child");
+    let input = child.input();
+    let release_count = releases.clone();
+    let held = child
+        .resource("held")
+        .needs(input)
+        .acquire(|cx, value| async move { Ok(cx.hold_value(*value)) })
+        .release(move |_cx, _value| {
+            let release_count = release_count.clone();
+            async move {
+                release_count.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+        });
+    let output = child
+        .step("increment")
+        .needs(held)
+        .run(|_cx, value| async move { Ok(*value + 1) });
+    let child = child
+        .export(output)
+        .build(Policy::FailFast, Shutdown::within(BUDGET), Mode::Finite)
+        .expect("resource component child");
+
+    let mut parent = Plan::with_input::<u64>("repeated_resource_components");
+    let mut prior = parent.input();
+    for i in 0..mounts {
+        prior = parent.component(&format!("mount_{i:04}"), &child, prior);
+    }
+    parent
+        .export(prior)
+        .build(Policy::FailFast, Shutdown::within(BUDGET), Mode::Finite)
+        .expect("repeated resource component fixture")
+}
+
 pub fn cpu_application(nodes: usize) -> Plan<u64, u64> {
     let mut p = Plan::with_input::<u64>("application_hash");
     let input = p.input();

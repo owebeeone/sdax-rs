@@ -1,0 +1,8 @@
+measurement_kind=allocation-only candidate
+source_parent=ce339a59eefcd136562b16f4f20035c29ef0c988
+compiler=rustc 1.96.0 (ac68faa20 2026-05-25)
+host=aarch64-apple-darwin
+profile=release(codegen-units=1,lto=thin)
+allocator_boundary=current-thread allocation calls and requested bytes during plan construction
+repetitions=5 identical captures per scale
+timing=not run

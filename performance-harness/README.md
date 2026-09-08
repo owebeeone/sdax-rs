@@ -21,7 +21,8 @@ while the candidate is an uncommitted working tree: a commit name alone does
 not identify the measured engine.
 
 The current-only rows cover typed repeated mounts at 2, 10 and 100 mounts,
-resolved and failed unknown-outcome reconciliation, stable-handle service
+an allocation-only construction probe for resource-bearing mounts at the same
+scales, resolved and failed unknown-outcome reconciliation, stable-handle service
 restart and restart exhaustion, and sequential dynamic churn at 1, 10 and 100
 instances. The churn fixture waits for each child's resource release before
 creating the next instance, while `dynamic_live_instances_*` retains the
@@ -36,3 +37,7 @@ and peak live memory are not inferred from the runtime tables. The separate
 runner records process CPU and native peak resident memory for the whole
 optimized process, including startup and shutdown. This is not pure idle CPU
 or engine-only memory. Precise wakeup counts remain unmeasured.
+
+`allocation-probe` is independent of the timing suite. It checks five consecutive
+construction captures for equality before printing allocation calls and requested
+bytes, and runs no wall-clock timer.

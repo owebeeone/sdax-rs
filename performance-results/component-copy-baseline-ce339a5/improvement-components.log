@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running tests/improvement_components.rs (target/debug/deps/improvement_components-86c83bb141aa7fd3)
+
+running 7 tests
+test missing_formal_bindings_and_foreign_input_fail_parent_build ... ok
+test sibling_mount_pools_admit_independently ... ok
+test unit_input_is_a_regular_explicit_mount_binding ... ok
+test same_formal_port_definition_binds_in_different_parents ... ok
+test typed_repeated_mounts_and_concurrent_runs_are_independent ... ok
+test nested_repeated_mounts_resolve_captured_template_handles_locally ... ok
+test resource_input_and_formal_import_remain_alive_through_each_mount_cleanup ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

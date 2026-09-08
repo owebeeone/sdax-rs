@@ -37,13 +37,40 @@ fn main() {
             };
             measure::write_csv(&bench(cfg));
         }
+        Some("allocation-probe") => allocation_probe(),
         Some("resident-probe") => resident_probe(value(&args, "--seconds", 10)),
         _ => {
             eprintln!(
-                "usage: sdax-performance-harness verify | bench [--samples N] [--warmup N] [--build-samples N] | resident-probe [--seconds N]"
+                "usage: sdax-performance-harness verify | bench [--samples N] [--warmup N] [--build-samples N] | allocation-probe | resident-probe [--seconds N]"
             );
             std::process::exit(2);
         }
+    }
+}
+
+fn allocation_probe() {
+    println!("workload,mounts,allocations,allocated_bytes,checksum");
+    for mounts in [2, 10, 100] {
+        let releases = Arc::new(AtomicU64::new(0));
+        let capture = || {
+            allocated(|| {
+                let plan = repeated_resource_components(mounts, releases.clone());
+                let checksum = plan.name().len() as u64;
+                (plan, checksum)
+            })
+        };
+        let expected = capture();
+        for _ in 1..5 {
+            assert_eq!(
+                capture(),
+                expected,
+                "allocation probe must be deterministic"
+            );
+        }
+        println!(
+            "component_repeated_resource,{mounts},{},{},{}",
+            expected.0, expected.1, expected.2
+        );
     }
 }
 
@@ -142,6 +169,16 @@ fn verify() {
     assert_eq!(report.output.as_deref(), Some(&15));
     assert!(report.is_clean(), "{report}");
     eprintln!("fixture verification: repeated typed components ok");
+
+    let releases = Arc::new(AtomicU64::new(0));
+    let plan = repeated_resource_components(10, releases.clone());
+    for (run, input) in [5, 17].into_iter().enumerate() {
+        let (report, _) = run_finite(&executor, rt.clone(), &plan, input);
+        assert_eq!(report.output.as_deref(), Some(&(input + 10)));
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(releases.load(Ordering::Acquire), (run as u64 + 1) * 10);
+    }
+    eprintln!("fixture verification: repeated resource components cleanup ok");
 
     for resolves in [true, false] {
         let started = Arc::new(AtomicU64::new(0));
