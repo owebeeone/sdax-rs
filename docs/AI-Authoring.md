@@ -32,24 +32,49 @@ that uses it name the port in `.needs(...)`.
 
 ## Retry, effects, and services
 
-Declare retry on the node. Two total attempts is
-`.idempotent().retry(Retry::attempts(2))`; do not loop around or clone an
-acquisition context. Each attempt receives fresh authority. `idempotent()` is
-the application's claim that re-execution is safe.
+Two total attempts is `.idempotent().retry(Retry::attempts(2))`. Do not loop
+around or clone an acquisition context; each attempt receives fresh authority.
 
-An effect must state `on_ambiguous(Ambiguity::Report | Recover | Retry)`.
-For recovery, put `.needs(...)` before `.identified_by(identity_key)`, then
-call `.perform(...)` and `.recover_unknown(...)`. The perform dependency is
-`(ordinary_dependencies, Arc<Identity>)`; the recovery handler receives only
-`Arc<Identity>`. `Recovery::Resolved` discharges uncertainty. Recovery errors
-can carry and display a domain operation ID; a generic still-unknown record
-does not promise to format an arbitrary identity value.
+Choose one ambiguity value, such as `Ambiguity::Report`, then finish an effect
+with `.compensate(...)` or `.persistent()`:
 
-A service initializer publishes one stable `Arc<H>`; each serving episode
-uses it. `Retry` controls initialization attempts and `Restart` controls serve
-episodes after the first. A serving restart does not rerun a successful
-initializer or its dependents. Use `cx.spawn` for declared templates rather
-than launching untracked tasks.
+```rust
+p.effect("write")
+    .needs(config)
+    .on_ambiguous(Ambiguity::Report)
+    .perform(|cx, value: Arc<u64>| async move { Ok(cx.hold_value(*value)) })
+    .compensate(|_cx, _receipt: Arc<u64>| async move { Ok(()) });
+```
+
+For `Ambiguity::Recover`, put `.needs(...)` before
+`.identified_by(identity_key)`, then `.perform(...)` and
+`.recover_unknown(...)`. The chain is still unfinished: terminate it with
+`.compensate(...)` or `.persistent()`. Perform receives
+`(ordinary_dependencies, Arc<Identity>)`; recovery receives only
+`Arc<Identity>`. Domain recovery errors can display an operation ID, while a
+generic still-unknown record cannot promise to format arbitrary identity data.
+
+A resident service uses the same initialized `Arc<H>` for every serving
+episode. `Retry` controls initialization; `Restart` controls later episodes:
+
+```rust
+p.service("accept")
+    .idempotent()
+    .restart(Restart::on_error(Backoff::fixed(Duration::from_secs(1))).max(2))
+    .stop_within(Duration::from_secs(2))
+    .initialize(|_cx, ()| async { Ok(()) })
+    .serve(|cx, _handle: Arc<()>| async move {
+        if cx.episode() == 1 {
+            Err::<(), Error>("disconnected".into())
+        } else {
+            cx.stop().await;
+            Ok(())
+        }
+    });
+```
+
+A restart does not rerun successful initialization or dependents. Use
+`cx.spawn` for declared templates rather than launching untracked tasks.
 
 ## Complete resource-bearing composition
 
@@ -83,7 +108,10 @@ struct QuoteInput {
     cleanup_fails: bool,
 }
 
-struct Base(u32);
+struct Base {
+    mount: &'static str,
+    amount: u32,
+}
 
 struct Rates {
     mount: &'static str,
@@ -131,7 +159,7 @@ fn quote_component(events: &Events) -> (Plan<u32, QuoteInput>, Key<Base>) {
                 } else {
                     Ok(cx.hold_value(Rates {
                         mount: input.mount,
-                        amount: base.0 + input.rate,
+                        amount: base.amount + input.rate,
                     }))
                 }
             }
@@ -181,6 +209,29 @@ fn quote_component(events: &Events) -> (Plan<u32, QuoteInput>, Key<Base>) {
     (build(child.export(output)), base)
 }
 
+fn base_resource(
+    parent: &mut PlanBuilder,
+    name: &str,
+    mount: &'static str,
+    amount: u32,
+    events: &Events,
+) -> Key<Base> {
+    let released = events.clone();
+    parent
+        .resource(name)
+        .acquire(move |cx, ()| async move { Ok(cx.hold_value(Base { mount, amount })) })
+        .release(move |_cx, base: Arc<Base>| {
+            let released = released.clone();
+            async move {
+                released
+                    .lock()
+                    .expect("events")
+                    .push((base.mount, "base release"));
+                Ok(())
+            }
+        })
+}
+
 fn parent_with(
     left: QuoteInput,
     right: Option<QuoteInput>,
@@ -188,20 +239,7 @@ fn parent_with(
 ) -> Plan<(u32, Option<u32>)> {
     let (child, base_port) = quote_component(events);
     let mut parent = Plan::builder("pricing");
-    let released = events.clone();
-    let base = parent
-        .resource("base")
-        .acquire(|cx, ()| async move { Ok(cx.hold_value(Base(100))) })
-        .release(move |_cx, _base: Arc<Base>| {
-            let released = released.clone();
-            async move {
-                released
-                    .lock()
-                    .expect("events")
-                    .push(("parent", "base release"));
-                Ok(())
-            }
-        });
+    let base = base_resource(&mut parent, "base", "parent", 100, events);
     let bound = child.bind(base_port, base).expect("base binding");
     let left_input = parent
         .step("left input")
@@ -226,6 +264,51 @@ fn parent_with(
             .run(|_cx, value: Arc<u32>| async move { Ok((*value, None)) }),
     };
     build(parent.export(output))
+}
+
+#[test]
+fn repeated_definition_binds_distinct_resources_per_mount() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let (child, base_port) = quote_component(&events);
+    let mut parent = Plan::builder("separate bases");
+    let left_base = base_resource(&mut parent, "left base", "left base", 10, &events);
+    let right_base = base_resource(&mut parent, "right base", "right base", 20, &events);
+    let left_input = parent.step("left input").run(|_cx, ()| async move {
+        Ok(QuoteInput {
+            mount: "left",
+            rate: 1,
+            fail: Fail::Never,
+            cleanup_fails: false,
+        })
+    });
+    let right_input = parent.step("right input").run(|_cx, ()| async move {
+        Ok(QuoteInput {
+            mount: "right",
+            rate: 2,
+            fail: Fail::Never,
+            cleanup_fails: false,
+        })
+    });
+    let left_bound = child.bind(base_port, left_base).expect("left binding");
+    let right_bound = child.bind(base_port, right_base).expect("right binding");
+    let left = parent.component("left", &left_bound, left_input);
+    let right = parent.component("right", &right_bound, right_input);
+    let output = parent
+        .step("outputs")
+        .needs((left, right))
+        .run(|_cx, values: (Arc<u32>, Arc<u32>)| async move { Ok((*values.0, Some(*values.1))) });
+    let plan = build(parent.export(output));
+
+    assert_eq!(output_at_string_boundary(run(&plan)), Ok((11, Some(22))));
+    let events = events.lock().expect("events");
+    assert!(
+        position(&events, ("left", "rates release"))
+            < position(&events, ("left base", "base release"))
+    );
+    assert!(
+        position(&events, ("right", "rates release"))
+            < position(&events, ("right base", "base release"))
+    );
 }
 
 fn run(plan: &Plan<(u32, Option<u32>)>) -> Report<(u32, Option<u32>)> {

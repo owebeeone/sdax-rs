@@ -42,3 +42,14 @@ The compact reference is under 16,000 UTF-8 bytes and retains the typed
 `Plan<Out, In>`, `Key<T>`, `Arc<T>`, `Held<T>`, tuple dependency, existing-`Arc`,
 unsized acquisition, effect ordering, retry, service, and diagnostic boundaries.
 Generic unresolved operation identities are not claimed to be printable.
+
+## Independent review follow-up
+
+Independent review found that the first compact rewrite omitted effect terminals
+and usable resident-service syntax, and that its two-mount case reused one bound
+child value. The reference now shows a valid single `Ambiguity` choice, both
+effect terminal forms, recovery's required terminal, and a complete restarting
+service with `initialize`, `serve`, `episode`, and `stop`. A fourth reconstructed
+regression guard binds one child definition separately to two parent resources;
+it passed on the unchanged API and verifies distinct outputs and that each parent
+resource outlives its own mounted child's cleanup.

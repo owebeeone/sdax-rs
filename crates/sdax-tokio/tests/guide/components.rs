@@ -20,7 +20,10 @@ struct QuoteInput {
     cleanup_fails: bool,
 }
 
-struct Base(u32);
+struct Base {
+    mount: &'static str,
+    amount: u32,
+}
 
 struct Rates {
     mount: &'static str,
@@ -68,7 +71,7 @@ fn quote_component(events: &Events) -> (Plan<u32, QuoteInput>, Key<Base>) {
                 } else {
                     Ok(cx.hold_value(Rates {
                         mount: input.mount,
-                        amount: base.0 + input.rate,
+                        amount: base.amount + input.rate,
                     }))
                 }
             }
@@ -118,6 +121,29 @@ fn quote_component(events: &Events) -> (Plan<u32, QuoteInput>, Key<Base>) {
     (build(child.export(output)), base)
 }
 
+fn base_resource(
+    parent: &mut PlanBuilder,
+    name: &str,
+    mount: &'static str,
+    amount: u32,
+    events: &Events,
+) -> Key<Base> {
+    let released = events.clone();
+    parent
+        .resource(name)
+        .acquire(move |cx, ()| async move { Ok(cx.hold_value(Base { mount, amount })) })
+        .release(move |_cx, base: Arc<Base>| {
+            let released = released.clone();
+            async move {
+                released
+                    .lock()
+                    .expect("events")
+                    .push((base.mount, "base release"));
+                Ok(())
+            }
+        })
+}
+
 fn parent_with(
     left: QuoteInput,
     right: Option<QuoteInput>,
@@ -125,20 +151,7 @@ fn parent_with(
 ) -> Plan<(u32, Option<u32>)> {
     let (child, base_port) = quote_component(events);
     let mut parent = Plan::builder("pricing");
-    let released = events.clone();
-    let base = parent
-        .resource("base")
-        .acquire(|cx, ()| async move { Ok(cx.hold_value(Base(100))) })
-        .release(move |_cx, _base: Arc<Base>| {
-            let released = released.clone();
-            async move {
-                released
-                    .lock()
-                    .expect("events")
-                    .push(("parent", "base release"));
-                Ok(())
-            }
-        });
+    let base = base_resource(&mut parent, "base", "parent", 100, events);
     let bound = child.bind(base_port, base).expect("base binding");
     let left_input = parent
         .step("left input")
@@ -163,6 +176,51 @@ fn parent_with(
             .run(|_cx, value: Arc<u32>| async move { Ok((*value, None)) }),
     };
     build(parent.export(output))
+}
+
+#[test]
+fn repeated_definition_binds_distinct_resources_per_mount() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let (child, base_port) = quote_component(&events);
+    let mut parent = Plan::builder("separate bases");
+    let left_base = base_resource(&mut parent, "left base", "left base", 10, &events);
+    let right_base = base_resource(&mut parent, "right base", "right base", 20, &events);
+    let left_input = parent.step("left input").run(|_cx, ()| async move {
+        Ok(QuoteInput {
+            mount: "left",
+            rate: 1,
+            fail: Fail::Never,
+            cleanup_fails: false,
+        })
+    });
+    let right_input = parent.step("right input").run(|_cx, ()| async move {
+        Ok(QuoteInput {
+            mount: "right",
+            rate: 2,
+            fail: Fail::Never,
+            cleanup_fails: false,
+        })
+    });
+    let left_bound = child.bind(base_port, left_base).expect("left binding");
+    let right_bound = child.bind(base_port, right_base).expect("right binding");
+    let left = parent.component("left", &left_bound, left_input);
+    let right = parent.component("right", &right_bound, right_input);
+    let output = parent
+        .step("outputs")
+        .needs((left, right))
+        .run(|_cx, values: (Arc<u32>, Arc<u32>)| async move { Ok((*values.0, Some(*values.1))) });
+    let plan = build(parent.export(output));
+
+    assert_eq!(output_at_string_boundary(run(&plan)), Ok((11, Some(22))));
+    let events = events.lock().expect("events");
+    assert!(
+        position(&events, ("left", "rates release"))
+            < position(&events, ("left base", "base release"))
+    );
+    assert!(
+        position(&events, ("right", "rates release"))
+            < position(&events, ("right base", "base release"))
+    );
 }
 
 fn run(plan: &Plan<(u32, Option<u32>)>) -> Report<(u32, Option<u32>)> {
