@@ -74,13 +74,16 @@ fn startup_plan(evidence: Evidence) -> Plan<u64, u64> {
             }
         });
     let fail_evidence = evidence;
-    let failed = plan.step("failed").needs(upstream).run(move |_cx, _resource| {
-        let evidence = fail_evidence.clone();
-        async move {
-            evidence.record("fail_downstream_run");
-            Err::<u64, _>(FixtureError::startup().into())
-        }
-    });
+    let failed = plan
+        .step("failed")
+        .needs(upstream)
+        .run(move |_cx, _resource| {
+            let evidence = fail_evidence.clone();
+            async move {
+                evidence.record("fail_downstream_run");
+                Err::<u64, _>(FixtureError::startup().into())
+            }
+        });
     plan.export(failed)
         .build(Policy::FailFast, Shutdown::within(BUDGET), Mode::Finite)
         .expect("startup lifecycle plan")
@@ -130,14 +133,17 @@ fn cleanup_plan(evidence: Evidence) -> Plan<u64, u64> {
             }
         });
     let use_evidence = evidence;
-    let output = plan.step("use").needs(downstream).run(move |_cx, resource| {
-        let evidence = use_evidence.clone();
-        let value = resource.value;
-        async move {
-            evidence.record("use_resource");
-            Ok(value)
-        }
-    });
+    let output = plan
+        .step("use")
+        .needs(downstream)
+        .run(move |_cx, resource| {
+            let evidence = use_evidence.clone();
+            let value = resource.value;
+            async move {
+                evidence.record("use_resource");
+                Ok(value)
+            }
+        });
     plan.export(output)
         .build(Policy::FailFast, Shutdown::within(BUDGET), Mode::Finite)
         .expect("cleanup lifecycle plan")
@@ -170,15 +176,11 @@ fn cancellation_plan(evidence: Evidence) -> Plan<u64, u64> {
                 Ok(())
             }
         });
-    let output = plan
-        .step("completed")
-        .needs(resource)
-        .run(|_cx, resource| {
-            let value = resource.value;
-            async move { Ok(value) }
-        });
+    let output = plan.step("completed").needs(resource).run(|_cx, resource| {
+        let value = resource.value;
+        async move { Ok(value) }
+    });
     plan.export(output)
         .build(Policy::FailFast, Shutdown::within(BUDGET), Mode::Finite)
         .expect("cancellation lifecycle plan")
 }
-

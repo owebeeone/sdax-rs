@@ -25,7 +25,9 @@ fn record_alloc(size: usize) {
         live.set(next);
         next
     });
-    let Ok(live) = live else { return; };
+    let Ok(live) = live else {
+        return;
+    };
     let _ = ENABLED.try_with(|enabled| {
         if enabled.get() {
             ALLOCS.with(|allocs| allocs.set(allocs.get() + 1));
@@ -45,7 +47,9 @@ fn record_realloc(old_size: usize, new_size: usize) {
         live.set(next);
         next
     });
-    let Ok(live) = live else { return; };
+    let Ok(live) = live else {
+        return;
+    };
     let _ = ENABLED.try_with(|enabled| {
         if enabled.get() {
             ALLOCS.with(|allocs| allocs.set(allocs.get() + 1));
@@ -58,13 +62,17 @@ fn record_realloc(old_size: usize, new_size: usize) {
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = System.alloc(layout);
-        if !ptr.is_null() { record_alloc(layout.size()); }
+        if !ptr.is_null() {
+            record_alloc(layout.size());
+        }
         ptr
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let ptr = System.alloc_zeroed(layout);
-        if !ptr.is_null() { record_alloc(layout.size()); }
+        if !ptr.is_null() {
+            record_alloc(layout.size());
+        }
         ptr
     }
 
@@ -75,7 +83,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let resized = System.realloc(ptr, layout, new_size);
-        if !resized.is_null() { record_realloc(layout.size(), new_size); }
+        if !resized.is_null() {
+            record_realloc(layout.size(), new_size);
+        }
         resized
     }
 }
