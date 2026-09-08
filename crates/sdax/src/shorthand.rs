@@ -81,8 +81,8 @@ impl<Out, In> PlanBuilder<Out, In> {
     /// `service(name).needs(deps).start(f)`.
     ///
     /// A service declared this way has no `stop_within`, so the scope's
-    /// shutdown budget bounds its stop; `Shutdown::unbounded()` then rejects
-    /// the plan ([`Rule::ServiceUnbounded`](crate::Rule::ServiceUnbounded)).
+    /// shutdown budget bounds its stop; an unbounded root rejects the plan,
+    /// including when this service is inside a component or template ([`Rule::ServiceUnbounded`](crate::Rule::ServiceUnbounded)).
     pub fn service_with<D, F, Fut, H>(&mut self, name: &str, deps: D, start: F) -> Key<H>
     where
         D: Deps,

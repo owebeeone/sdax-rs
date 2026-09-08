@@ -74,6 +74,20 @@ class ExistingGateControls(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("rejected, but not with E0308", result.stdout)
 
+    def test_compile_fail_uses_current_rlib_despite_stale_dependency_artifacts(self):
+        self.copy_script("compile-fail.sh")
+        crate = self.minimal_core()
+        (crate / "src/compile_fail.rs").write_text(
+            "//! ## Current library witness\n//! ```compile_fail\n//! // expect: E0308\n"
+            "//! let _: u8 = sdax::fixture();\n//! ```\n")
+        target = self.root / "target with spaces"
+        deps = target / "debug/deps"
+        deps.mkdir(parents=True)
+        (deps / "libsdax-000stale.rlib").write_bytes(b"incompatible prior toolchain metadata")
+        result = self.execute(["sh", "scripts/compile-fail.sh", str(target)])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("rejected with E0308", result.stdout)
+
     def test_rustdoc_broken_link_fails_with_warnings_denied(self):
         crate = self.minimal_core()
         (crate / "src/lib.rs").write_text("/// See [ThisTypeDoesNotExist].\npub fn fixture() {}\n")

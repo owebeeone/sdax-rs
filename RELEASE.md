@@ -1,5 +1,7 @@
 # Releasing sdax-rs
 
+Current checkpoint: [2026-09-08 readiness](dev-docs/ReleaseReadiness-2026-09-08.md).
+
 Cut releases from `main` with `scripts/release.py`. Tags are immutable.
 Creating the GitHub Release triggers the crates.io workflow. Manual workflow
 retries accept an existing tag and use exactly the same verification path.
@@ -47,6 +49,9 @@ python3 -B scripts/check_all.py --allow-dirty
 
 # Same checks on a clean checkout, as used by CI and release preparation.
 python3 -B scripts/check_all.py
+
+# Populate the cache with the same Cargo version used by the offline build.
+cargo +1.75 fetch --locked
 
 # Library-only minimum-version check; requires installed Rust 1.75.
 python3 -B scripts/check_all.py --msrv-only

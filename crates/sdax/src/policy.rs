@@ -27,7 +27,8 @@ impl Shutdown {
         Shutdown { within: Some(d) }
     }
 
-    /// No bound. Every service must then declare `stop_within`
+    /// No bound. Every service, including those in components and templates,
+    /// must then declare `stop_within`
     /// ([`Rule::ServiceUnbounded`](crate::Rule::ServiceUnbounded)).
     pub fn unbounded() -> Self {
         Shutdown { within: None }

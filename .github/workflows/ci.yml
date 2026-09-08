@@ -27,5 +27,5 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: rustup toolchain install 1.75 --profile minimal
-      - run: cargo fetch --locked
+      - run: cargo +1.75 fetch --locked
       - run: python3 -B scripts/check_all.py --msrv-only

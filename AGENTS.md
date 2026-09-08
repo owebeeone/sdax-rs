@@ -82,8 +82,10 @@ reason recorded in the stage report.
 The crates declare `rust-version = "1.75"`. Library code must not use anything
 newer: no `LazyLock` (1.80), no `Waker::noop` (1.85), no `#[expect]` (1.81), no
 `async fn` in a trait meant for `dyn` — box the future instead. Test code holds
-to the same line. Verification is partial and must be reported as such: the
-oldest toolchain on this machine is 1.85.
+to the same line. Both libraries were verified on Rust 1.75 on the Debian arm64 Pi on
+2026-09-08; see `dev-docs/ReleaseReadiness-2026-09-08.md`. The Mac still has no
+1.75 toolchain. Reverify changed library code with 1.75 locally, on the Pi,
+or in CI; do not substitute a newer compiler result.
 
 ## The fast loop
 

@@ -24,6 +24,12 @@ still cancels the run and leaves one tracked task to finish that graph
 inside the shutdown budget. Compensation of an effect is a distinct
 record from a resource release. A `persistent` effect is never undone.
 
+If the root uses `Shutdown::unbounded()`, every service must declare
+`stop_within`, including services inside components and templates. A child's
+shutdown budget does not cover the time before its cleanup can begin. Build
+rejects a missing service timeout and names its path, such as `Server/Worker`.
+Either add a timeout to that service or give the root a bounded shutdown.
+
 A fault does not skip cleanup. The test below is a resource, a step
 that fails, and a flag that the release body sets — the report is
 `Failed`, the single fault names `Boom`, and the flag is set.

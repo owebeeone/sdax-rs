@@ -47,7 +47,7 @@ pub enum Rule {
     /// `V-UNUSED-POOL`: a declared pool nobody uses.
     UnusedPool,
     /// `V-SERVICE-UNBOUNDED`: `Shutdown::unbounded()` with a service that does
-    /// not bound its stop.
+    /// not bound its stop, anywhere in the component/template declaration tree.
     ServiceUnbounded,
     /// `V-TRY-UNCONSUMED`: a try-step nothing depends on, so its failure would
     /// vanish.
@@ -122,7 +122,8 @@ impl std::fmt::Display for Rule {
 pub struct Finding {
     /// Which rule was violated.
     pub rule: Rule,
-    /// The node names involved, in declaration order.
+    /// The node names involved, in declaration order. Nested service findings
+    /// use root-relative paths in depth-first declaration order.
     pub nodes: Vec<String>,
     /// The keys involved.
     pub keys: Vec<RawKey>,

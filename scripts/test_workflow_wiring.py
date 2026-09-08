@@ -20,6 +20,12 @@ def verify(ci, publish):
         raise ValueError("CI must invoke the complete shared checks")
     if "python3 -B scripts/check_all.py --msrv-only" not in ci_jobs["msrv"]:
         raise ValueError("CI must invoke shared MSRV builds")
+    for label, group in (("CI", ci_jobs), ("release", release_jobs)):
+        body = group["msrv"]
+        fetch = "cargo +1.75 fetch --locked"
+        build = "python3 -B scripts/check_all.py --msrv-only"
+        if fetch not in body or body.index(fetch) > body.index(build):
+            raise ValueError(f"{label} must populate the Rust 1.75 cache before offline builds")
     select = release_jobs["select"]
     for token in ("sha: ${{ steps.resolve.outputs.sha }}", "tag_object: ${{ steps.resolve.outputs.tag_object }}",
                   "fetch-depth: 0", "id: resolve", "python3 -B scripts/release_selection.py select"):
@@ -55,6 +61,22 @@ class WorkflowTests(unittest.TestCase):
     def test_shared_bar_and_selected_commit_wiring(self):
         verify((ROOT / ".github/workflows/ci.yml").read_text(),
                (ROOT / ".github/workflows/publish.yml").read_text())
+
+    def test_msrv_fetch_toolchain_and_order_are_enforced(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        publish = (ROOT / ".github/workflows/publish.yml").read_text()
+        fetch = "cargo +1.75 fetch --locked"
+        for source in ("ci", "publish"):
+            for replacement in ("cargo fetch --locked", "true"):
+                with self.subTest(source=source, replacement=replacement), self.assertRaises(ValueError):
+                    verify(ci.replace(fetch, replacement) if source == "ci" else ci,
+                           publish.replace(fetch, replacement) if source == "publish" else publish)
+            text = ci if source == "ci" else publish
+            late = text.replace("      - run: " + fetch + "\n", "")
+            build = "      - run: python3 -B scripts/check_all.py --msrv-only\n"
+            late = late.replace(build, build + "      - run: " + fetch + "\n")
+            with self.subTest(source=source, late=True), self.assertRaises(ValueError):
+                verify(late if source == "ci" else ci, late if source == "publish" else publish)
 
     def test_missing_gate_or_source_binding_is_rejected(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()

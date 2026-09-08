@@ -152,25 +152,39 @@ pub(crate) fn unused_pool(c: &mut Ctx<'_>) {
     }
 }
 
-/// `V-SERVICE-UNBOUNDED`: with `Shutdown::unbounded()` nothing bounds a stop
-/// but the service's own `stop_within`, so every service must declare one.
+/// `V-SERVICE-UNBOUNDED`: an unbounded root requires `stop_within` on
+/// every service in its complete component/template declaration tree. Child
+/// budgets cannot bound a stop before their release graph opens (T7a).
+/// Traverse each registration in depth-first declaration order, including
+/// templates that may never be spawned; report paths relative to this root.
 pub(crate) fn service_unbounded(c: &mut Ctx<'_>) {
     if c.ir.shutdown.budget().is_some() {
         return;
     }
-    let names: Vec<String> =
-        c.ir.nodes
-            .iter()
-            .filter(|n| n.kind == Kind::Service && n.attrs.stop_within.is_none())
-            .map(|n| n.name.clone())
-            .collect();
+    fn collect(ir: &PlanIr, prefix: &str, names: &mut Vec<String>) {
+        for node in &ir.nodes {
+            let path = if prefix.is_empty() {
+                node.name.clone()
+            } else {
+                format!("{prefix}/{}", node.name)
+            };
+            if node.kind == Kind::Service && node.attrs.stop_within.is_none() {
+                names.push(path.clone());
+            }
+            if let Some(child) = &node.child {
+                collect(child, &path, names);
+            }
+        }
+    }
+    let mut names = Vec::new();
+    collect(c.ir, "", &mut names);
     for name in names {
         c.add(
             Rule::ServiceUnbounded,
             vec![name.clone()],
             Vec::new(),
-            format!("service {name:?} has no stop_within and the shutdown budget is unbounded"),
-            "declare `.stop_within(d)`, or bound the scope with `Shutdown::within(d)`",
+            format!("service {name:?} has no stop_within and the root shutdown budget is unbounded"),
+            "declare `.stop_within(d)` on the service, or bound the root with `Shutdown::within(d)`",
         );
     }
 }

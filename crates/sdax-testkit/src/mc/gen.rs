@@ -34,7 +34,7 @@ pub(crate) struct Shape {
     /// scope's release graph opens it is bounded by the root's deadline alone
     /// (T7a), so a service with no `stop_within` anywhere inside an unbounded
     /// run has nothing to end its stop — which is what `V-SERVICE-UNBOUNDED`
-    /// refuses for the root's own services and does not reach for a child's.
+    /// refuses throughout the component/template declaration tree.
     pub(crate) bounded_root: bool,
     /// How many template plans enclose this scope. A template's own plan may
     /// declare one — nested instances are a real shape — but the walk stops

@@ -16,9 +16,11 @@ rustc --version
 echo "== building the rlib the witnesses link against"
 cargo build -p sdax --locked --offline >/dev/null
 
-RLIB=$(ls "$TARGET"/debug/libsdax.rlib "$TARGET"/debug/deps/libsdax-*.rlib 2>/dev/null | head -n1)
-if [ -z "$RLIB" ]; then
-  echo "sdax rlib not found under $TARGET/debug" >&2
+# Cargo refreshes this public artifact for the just-completed build. The deps
+# directory may also contain rlibs from another toolchain; never select by name.
+RLIB="$TARGET/debug/libsdax.rlib"
+if [ ! -f "$RLIB" ]; then
+  echo "sdax rlib not found at $RLIB" >&2
   exit 2
 fi
 
