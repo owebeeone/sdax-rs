@@ -2,6 +2,7 @@ tally,workload,scales_or_variants,baseline_status,primary_boundary,correctness_g
 A,synthetic graph fixture generation,"chain/wide/sparse; 1/10/100/1000 body nodes",supported,Name and parent-index generation only; excluded from engine timer,generated names and edge count observed
 B,Rust compilation,cold and warm,supported,Whole standalone harness and local path dependencies,successful optimized build and artifact byte count
 C,plan build,"chain/wide/sparse; 1/10/100/1000 body nodes",supported,Declaration through validation and immutable Plan production,inspect node count observed
+C,resource-bearing repeated component plan build,2/10/100 typed mounts,current-only allocation probe,Declaration through validation and immutable Plan production; allocation calls and requested bytes only,five consecutive captures must match exactly; finished plan name observed
 D,tiny finite,immediate and one-yield body,supported,Before start/input binding through report observation and disposal,Ok clean output observed
 D,dependency graph,"chain/wide/sparse; 1/10/100/1000 body nodes",supported,Complete per-run lifecycle,Ok clean output observed
 D,machine state setup,"chain; 1/10/100/1000 body nodes",supported,Machine::with_input construction only,node count observed
@@ -11,6 +12,7 @@ D,component layout,flat versus one nested mount at 10 and 100 inner nodes,suppor
 D,repeated mount of one definition,2/10/100 typed mounts,current-only; baseline unsupported,Complete per-run lifecycle and separate plan build,output proves every typed mount executed in sequence
 D,typed static component input,typed and explicit unit,current-only; baseline unsupported,Complete per-run lifecycle,typed repeated-mount output checked; shared nested fixture checks explicit unit binding
 D,resource teardown,"normal/startup failure/release failure/cleanup failure",supported and directly comparable,Complete per-run lifecycle,release counters and report fields asserted
+D,handwritten Tokio lifecycle comparator,"normal release/partial startup failure/downstream cleanup failure/cancellation after hold",current-only correctness fixture; timing pending,Complete matching lifecycle with every task joined and every resource disposed,outputs; full fault fields; exact cleanup and dependency order; zero active tasks; negative controls
 D,cancel after acquisition,one resource followed by an unreachable completed-data export,current API adapted and not directly comparable,Complete per-run lifecycle,current validator requires a finite completed-data export; release counter and report fields asserted
 D,resident service,ready then shutdown,supported,Complete per-run lifecycle,Ok clean report and zero tracked tasks
 D,stable-handle recovery,two failures then recovery; exhaustion after one restart,current-only; baseline unsupported,Complete per-run lifecycle,one initialization per run; 3 or 2 episodes; Arc identity stable; outcome and fault asserted

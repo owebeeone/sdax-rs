@@ -1,0 +1,722 @@
+   Compiling sdax v0.1.0 (/Users/owebeeone/limbo/sdax-wz-performance/sdax-rs/crates/sdax)
+   Compiling sdax-testkit v0.1.0 (/Users/owebeeone/limbo/sdax-wz-performance/sdax-rs/crates/sdax-testkit)
+   Compiling sdax-tokio v0.1.0 (/Users/owebeeone/limbo/sdax-wz-performance/sdax-rs/crates/sdax-tokio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.20s
+     Running unittests src/lib.rs (target/debug/deps/sdax-85a8d00691f282c8)
+
+running 96 tests
+test host::engine::table::index_tests::cached_run_index_distinguishes_holes_unknown_plans_and_equal_declaration_indices ... ok
+test host::engine::table::index_tests::dynamic_index_growth_preserves_static_and_previous_instance_keys ... ok
+test sim::simulator::publication_tests::publications_are_drained_before_the_next_scheduled_event ... ok
+test tests::builder::a_blocking_step_records_its_required_pool ... ok
+test host::engine::compaction_tests::compact_archives_skipped_cause_before_moving_its_path ... ok
+test host::engine::table::index_tests::cached_index_matches_node_keys_for_reused_components_and_input_holes ... ok
+test host::engine::compaction_tests::compact_batches_a_small_retired_tail_then_reclaims_it_as_churn_accumulates ... ok
+test tests::builder::a_component_carries_its_child_plan_and_a_template_records_its_imports ... ok
+test host::engine::compaction_tests::compact_does_not_alias_sibling_and_keeps_identity_tombstones ... ok
+test host::engine::compaction_tests::compact_preserves_cleanup_failure_records_and_sibling_timers ... ok
+test tests::builder::a_step_and_a_try_step_differ_in_their_recorded_kind ... ok
+test tests::builder::an_effect_may_be_persistent_instead_of_compensated ... ok
+test tests::builder::i01_is_recorded_exactly_as_written ... ok
+test tests::builder::attribute_order_is_free_and_the_recorded_declaration_is_identical ... ok
+test host::engine::compaction_tests::compact_nested_instances_keep_parent_ownership_and_remapped_template_imports ... ok
+test tests::builder::locks_and_exports_are_recorded ... ok
+test tests::builder::release_by_drop_is_recorded_as_drop_not_as_a_body ... ok
+test tests::instances::a_plan_with_a_template_is_accepted ... ok
+test tests::instances::a_spawn_opens_an_instance_and_admits_its_nodes ... ok
+test tests::instances::a_live_instance_holds_the_key_it_imports_until_it_ends ... ok
+test tests::instances::a_spawn_that_lands_after_the_settle_ends_at_once ... ok
+test tests::instances::a_template_node_becomes_live_and_does_not_block_steady_state ... ok
+test tests::instances::an_input_bearing_plan_runs_only_when_its_value_is_supplied ... ok
+test tests::keys::deps_map_key_tuples_to_arc_tuples_up_to_eight ... ok
+test host::engine::admit::trace_tests::single_scope_admission_preserves_global_effect_order_with_grants_and_retry ... ok
+test tests::keys::deps_report_their_raw_keys_in_declaration_order ... ok
+test tests::instances::one_instance_can_be_closed_while_the_other_keeps_running ... ok
+test tests::keys::keys_are_copy_send_sync_for_sized_and_unsized_types ... ok
+test tests::instances::instance_records_carry_the_instance_in_their_order ... ok
+test tests::keys::slots_carry_unsized_outputs_and_report_an_empty_slot_as_none ... ok
+test tests::instances::the_spawn_gate_refuses_a_foreign_or_undeclared_template ... ok
+test tests::machine::a_plan_with_a_template_runs_and_the_template_is_a_node ... ok
+test tests::machine::a_body_event_for_a_template_is_refused ... ok
+test tests::machine::f10_a_body_outcome_for_a_component_or_a_join_is_refused ... ok
+test tests::machine::p16_an_exclusive_lock_held_by_a_sibling_is_named_by_why ... ok
+test tests::machine::p16_a_node_is_spawned_only_when_its_needs_are_ready_and_every_grant_is_taken ... ok
+test tests::machine::r4_a_panic_joined_after_a_drop_abort_is_not_a_fault ... ok
+test tests::machine::p17_fail_fast_aborts_in_flight_siblings_joins_them_then_releases_in_graph_order ... ok
+test tests::planner_validate::findings_are_values_that_name_the_rule_and_a_fix ... ok
+test tests::machine::r8_a_cancelled_cleanup_body_is_refused ... ok
+test tests::planner_validate::p01_foreign_key_is_rejected_naming_the_node_the_key_and_both_plans ... ok
+test tests::planner_validate::l_imports_lists_what_a_root_run_could_not_resolve ... ok
+test tests::planner_validate::a_service_may_spawn_in_the_chain_form_and_in_the_late_form ... ok
+test tests::planner_validate::p02_duplicate_names_are_rejected ... ok
+test tests::planner_validate::p05_stop_within_must_fit_the_shutdown_budget ... ok
+test tests::planner_validate::p05_a_components_budget_must_fit_its_parents ... ok
+test tests::planner_validate::p06_idempotency_is_required_for_retry_restart_and_compensating_ambiguity ... ok
+test tests::planner_validate::p09_a_child_plan_cannot_take_a_parent_pool ... ok
+test tests::planner_validate::p07_import_scope_is_checked_at_registration ... ok
+test tests::planner_validate::p06_a_restarted_service_must_be_idempotent ... ok
+test tests::planner_validate::p08_a_lock_must_name_a_declared_need ... ok
+test tests::planner_validate::p07_a_two_level_nesting_is_accepted_when_each_level_imports ... ok
+test tests::planner_validate::p09_a_template_holder_counts_as_unbounded ... ok
+test tests::planner_validate::p11_an_unbounded_shutdown_requires_stop_within_on_every_service ... ok
+test tests::planner_validate::p09_pool_starvation_is_rejected ... ok
+test tests::planner_validate::p10_unused_pool_unconsumed_try_step_and_empty_plan ... ok
+test tests::planner_validate::v_blocking_cancel_allows_a_blocking_step_with_no_cancel_attribute ... ok
+test tests::planner_validate::v_blocking_cancel_rejects_a_cooperative_grace_on_a_blocking_step ... ok
+test tests::planner_validate::p12_a_duplicate_attribute_is_rejected ... ok
+test tests::planner_validate::v_mode_allows_a_resident_plan_with_no_services ... ok
+test tests::planner_validate::p12_repeated_or_conflicting_lock_attributes_are_rejected ... ok
+test tests::planner_validate::v_foreign_key_catches_a_late_spawns_whose_key_belongs_to_another_plan ... ok
+test tests::planner_validate::v_mode_rejects_a_finite_plan_that_contains_a_service_or_a_template ... ok
+test tests::planner_validate::v_persist_ambig_rejects_a_persistent_effect_that_compensates_an_ambiguity ... ok
+test tests::planner_validate::v_spawn_kind_rejects_a_late_spawns_on_a_node_that_is_not_a_service ... ok
+test tests::planner_view::show_renderings ... ignored, prints the rendering for eyeballing; not an assertion
+test tests::planner_validate::v_spawn_self_import_rejects_a_readiness_deadlock ... ok
+test tests::planner_view::effects_lists_the_ship_boundary_nodes_and_the_first_layer_that_has_one ... ok
+test tests::planner_view::p14_mode_is_declared_and_printed_never_derived ... ok
+test tests::planner_view::p03_the_view_of_i33_is_the_declaration_and_nothing_else ... ok
+test tests::planner_view::p13_the_diff_lists_resolved_values_and_marks_default_changes ... ok
+test tests::planner_view::p04_release_order_for_flat_nested_and_dynamic_plans ... ok
+test tests::report_order::a_report_is_clean_only_when_every_list_is_empty ... ok
+test tests::planner_view::why_names_a_pool_a_node_must_be_granted ... ok
+test tests::planner_view::spawns_is_shown_only_on_a_service ... ok
+test tests::report_order::engine_events_and_effects_are_public_named_types ... ok
+test tests::planner_view::why_separates_a_lock_conflict_from_a_declared_need ... ok
+test tests::report_order::panics_are_carried_never_re_raised ... ok
+test tests::report_order::records_order_by_declaration_then_instance_then_attempt ... ok
+test tests::report_order::report_sort_puts_every_list_in_the_defined_order_and_leaves_the_trace_alone ... ok
+test tests::report_order::the_host_contracts_are_implementable_and_dyn_usable ... ok
+test tests::planner_view::spawns_is_visible_in_the_view ... ok
+test tests::seam::a_failed_effect_registers_nothing ... ok
+test tests::seam::attempt_is_readable_and_starts_at_one ... ok
+test tests::seam::hold_carries_unsized_outputs ... ok
+test tests::seam::hold_registers_in_the_completing_poll_and_not_before ... ok
+test tests::seam::hold_value_registers_before_it_returns ... ok
+test tests::seam::now_and_sleep_use_the_injected_clock ... ok
+test tests::seam::safety_rejected_factory_never_runs_even_while_first_is_reserved ... ok
+test tests::seam::serving_phase_reports_the_current_episode ... ok
+test tests::seam::spawn_without_an_attached_run_is_refused_rather_than_panicking ... ok
+test tests::seam::stop_is_observable_three_ways ... ok
+test tests::seam::timeout_reports_expiry_against_the_injected_clock ... ok
+test tests::seam::until_stop_yields_none_when_the_scope_is_stopping ... ok
+test tests::seam::safety_second_registration_preserves_first_obligation ... ok
+test host::engine::compaction_tests::compact_churn_preserves_history_and_reclaims_execution_rows ... ok
+
+test result: ok. 95 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/blocking_pool.rs (target/debug/deps/blocking_pool-fc8023dede06355e)
+
+running 1 test
+test a_blocking_pool_cannot_be_overridden_by_a_general_limit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dataflow_mounts.rs (target/debug/deps/dataflow_mounts-ad7ecb3fe4e086cb)
+
+running 1 test
+test repeated_mounts_keep_distinct_input_and_formal_import_provenance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dataflow_view.rs (target/debug/deps/dataflow_view-24789d602df5dbea)
+
+running 1 test
+test dataflow_shows_supplied_input_without_inventing_cleanup ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/export_scope.rs (target/debug/deps/export_scope-9ee48154fd944812)
+
+running 1 test
+test exporting_a_foreign_key_is_rejected_before_execution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/finite_output.rs (target/debug/deps/finite_output-2f5ee7474ba9aeaf)
+
+running 4 tests
+test a_finite_plan_cannot_export_a_released_resource_directly ... ok
+test a_finite_plan_can_export_data_computed_from_a_resource ... ok
+test a_finite_parent_cannot_forward_a_resident_components_live_output ... ok
+test a_finite_parent_cannot_forward_a_resource_through_a_child_input ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fixer_input_view.rs (target/debug/deps/fixer_input_view-68f32cd6a03de8e8)
+
+running 5 tests
+test unrelated_input_import_is_not_silently_hidden_or_admitted ... ok
+test direct_child_import_of_root_input_omits_only_the_root_input_wait ... ok
+test template_inside_component_preserves_own_input_boundary_through_child_imports ... ok
+test nested_component_imports_preserve_supplied_root_input_within_chains ... ok
+test template_imports_root_input_without_phantom_waits ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fixer_publication.rs (target/debug/deps/fixer_publication-1b36f4df481ece0a)
+
+running 6 tests
+test structural_ready_waits_for_publication_and_rejects_bad_acknowledgements ... ok
+test publication_failure_does_not_end_before_another_owed_acknowledgement ... ok
+test cancellation_waits_for_every_publication_without_resurrection_or_abort ... ok
+test component_publication_error_is_a_prepare_fault_and_cleans_up_inner_scope ... ok
+test stopped_instance_waits_for_component_descendant_publication_only_in_that_instance ... ok
+test component_or_descendant_publication_survives_cancel_and_budget_until_ack ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fixer_ready_bridge.rs (target/debug/deps/fixer_ready_bridge-d40221d7d5ef2492)
+
+running 5 tests
+test join_publication_materializes_unit ... ok
+test component_can_export_imported_parent_value ... ok
+test component_publication_clones_real_export_and_refuses_missing_or_wrong_type ... ok
+test explicit_unit_export_is_required_but_unexported_component_gets_unit ... ok
+test instance_publication_never_reads_another_instance_or_closed_scope ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/incomplete_declarations.rs (target/debug/deps/incomplete_declarations-fbc637c9f6c998af)
+
+running 4 tests
+test abandoned_service_initializer_requires_the_serving_terminal ... ok
+test abandoned_initial_chain_is_also_reported ... ok
+test abandoned_resource_and_effect_are_build_findings ... ok
+test complete_chains_keep_contiguous_keys ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/instance_retention.rs (target/debug/deps/instance_retention-ae3946e438375afe)
+
+running 1 test
+test active_instance_states_exclude_history_without_removing_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/report_diagnostics.rs (target/debug/deps/report_diagnostics-9163b8ec8318c711)
+
+running 1 test
+test result_and_display_preserve_actual_causes_and_unresolved_work ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/surface.rs (target/debug/deps/surface-91c80d6b90f0abbc)
+
+running 7 tests
+test the_driver_hand_offs_are_reachable_from_another_crate ... ok
+test the_instance_hand_offs_are_reachable_from_another_crate ... ok
+test the_author_api_builds_and_inspects_a_plan_through_the_prelude_alone ... ok
+test the_run_drivers_hand_offs_are_reachable_from_another_crate ... ok
+test unresolved_imports_names_the_import_nodes_rather_than_raw_keys ... ok
+test the_host_surface_carries_the_semantics_tag_and_the_engine_vocabulary ... ok
+test the_script_vocabulary_is_author_api_at_the_root ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unbounded_shutdown.rs (target/debug/deps/unbounded_shutdown-5b83c2a3890cdadd)
+
+running 3 tests
+test reused_child_reports_each_registration_in_declaration_order ... ok
+test unbounded_root_rejects_services_through_every_child_boundary ... ok
+test bounded_root_or_explicit_service_stop_accepts_the_same_trees ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/witness.rs (target/debug/deps/witness-ff34aaec09cf6f7a)
+
+running 6 tests
+test a_release_body_can_wait_then_kill_against_the_injected_clock ... ok
+test hold_registers_in_the_completing_poll ... ok
+test validation_findings_are_values ... ok
+test a_service_factory_can_build_a_serve_future_that_observes_stop ... ok
+test stage_0_has_no_execution_and_says_so ... ok
+test a_plan_records_typed_declarations_and_is_send_sync ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sdax_testkit-db57eeb6eb6e85c4)
+
+running 2 tests
+test mc::prng::tests::same_seed_same_sequence ... ok
+test mc::prng::tests::helpers_stay_in_range ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/conformance/main.rs (target/debug/deps/conformance-7b1dfcb89f546b51)
+
+running 76 tests
+test cancel::c26_cancel_during_backoff_ends_the_wait_at_once ... ok
+test cancel::c68_a_blocking_body_cannot_be_aborted_and_is_abandoned_at_the_budget ... ok
+test cleanup::c54_a_failed_compensation_still_ends_before_the_transport_is_released ... ok
+test cancel::c60_a_cooperative_effect_keeps_being_polled_within_its_grace ... ok
+test cancel::c11_cancel_before_start_has_no_effect_and_the_plan_is_reusable ... ok
+test cleanup::c15_the_transport_is_alive_during_the_compensation ... ok
+test cancel::c12_cancel_during_an_acquisition_before_it_held ... ok
+test cleanup::c16_unrelated_releases_overlap_and_both_precede_the_transport ... ok
+test components::c33_inspection_before_a_run_has_no_effect ... ok
+test cleanup::c18_a_worker_that_ignores_stop_is_abandoned_at_its_budget_and_named ... ok
+test cancel::c12b_cancel_after_the_acquisition_held ... ok
+test components::c50_a_double_hold_is_a_fault_and_the_first_value_is_released ... ok
+test cleanup::c69_a_release_that_ignores_stop_is_abandoned_at_the_budget ... ok
+test cancel::c55_a_second_request_during_cleanup_does_not_interrupt_a_release ... ok
+test faults::c09_a_resource_that_held_and_then_failed_is_released ... ok
+test cleanup::c53_a_panicking_release_is_a_cleanup_failure_and_siblings_proceed ... ok
+test faults::c21_two_faults_in_one_tick_are_both_reported ... ok
+test faults::c08b_a_sibling_that_held_before_the_fault_is_released ... ok
+test faults::c20_isolate_lets_siblings_finish_and_still_releases ... ok
+test faults::c66_fail_fast_still_applies_to_the_resources_around_try_steps ... ok
+test cleanup::c56_the_budget_abandons_what_is_still_running_and_keeps_the_order ... ok
+test components::c58_an_inner_fault_faults_the_component_and_the_outer_policy_applies ... ok
+test faults::c08_fail_fast_cancels_the_in_flight_sibling_and_releases_what_was_acquired ... ok
+test components::c32_a_component_is_ready_when_its_inner_run_is_steady_and_cleans_up_as_a_unit ... ok
+test faults::c52_panics_are_faults_never_re_raised ... ok
+test instances::c51_a_foreign_template_is_refused ... ok
+test faults::c59_isolate_skips_the_transitive_dependents_only ... ok
+test components::c38_the_same_script_gives_a_byte_identical_trace_and_another_schedule_another ... ok
+test faults::c67_a_service_whose_start_fails_is_never_ready_and_never_stopped ... ok
+test instances::c14_a_cancel_with_a_live_instance_drains_it_before_the_import_releases ... ok
+test faults::c23_try_step_failures_are_values_and_the_run_is_ok ... ok
+test instances::c65_a_spawn_while_the_scope_is_stopping_is_refused ... ok
+test regressions::mc_a_hold_later_than_the_body_ending_happens_at_the_ending ... ok
+test regressions::mc_a_failed_component_stops_admitting_inside ... ok
+test regressions::mc_a_node_waiting_for_its_next_attempt_keeps_its_faults ... ok
+test regressions::mc_a_component_whose_inner_scope_settles_by_itself_ends_its_own_attempt ... ok
+test regressions::mc_a_recovered_serve_fault_does_not_reinitialize_or_pollute_the_report ... ok
+test regressions::mc_a_timed_out_blocking_attempt_does_not_end_the_next_one ... ok
+test regressions::mc_an_abandoned_node_keeps_the_faults_of_its_earlier_attempts ... ok
+test regressions::mc_a_ready_components_inner_scope_settles_with_its_parent ... ok
+test regressions::mc_an_interrupted_component_ends_its_own_attempt ... ok
+test instances::c64_a_terminal_service_inside_an_instance_ends_that_instance_cleanly ... ok
+test regressions::mc_the_budget_ends_the_dependents_before_it_opens_an_inner_release ... ok
+test retry::c24_attempts_are_bracketed_and_backoff_is_a_timer_on_the_fake_clock ... ok
+test regressions::mc_record_order_counts_only_the_nodes_the_view_shows ... ok
+test retry::c24b_when_every_attempt_fails_each_is_reported ... ok
+test regressions::mc_a_waiter_a_nested_admit_already_started_is_not_started_twice ... ok
+test regressions::mc_the_budget_does_not_open_an_inner_release_before_a_dependent_component_ends ... ok
+test regressions::mc_a_skipped_component_does_not_hold_the_release_gate_shut ... ok
+test review::review_f24_a_backoff_does_not_hold_the_grants_its_attempt_released ... ok
+test review::review_r1_a_free_pool_is_not_queued_behind_a_full_one ... ok
+test review::review_f25_a_released_lock_re_admits_every_scope_waiting_for_it ... ok
+test retry::c40_a_service_restarts_idempotently_across_a_partition ... ok
+test retry::c57_a_restarted_service_does_not_stop_or_restart_its_dependents ... ok
+test review::review_r1b_a_queued_waiter_names_the_waiter_ahead_of_it ... ok
+test instances::c30_two_links_one_closed_early_then_a_shutdown ... ok
+test review::review_r3b_an_isolate_child_still_fails_a_component_on_the_export_path ... ok
+test root_input::c70_a_root_input_satisfies_the_node_that_needs_it ... ok
+test review::review_r_f04_a_blocking_step_is_signalled_at_settle ... ok
+test review::review_r7_a_resolved_ambiguity_leaves_a_clean_run ... ok
+test root_input::c71_a_plan_with_an_unsatisfied_input_is_refused ... ok
+test retry::c61_a_timed_out_effect_is_ambiguous_and_compensated_only_when_declared ... ok
+test instances::i34_a_dependent_of_every_instance_starts_only_once_they_are_all_ready ... ok
+test startup::c07_finite_and_long_lived_nodes_in_one_plan ... ok
+test startup::c05_a_service_is_ready_on_its_return_and_the_endpoint_outlives_it ... ok
+test review::review_r3_an_isolate_child_survives_a_fault_off_the_export_path ... ok
+test review::review_r2b_a_nested_budget_survives_a_slow_parent_release ... ok
+test startup::c02_no_global_barriers_between_unrelated_chains ... ok
+test review::review_r2_a_nested_budget_does_not_start_before_the_inner_release_can ... ok
+test startup::c63_a_pool_grants_fifo_and_why_names_the_pool ... ok
+test startup::c41_ports_only_the_library_sees ... ok
+test startup::c62_shared_readers_overlap_each_other_but_never_a_migrator ... ok
+test startup::c27_exclusive_users_are_serialised_in_either_order ... ok
+test startup::c01_dependency_ordered_startup_and_finite_cleanup ... ok
+test startup::c29_a_blocking_step_runs_on_its_pool_with_at_most_two_at_once ... ok
+test startup::c04_two_runs_of_one_plan_value_share_nothing ... ok
+
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/monte_carlo.rs (target/debug/deps/monte_carlo-a5e6217ae3a9e065)
+
+running 4 tests
+test monte_carlo_big ... ignored, long: 50000 cases, minutes not seconds
+test every_seed_that_found_a_bug_replays_clean ... ok
+test a_run_seed_reproduces_the_whole_walk ... ok
+test monte_carlo ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.49s
+
+     Running tests/testkit.rs (target/debug/deps/testkit-76c8e6cb59529af5)
+
+running 7 tests
+test the_fake_clock_satisfies_the_clock_contract ... ok
+test the_fake_clock_never_advances_by_itself ... ok
+test the_trace_recorder_keeps_observation_order ... ok
+test the_static_checker_accepts_a_well_formed_plan ... ok
+test the_static_checker_catches_an_edge_the_author_did_not_declare ... ok
+test the_static_checker_agrees_with_the_views_unordered_pairs ... ok
+test the_static_checker_holds_for_nested_and_dynamic_shapes ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sdax_tokio-b244c5eb3cac13c6)
+
+running 6 tests
+test scope::tests::readiness_handles_out_of_order_ids_and_wakes_once_outside_registry_lock ... ok
+test scope::tests::ending_before_ready_preserves_failure_for_existing_waiter ... ok
+test driver::observer::tests::s12_a_rejection_reaches_the_observer_and_the_trace ... ok
+test driver::retention_tests::ended_instance_context_is_dropped_and_late_body_is_ignored ... ok
+test driver::retention_tests::context_count_is_cumulative_and_siblings_are_isolated ... ok
+test driver::retention_tests::driver_compacts_only_after_consuming_instance_end_effects ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/adapter.rs (target/debug/deps/adapter-403608db50772261)
+
+running 13 tests
+test an_observer_can_be_installed_and_defaults_to_recording_nothing ... ok
+test the_tokio_clock_only_moves_when_tokio_time_moves ... ok
+test a_spawned_task_runs_and_joins_as_done ... ok
+test an_aborted_task_joins_as_cancelled_and_the_abort_is_deferred ... ok
+test a_shutdown_that_runs_out_of_budget_says_what_is_still_running ... ok
+test tokio_runtime_implements_the_runtime_contract ... ok
+test every_spawned_task_is_tracked_so_a_shutdown_can_wait_for_it ... ok
+test a_current_thread_adapter_is_the_same_adapter_it_always_was ... ok
+test a_blocking_body_runs_off_the_async_workers ... ok
+test new_takes_a_multi_thread_handle_in_silence ... ok
+test the_acknowledging_constructor_also_takes_a_multi_thread_handle ... ok
+test new_refuses_a_current_thread_handle_and_names_the_constructor_that_takes_one - should panic ... ok
+test a_panicking_task_joins_as_panicked_and_the_panic_does_not_escape ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/conformance.rs (target/debug/deps/conformance-0c0f28891d3a78ce)
+
+running 81 tests
+test cancel::c26_cancel_during_backoff_ends_the_wait_at_once ... ok
+test cancel::c12_cancel_during_an_acquisition_before_it_held ... ok
+test cleanup::c54_a_failed_compensation_still_ends_before_the_transport_is_released ... ok
+test cleanup::c15_the_transport_is_alive_during_the_compensation ... ok
+test cancel::c11_cancel_before_start_has_no_effect_and_the_plan_is_reusable ... ok
+test cancel::c55_a_second_request_during_cleanup_does_not_interrupt_a_release ... ok
+test cleanup::c18_a_worker_that_ignores_stop_is_abandoned_at_its_budget_and_named ... ok
+test cancel::c60_a_cooperative_effect_keeps_being_polled_within_its_grace ... ok
+test cancel::c12b_cancel_after_the_acquisition_held ... ok
+test cancel::c68_a_blocking_body_cannot_be_aborted_and_is_abandoned_at_the_budget ... ok
+test cleanup::c16_unrelated_releases_overlap_and_both_precede_the_transport ... ok
+test components::c33_inspection_before_a_run_has_no_effect ... ok
+test components::c50_a_double_hold_is_a_fault_and_the_first_value_is_released ... ok
+test cleanup::c69_a_release_that_ignores_stop_is_abandoned_at_the_budget ... ok
+test cleanup::c53_a_panicking_release_is_a_cleanup_failure_and_siblings_proceed ... ok
+test cleanup::c56_the_budget_abandons_what_is_still_running_and_keeps_the_order ... ok
+test components::c58_an_inner_fault_faults_the_component_and_the_outer_policy_applies ... ok
+test faults::c21_two_faults_in_one_tick_are_both_reported ... ok
+test faults::c20_isolate_lets_siblings_finish_and_still_releases ... ok
+test faults::c09_a_resource_that_held_and_then_failed_is_released ... ok
+test faults::c08_fail_fast_cancels_the_in_flight_sibling_and_releases_what_was_acquired ... ok
+test faults::c08b_a_sibling_that_held_before_the_fault_is_released ... ok
+test faults::c23_try_step_failures_are_values_and_the_run_is_ok ... ok
+test components::c32_a_component_is_ready_when_its_inner_run_is_steady_and_cleans_up_as_a_unit ... ok
+test faults::c67_a_service_whose_start_fails_is_never_ready_and_never_stopped ... ok
+test faults::c66_fail_fast_still_applies_to_the_resources_around_try_steps ... ok
+test faults::c59_isolate_skips_the_transitive_dependents_only ... ok
+test components::c38_the_same_script_gives_a_byte_identical_trace_and_another_schedule_another ... ok
+test faults::c52_panics_are_faults_never_re_raised ... ok
+test instances::c65_a_spawn_while_the_scope_is_stopping_is_refused ... ok
+test instances::c14_a_cancel_with_a_live_instance_drains_it_before_the_import_releases ... ok
+test regressions::mc_a_hold_later_than_the_body_ending_happens_at_the_ending ... ok
+test regressions::mc_a_failed_component_stops_admitting_inside ... ok
+test regressions::mc_a_component_whose_inner_scope_settles_by_itself_ends_its_own_attempt ... ok
+test regressions::mc_a_node_waiting_for_its_next_attempt_keeps_its_faults ... ok
+test instances::c51_a_foreign_template_is_refused ... ok
+test regressions::mc_a_ready_components_inner_scope_settles_with_its_parent ... ok
+test instances::c64_a_terminal_service_inside_an_instance_ends_that_instance_cleanly ... ok
+test regressions::mc_a_recovered_serve_fault_does_not_reinitialize_or_pollute_the_report ... ok
+test regressions::mc_a_timed_out_blocking_attempt_does_not_end_the_next_one ... ok
+test regressions::mc_an_abandoned_node_keeps_the_faults_of_its_earlier_attempts ... ok
+test regressions::mc_an_interrupted_component_ends_its_own_attempt ... ok
+test regressions::mc_a_waiter_a_nested_admit_already_started_is_not_started_twice ... ok
+test regressions::mc_the_budget_ends_the_dependents_before_it_opens_an_inner_release ... ok
+test regressions::mc_a_skipped_component_does_not_hold_the_release_gate_shut ... ok
+test retry::c24_attempts_are_bracketed_and_backoff_is_a_timer_on_the_fake_clock ... ok
+test regressions::mc_the_budget_does_not_open_an_inner_release_before_a_dependent_component_ends ... ok
+test retry::c24b_when_every_attempt_fails_each_is_reported ... ok
+test regressions::mc_record_order_counts_only_the_nodes_the_view_shows ... ok
+test instances::i34_a_dependent_of_every_instance_starts_only_once_they_are_all_ready ... ok
+test review::review_f24_a_backoff_does_not_hold_the_grants_its_attempt_released ... ok
+test instances::c30_two_links_one_closed_early_then_a_shutdown ... ok
+test differential::r01_the_adapter_and_the_machine_agree_on_the_fault_programs ... ok
+test review::review_r1_a_free_pool_is_not_queued_behind_a_full_one ... ok
+test review::review_r1b_a_queued_waiter_names_the_waiter_ahead_of_it ... ok
+test retry::c61_a_timed_out_effect_is_ambiguous_and_compensated_only_when_declared ... ok
+test retry::c57_a_restarted_service_does_not_stop_or_restart_its_dependents ... ok
+test review::review_f25_a_released_lock_re_admits_every_scope_waiting_for_it ... ok
+test review::review_r7_a_resolved_ambiguity_leaves_a_clean_run ... ok
+test review::review_r3b_an_isolate_child_still_fails_a_component_on_the_export_path ... ok
+test review::review_r_f04_a_blocking_step_is_signalled_at_settle ... ok
+test root_input::c71_a_plan_with_an_unsatisfied_input_is_refused ... ok
+test root_input::c70_a_root_input_satisfies_the_node_that_needs_it ... ok
+test review::review_r2b_a_nested_budget_survives_a_slow_parent_release ... ok
+test review::review_r3_an_isolate_child_survives_a_fault_off_the_export_path ... ok
+test startup::c02_no_global_barriers_between_unrelated_chains ... ok
+test retry::c40_a_service_restarts_idempotently_across_a_partition ... ok
+test startup::c07_finite_and_long_lived_nodes_in_one_plan ... ok
+test startup::c05_a_service_is_ready_on_its_return_and_the_endpoint_outlives_it ... ok
+test differential::r01_the_adapter_and_the_machine_agree_on_cleanup_and_components ... ok
+test differential::r01_the_adapter_and_the_machine_agree_on_the_startup_programs ... ok
+test startup::c63_a_pool_grants_fifo_and_why_names_the_pool ... ok
+test startup::c01_dependency_ordered_startup_and_finite_cleanup ... ok
+test review::review_r2_a_nested_budget_does_not_start_before_the_inner_release_can ... ok
+test startup::c04_two_runs_of_one_plan_value_share_nothing ... ok
+test startup::c29_a_blocking_step_runs_on_its_pool_with_at_most_two_at_once ... ok
+test startup::c41_ports_only_the_library_sees ... ok
+test startup::c62_shared_readers_overlap_each_other_but_never_a_migrator ... ok
+test startup::c27_exclusive_users_are_serialised_in_either_order ... ok
+test multi_thread::r05_the_invariants_hold_on_two_worker_threads ... ok
+test multi_thread::r05_the_shutdown_bound_holds_on_two_worker_threads_with_measured_slack ... ok
+
+test result: ok. 81 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests/deadlines.rs (target/debug/deps/deadlines-8d3d9ac748a60355)
+
+running 7 tests
+test interrupted_initializer_replaces_its_within_deadline_with_stop_grace ... ok
+test release_uses_shutdown_budget_instead_of_prepare_within ... ok
+test serving_context_is_refreshed_with_its_stop_deadline ... ok
+test retry_release_observes_a_shutdown_budget_activated_after_it_started ... ok
+test recovered_serving_episode_gets_the_same_stop_deadline ... ok
+test retry_release_has_no_prepare_deadline_and_final_release_has_the_budget ... ok
+test nested_release_deadline_is_capped_by_the_parent_budget ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/driver.rs (target/debug/deps/driver-eb8832c03fed0087)
+
+running 10 tests
+test r03_a_runtime_shutdown_over_a_task_that_will_not_end_says_how_many ... ok
+test r03_a_dropped_runtime_with_live_runs_is_reported ... ok
+test r00_the_plans_bodies_are_reachable_as_host_api ... ok
+test c11_cancel_before_the_first_poll_spawns_nothing ... ok
+test r05_regression_a_signalled_initializer_never_starts_its_serve_future ... ok
+test r00_a_plan_runs_to_ok_on_the_adapter ... ok
+test r03_runtime_shutdown_waits_and_reports_what_is_left ... ok
+test r02_the_release_never_precedes_the_join_of_the_aborted_body ... ok
+test r03_a_dropped_runtime_with_nothing_running_is_silent ... ok
+test c14_dropping_running_drains_and_reports_to_the_observer ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/factory_panics.rs (target/debug/deps/factory_panics-0173f223221aaf00)
+
+running 1 test
+test step_factory_panic_is_reported_and_upstream_resource_released ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fixer_input_admission.rs (target/debug/deps/fixer_input_admission-3851578f48e8fd10)
+
+running 5 tests
+test explicit_unit_binding_is_independent_of_the_root_input_type ... ok
+test supplied_unit_root_and_ordinary_component_remain_valid ... ok
+test supplied_unit_template_input_remains_valid_at_spawn ... ok
+test inspection_and_independent_checker_agree_with_actual_imported_values ... ok
+test explicitly_bound_unit_components_work_at_every_boundary ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/fixer_publication_driver.rs (target/debug/deps/fixer_publication_driver-5fa06e34578067ca)
+
+running 3 tests
+test failure_acknowledgements_follow_the_whole_spawn_batch ... ok
+test failed_publication_blocks_consumers_and_releases_held_resources ... ok
+test missing_component_export_is_a_host_fault_even_for_explicit_unit ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fixer_values.rs (target/debug/deps/fixer_values-5d6ba44438e61c4f)
+
+running 7 tests
+test imported_root_input_crosses_component_boundary ... ok
+test component_exported_by_root_is_actual_99 ... ok
+test nested_components_publish_through_every_boundary ... ok
+test join_and_chained_join_supply_actual_unit ... ok
+test concurrent_runs_do_not_share_component_slots ... ok
+test parent_consumes_actual_component_value ... ok
+test no_export_and_explicit_unit_export_both_supply_unit ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fixer_values_edges.rs (target/debug/deps/fixer_values_edges-493fe9bd7dae361e)
+
+running 5 tests
+test isolated_unrelated_child_failure_retains_fault_and_delivers_export ... ok
+test resident_ready_without_observation_on_multithread_has_real_value ... ok
+test failed_and_skipped_exports_never_construct_parent_consumer ... ok
+test concurrent_template_instances_publish_component_values_before_child_ready ... ok
+test nested_template_component_reads_own_input_and_ancestor_import ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/guide.rs (target/debug/deps/guide-5dcff41efd822bb1)
+
+running 11 tests
+test validate_reject::build_refuses_and_the_finding_names_the_node ... ok
+test inspect_plan::inspect_and_simulate_a_finite_plan ... ok
+test unknown_recovery::recovery_uses_the_recorded_identity_after_an_unknown_outcome ... ok
+test current_thread_start::a_current_thread_runtime_starts_a_finite_plan ... ok
+test components::repeated_component_mounts_bind_independent_inputs ... ok
+test simple_hold::a_plan_is_built_once_and_started_with_two_requests ... ok
+test fail_and_release::a_fault_still_runs_the_release_graph ... ok
+test resident_service::a_resident_service_recovers_then_stops ... ok
+test spawn_child::a_service_spawns_a_child_that_releases_before_the_import ... ok
+test blocking_pipeline::a_blocking_step_runs_on_a_declared_pool ... ok
+test readme_cleanup::cleans_up_after_success_and_failure ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/improvement_components.rs (target/debug/deps/improvement_components-86c83bb141aa7fd3)
+
+running 7 tests
+test missing_formal_bindings_and_foreign_input_fail_parent_build ... ok
+test sibling_mount_pools_admit_independently ... ok
+test unit_input_is_a_regular_explicit_mount_binding ... ok
+test same_formal_port_definition_binds_in_different_parents ... ok
+test typed_repeated_mounts_and_concurrent_runs_are_independent ... ok
+test nested_repeated_mounts_resolve_captured_template_handles_locally ... ok
+test resource_input_and_formal_import_remain_alive_through_each_mount_cleanup ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/improvement_integration.rs (target/debug/deps/improvement_integration-b400d35398d3e22c)
+
+running 1 test
+test mounted_unknown_recovery_keeps_each_identity_and_parent_lifetime_across_runs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/monte_carlo.rs (target/debug/deps/monte_carlo-6e69a6c621cb6d36)
+
+running 1 test
+test monte_carlo_on_the_adapter ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/raii_release_order.rs (target/debug/deps/raii_release_order-522483f2accffb0e)
+
+running 6 tests
+test raii_dependent_is_actually_dropped_before_parent_release ... ok
+test explicit_caller_clone_can_outlive_declared_raii_cleanup ... ok
+test nested_resident_component_exports_are_disposed_before_parent_cleanup ... ok
+test repeated_static_input_and_formal_import_aliases_do_not_delay_drop ... ok
+test destructor_panic_is_a_cleanup_failure_and_upstream_cleanup_continues ... ok
+test dynamic_instances_dispose_only_their_own_nested_aliases ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/review_edges.rs (target/debug/deps/review_edges-c93bbc6dad5708e5)
+
+running 4 tests
+test s01_ready_on_a_refused_plan_answers_with_the_refusal ... ok
+test s06_error_after_registration_preserves_the_first_obligation ... ok
+test s03_a_runtime_dropped_under_the_drainer_is_reported_in_both_orders ... ok
+test s04_a_blocking_cleanup_abandoned_at_the_budget_stays_tracked ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running tests/review_observer.rs (target/debug/deps/review_observer-73c560c52a160513)
+
+running 2 tests
+test s05_an_observer_panic_in_report_still_delivers_the_report ... ok
+test s02_an_observer_panic_in_event_does_not_kill_the_driver ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/root_input.rs (target/debug/deps/root_input-c288708c69bd4388)
+
+running 4 tests
+test a_plan_with_no_input_is_started_with_unit ... ok
+test a_spawned_instance_body_receives_the_input_cx_spawn_was_given ... ok
+test i04_one_plan_two_runs_each_with_its_own_typed_input ... ok
+test many_concurrent_runs_each_keep_their_own_input ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/safety_factories.rs (target/debug/deps/safety_factories-aaa6b1bdf337cf13)
+
+running 2 tests
+test panic_in_acquisition_factory_after_hold_keeps_obligation ... ok
+test cleanup_factory_panic_is_reported_and_upstream_cleanup_runs ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/safety_recovery.rs (target/debug/deps/safety_recovery-9688d21e4270dfe9)
+
+running 5 tests
+test known_success_receives_receipt_and_never_runs_unknown_recovery ... ok
+test identity_is_stable_across_retries_and_compensation_gets_the_real_receipt ... ok
+test concurrent_cancellation_recovers_each_persistent_operation_after_join ... ok
+test unknown_outcome_uses_identity_without_a_receipt ... ok
+test unresolved_recovery_preserves_uncertainty_and_failure ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/service_recovery.rs (target/debug/deps/service_recovery-43d472c518c5517e)
+
+running 7 tests
+test terminal_service_ends_after_its_serving_episode_completes ... ok
+test restart_exhaustion_reports_the_last_episode_and_does_not_reinitialize ... ok
+test shutdown_interrupts_restart_backoff_without_starting_another_episode ... ok
+test readiness_stays_latched_while_serving_recovers ... ok
+test startup_retry_counts_initialization_attempts_not_serving_episodes ... ok
+test initialization_publishes_one_stable_handle_across_serving_episodes ... ok
+test synchronous_initialize_and_serve_factory_panics_are_reported ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/spike.rs (target/debug/deps/spike-aae95b9bf29f9ed6)
+
+running 1 test
+test s01_the_spike_holds_under_random_cancellation_and_panics ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/substrate.rs (target/debug/deps/substrate-02277f1081878b15)
+
+running 4 tests
+test r04_a_declared_pool_bounds_the_blocking_steps_and_the_bound_is_measured ... ok
+test r06_panics_in_a_body_and_in_a_release_are_recorded_never_re_raised ... ok
+test r05_a_blocking_within_does_not_oversubscribe_its_pool ... ok
+test r07_concurrent_runs_of_one_plan_share_no_slots_and_no_pools ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+   Doc-tests sdax
+
+running 23 tests
+test crates/sdax/src/compile_fail.rs - compile_fail (line 17) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 246) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 214) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 193) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 266) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 254) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 135) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 150) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 175) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 109) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 230) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 162) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 31) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 303) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 291) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 76) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 315) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 327) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 278) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 49) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 64) - compile fail ... ok
+test crates/sdax/src/compile_fail.rs - compile_fail (line 95) - compile fail ... ok
+test crates/sdax/src/lib.rs - (line 32) ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.77s
+
+   Doc-tests sdax_testkit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sdax_tokio
+
+running 1 test
+test crates/sdax-tokio/src/lib.rs - TokioRuntime::new (line 93) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+

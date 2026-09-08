@@ -309,9 +309,10 @@ impl<Out, In> PlanBuilder<Out, In> {
             child.nodes[key.idx as usize].source = input.source();
         }
         decl.needs = child.imports();
-        decl.child = Some(Arc::new(child.clone()));
+        let export = child.export;
+        decl.child = Some(Arc::new(child));
         decl.attrs.release = crate::plan::ReleaseStyle::Inner;
-        let value = match child.export {
+        let value = match export {
             None => ReadyValue::Unit,
             Some(source) => ReadyValue::Export {
                 source,

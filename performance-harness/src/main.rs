@@ -1,12 +1,13 @@
 mod alloc;
 mod fixtures;
 mod measure;
+mod tokio_lifecycle;
 
 use fixtures::*;
 use measure::{allocated, timed, Sample};
 use sdax::host::engine::{Effect, Event, Machine};
 use sdax::host::{bodies_of_with_input, Observer};
-use sdax::{Outcome, Plan};
+use sdax::{Outcome, Phase, Plan, TraceKind};
 use sdax_tokio::{PlanStart, TokioRuntime};
 use std::collections::VecDeque;
 use std::future::Future;
@@ -37,13 +38,40 @@ fn main() {
             };
             measure::write_csv(&bench(cfg));
         }
+        Some("allocation-probe") => allocation_probe(),
         Some("resident-probe") => resident_probe(value(&args, "--seconds", 10)),
         _ => {
             eprintln!(
-                "usage: sdax-performance-harness verify | bench [--samples N] [--warmup N] [--build-samples N] | resident-probe [--seconds N]"
+                "usage: sdax-performance-harness verify | bench [--samples N] [--warmup N] [--build-samples N] | allocation-probe | resident-probe [--seconds N]"
             );
             std::process::exit(2);
         }
+    }
+}
+
+fn allocation_probe() {
+    println!("workload,mounts,allocations,allocated_bytes,checksum");
+    for mounts in [2, 10, 100] {
+        let releases = Arc::new(AtomicU64::new(0));
+        let capture = || {
+            allocated(|| {
+                let plan = repeated_resource_components(mounts, releases.clone());
+                let checksum = plan.name().len() as u64;
+                (plan, checksum)
+            })
+        };
+        let expected = capture();
+        for _ in 1..5 {
+            assert_eq!(
+                capture(),
+                expected,
+                "allocation probe must be deterministic"
+            );
+        }
+        println!(
+            "component_repeated_resource,{mounts},{},{},{}",
+            expected.0, expected.1, expected.2
+        );
     }
 }
 
@@ -78,6 +106,9 @@ fn verify() {
     let executor = runtime();
     let rt = adapter(&executor, None);
 
+    tokio_lifecycle::verify(&executor);
+    eprintln!("fixture verification: handwritten Tokio lifecycle comparator ok");
+
     for shape in [Shape::Chain, Shape::Wide, Shape::Sparse] {
         let spec = GraphSpec::generate(shape, 10);
         let plan = graph(&spec, false);
@@ -89,18 +120,51 @@ fn verify() {
     eprintln!("fixture verification: graphs ok");
 
     let releases = Arc::new(AtomicU64::new(0));
+    let plan = tiny_resource(releases.clone(), false);
+    let (report, _) = run_finite(&executor, rt.clone(), &plan, 41);
+    assert_eq!(report.outcome, Outcome::Ok);
+    assert_eq!(report.output.as_deref(), Some(&42));
+    assert!(report.is_clean(), "{report}");
+    assert_eq!(releases.load(Ordering::Acquire), 1);
+    eprintln!("fixture verification: normal resource release ok");
+
+    let releases = Arc::new(AtomicU64::new(0));
     let plan = startup_failure(releases.clone());
-    let (report, _) = run_finite(&executor, rt.clone(), &plan, 1);
+    let (report, _) = run_finite(&executor, rt.clone(), &plan, 41);
     assert_eq!(report.outcome, Outcome::Failed);
+    assert_eq!(report.output, None);
+    assert_eq!(report.faults.len(), 1);
+    assert_eq!(report.faults[0].node.leaf(), "failed");
+    assert_eq!(report.faults[0].phase, Phase::Run);
+    assert_eq!(report.faults[0].kind.to_string(), "fixture startup failure");
+    assert!(report.cleanup_failures.is_empty());
     assert_eq!(releases.load(Ordering::Acquire), 1);
     eprintln!("fixture verification: startup failure ok");
 
     let downstream = Arc::new(AtomicU64::new(0));
     let upstream = Arc::new(AtomicU64::new(0));
     let plan = cleanup_error_keeps_upstream(downstream.clone(), upstream.clone());
-    let (report, _) = run_finite(&executor, rt.clone(), &plan, 1);
+    let (report, _) = run_finite(&executor, rt.clone(), &plan, 41);
     assert_eq!(report.outcome, Outcome::Ok);
+    assert_eq!(report.output.as_deref(), Some(&41));
+    assert!(report.faults.is_empty());
     assert_eq!(report.cleanup_failures.len(), 1);
+    assert_eq!(report.cleanup_failures[0].node.leaf(), "downstream");
+    assert_eq!(report.cleanup_failures[0].phase, Phase::ReleaseBody);
+    assert_eq!(
+        report.cleanup_failures[0].kind.to_string(),
+        "fixture downstream release failure"
+    );
+    let release_order: Vec<_> = report
+        .trace
+        .as_ref()
+        .expect("full trace")
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, TraceKind::ReleaseStart))
+        .map(|event| event.node.as_ref().expect("release node").leaf())
+        .collect();
+    assert_eq!(release_order, ["downstream", "upstream"]);
     assert_eq!(downstream.load(Ordering::Acquire), 1);
     assert_eq!(upstream.load(Ordering::Acquire), 1);
     eprintln!("fixture verification: cleanup failure ok");
@@ -114,6 +178,9 @@ fn verify() {
         await_cancel_after(running, handle, acquired.clone(), 1).await
     });
     assert_eq!(report.outcome, Outcome::Cancelled);
+    assert_eq!(report.output, None);
+    assert!(report.faults.is_empty());
+    assert!(report.cleanup_failures.is_empty());
     assert_eq!(released.load(Ordering::Acquire), 1);
     eprintln!("fixture verification: cancellation ok");
 
@@ -142,6 +209,16 @@ fn verify() {
     assert_eq!(report.output.as_deref(), Some(&15));
     assert!(report.is_clean(), "{report}");
     eprintln!("fixture verification: repeated typed components ok");
+
+    let releases = Arc::new(AtomicU64::new(0));
+    let plan = repeated_resource_components(10, releases.clone());
+    for (run, input) in [5, 17].into_iter().enumerate() {
+        let (report, _) = run_finite(&executor, rt.clone(), &plan, input);
+        assert_eq!(report.output.as_deref(), Some(&(input + 10)));
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(releases.load(Ordering::Acquire), (run as u64 + 1) * 10);
+    }
+    eprintln!("fixture verification: repeated resource components cleanup ok");
 
     for resolves in [true, false] {
         let started = Arc::new(AtomicU64::new(0));

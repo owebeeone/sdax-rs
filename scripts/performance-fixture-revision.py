@@ -14,6 +14,7 @@ FILES = (
     "src/fixtures.rs",
     "src/main.rs",
     "src/measure.rs",
+    "src/tokio_lifecycle.rs",
 )
 
 
