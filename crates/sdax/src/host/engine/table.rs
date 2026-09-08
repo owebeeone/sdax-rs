@@ -23,9 +23,11 @@ use crate::key::RawKey;
 use crate::plan::{next_plan_id, Attrs, Kind, NodeDecl, PlanIr, PoolDecl};
 use crate::policy::{Mode, Policy, Shutdown};
 use crate::view::NodePath;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// One node of the run.
+#[derive(Clone)]
 pub(super) struct Node {
     /// This node's identity within the run. Unique: an instance's nodes are
     /// re-keyed, so two instances of one template never share a key.
@@ -64,8 +66,11 @@ pub(super) struct Node {
 
 /// One scope of the run: the root plan, a component's inner plan, or one
 /// instance of a template.
+#[derive(Clone)]
 pub(super) struct Scope {
     pub name: String,
+    pub origin: u64,
+    pub mounted: u64,
     pub policy: Policy,
     pub shutdown: Shutdown,
     pub mode: Mode,
@@ -87,19 +92,44 @@ pub(super) struct Scope {
 }
 
 /// The whole run, flattened.
-pub(super) struct Table {
-    pub nodes: Vec<Node>,
-    pub scopes: Vec<Scope>,
+#[derive(Clone)]
+pub(crate) struct Table {
+    pub(super) nodes: Vec<Node>,
+    pub(super) scopes: Vec<Scope>,
     /// The static graph's key lookup, in flatten order.
     pub map: Vec<(RawKey, usize)>,
+    /// Direct declaration-index lookup within each uniquely keyed run scope.
+    index: RunIndex,
+}
+
+/// Static topology pays this cost once at plan build. Instance scopes are
+/// appended and indexed when instantiated, so their cost remains per instance.
+/// Lookup depends on scope count, not the number of nodes in a scope.
+#[derive(Clone, Default)]
+struct RunIndex(BTreeMap<u64, Vec<usize>>);
+
+impl RunIndex {
+    fn add_scope(&mut self, plan: u64, declarations: usize) {
+        self.0.insert(plan, vec![usize::MAX; declarations]);
+    }
+
+    fn insert(&mut self, key: RawKey, flat: usize) {
+        self.0.get_mut(&key.plan).expect("indexed scope")[key.idx as usize] = flat;
+    }
+
+    fn get(&self, key: RawKey) -> Option<usize> {
+        self.0
+            .get(&key.plan)?
+            .get(key.idx as usize)
+            .copied()
+            .filter(|&flat| flat != usize::MAX)
+    }
 }
 
 /// The state one flatten pass threads through the tree.
 struct Pass<'a> {
     /// Key lookup, searched from the end.
     map: Vec<(RawKey, usize)>,
-    /// Plans already flattened, so one child plan used twice is refused.
-    seen: Vec<(u64, NodePath)>,
     /// `Some(id)` while flattening an instance: every scope made is that
     /// instance's, and every key is re-minted.
     instance: Option<InstanceId>,
@@ -119,51 +149,11 @@ fn lookup(map: &[(RawKey, usize)], k: RawKey) -> Option<usize> {
     map.iter().rev().find(|(key, _)| *key == k).map(|(_, i)| *i)
 }
 
-/// Whether the caller starting this run supplies the plan's per-run input.
-///
-/// The declaration alone cannot say: one plan value is both a root a caller
-/// starts with `start(rt, input)` and a template `cx.spawn` instantiates. What
-/// decides is the entry point, so the entry point is what tells the table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RootInput {
-    /// A value is in the run's slot for the input node before the first body
-    /// is built, so a need on it is already satisfied.
-    Supplied,
-    /// Nobody supplies one: a plan that declares an input is refused, because
-    /// the node that needs it could never be satisfied.
-    Absent,
-}
-
-/// Check the entire declaration tree before admission, including templates
-/// that may never be instantiated. Only a template registration supplies its
-/// child's declared input; a component never does, even for an unused `()`.
-fn check_component_inputs(ir: &PlanIr, prefix: &NodePath) -> Result<(), EngineError> {
-    for node in &ir.nodes {
-        let Some(child) = &node.child else { continue };
-        let path = path_of(prefix, node);
-        if node.kind == Kind::Component {
-            if let Some(input) = child.nodes.iter().find(|n| n.kind == Kind::Input) {
-                return Err(EngineError::TemplateAsScope(path.child(&input.name)));
-            }
-        }
-        check_component_inputs(child, &path)?;
-    }
-    Ok(())
-}
-
 impl Table {
-    /// Flatten a root plan. Refuses a plan whose declared input nothing
-    /// supplies a value for ([`RootInput::Absent`]), a root with unresolved
-    /// imports (`L-IMPORTS`), and one child plan used as two components: the
-    /// engine addresses a *declaration* by [`RawKey`], which a plan used twice
-    /// cannot keep unique. Also refuses declared component inputs throughout
-    /// the declaration tree, including uninstantiated templates.
-    pub fn build(ir: &PlanIr, input: RootInput) -> Result<Table, EngineError> {
-        if input == RootInput::Absent {
-            if let Some(n) = ir.nodes.iter().find(|n| n.kind == Kind::Input) {
-                return Err(EngineError::TemplateAsScope(NodePath::root(&n.name)));
-            }
-        }
+    /// Prepare the immutable static topology at build time. A definition
+    /// with parent imports is not root-startable until mounted; its parent's
+    /// build resolves those edges into the complete topology.
+    pub(super) fn build(ir: &PlanIr) -> Result<Table, EngineError> {
         let imports: Vec<NodePath> = ir
             .nodes
             .iter()
@@ -173,16 +163,15 @@ impl Table {
         if !imports.is_empty() {
             return Err(EngineError::UnresolvedImports(imports));
         }
-        check_component_inputs(ir, &NodePath::default())?;
         let mut t = Table {
             nodes: Vec::new(),
             scopes: Vec::new(),
             map: Vec::new(),
+            index: RunIndex::default(),
         };
         let mut added = Vec::new();
         let mut pass = Pass {
             map: Vec::new(),
-            seen: Vec::new(),
             instance: None,
             added: &mut added,
         };
@@ -226,6 +215,15 @@ impl Table {
 
     /// The flat index of a template a node named, resolved in its own scope.
     pub fn template_in(&self, scope: usize, decl: RawKey) -> Option<usize> {
+        let s = &self.scopes[scope];
+        let decl = if decl.plan == s.origin {
+            RawKey {
+                plan: s.mounted,
+                idx: decl.idx,
+            }
+        } else {
+            decl
+        };
         lookup(self.map_of(scope), decl).filter(|&i| self.nodes[i].kind == Kind::Template)
     }
 
@@ -248,7 +246,6 @@ impl Table {
         let mut added = Vec::new();
         let mut pass = Pass {
             map: self.map_of(parent).to_vec(),
-            seen: Vec::new(),
             instance: Some(id),
             added: &mut added,
         };
@@ -272,14 +269,6 @@ impl Table {
         steps: Vec<(u32, Option<InstanceId>)>,
         pass: &mut Pass<'_>,
     ) -> Result<(), EngineError> {
-        if let Some((_, first)) = pass.seen.iter().find(|(id, _)| *id == ir.id) {
-            return Err(EngineError::DuplicateComponent {
-                plan: ir.name.clone(),
-                first: first.clone(),
-                second: prefix,
-            });
-        }
-        pass.seen.push((ir.id, prefix.clone()));
         let scope = self.scopes.len();
         // An instance re-keys its nodes, so one plan identity per scope keeps
         // every key of the run unique without touching the declaration.
@@ -287,8 +276,11 @@ impl Table {
             Some(_) => next_plan_id(),
             None => ir.id,
         };
+        self.index.add_scope(plan_id, ir.nodes.len());
         self.scopes.push(Scope {
             name: ir.name.clone(),
+            origin: ir.origin,
+            mounted: ir.id,
             policy: ir.policy,
             shutdown: ir.shutdown,
             mode: ir.mode,
@@ -307,7 +299,7 @@ impl Table {
         // it.
         let mut pos: u32 = 0;
         for n in &ir.nodes {
-            if n.kind == Kind::Import {
+            if n.kind == Kind::Import || (n.kind == Kind::Input && n.source.is_some()) {
                 // The parent key this import stands for is already flat.
                 if let Some(src) = n.source.and_then(|s| lookup(&pass.map, s)) {
                     pass.map.push((n.key, src));
@@ -355,6 +347,7 @@ impl Table {
                 pool: n.attrs.limit.or(n.attrs.pool).map(|p| p.index() as usize),
                 attrs: n.attrs.clone(),
             });
+            self.index.insert(self.nodes[idx].key, idx);
             self.scopes[scope].nodes.push(idx);
             pass.added.push(idx);
             pass.map.push((n.key, idx));
@@ -381,7 +374,7 @@ impl Table {
 
     /// The flat index behind a run key.
     pub fn index_of(&self, key: RawKey) -> Option<usize> {
-        self.nodes.iter().position(|n| n.key == key)
+        self.index.get(key)
     }
 
     /// The flat index behind a path, in the static graph.
@@ -394,3 +387,7 @@ impl Table {
             .position(|n| n.instance.is_none() && n.path == *path)
     }
 }
+
+#[cfg(test)]
+#[path = "table_index_tests.rs"]
+mod index_tests;

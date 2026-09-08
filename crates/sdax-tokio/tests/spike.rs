@@ -14,7 +14,7 @@
 //! 4. **bounded shutdown** — INV-8, exact because the clock is paused.
 //!
 //! The bodies here are the plan's own: nothing is scripted, so this is the
-//! whole path — `Deps::fetch`, `cx.hold`, `Serving`, the release graph.
+//! whole path — `Deps::fetch`, `cx.hold`, service initialization, the release graph.
 
 use sdax::host::engine::Machine;
 use sdax::host::Observer;
@@ -120,18 +120,23 @@ fn mesh(inj: Injected, led: Arc<Ledger>) -> Plan {
             Ok(())
         },
     );
+    let serving_marks = l5.clone();
     p.service("Heartbeat")
         .needs(routing)
         .stop_within(secs(2))
-        .start(move |cx, _r: Arc<()>| {
+        .initialize(move |_cx, _r: Arc<()>| {
             let l = l5.clone();
             async move {
                 l.serving.fetch_add(1, Ordering::SeqCst);
-                Ok(Serving::new(Handle, async move {
-                    cx.stop().await;
-                    l.stopped.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }))
+                Ok(Handle)
+            }
+        })
+        .serve(move |cx, _handle| {
+            let l = serving_marks.clone();
+            async move {
+                cx.stop().await;
+                l.stopped.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
         });
     p.build(Policy::FailFast, Shutdown::within(secs(5)), Mode::Resident)
@@ -166,7 +171,6 @@ fn rebuild(kind: &FaultKind) -> FaultKind {
         FaultKind::Error(e) => FaultKind::Error(Box::new(Rebuilt(e.to_string()))),
         FaultKind::Panic(_) => FaultKind::Panic(Box::new(SCRIPTED)),
         FaultKind::Timeout => FaultKind::Timeout,
-        FaultKind::NeverReady => FaultKind::NeverReady,
         FaultKind::DoubleHold => FaultKind::DoubleHold,
     }
 }

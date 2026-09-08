@@ -1,6 +1,5 @@
-//! Every component input needs a supplier; declaring unit is not supplying it.
-use sdax::host::engine::{EngineError, Machine};
-use sdax::host::sim::ScriptError;
+//! Explicit unit bindings work at every static and dynamic boundary.
+use sdax::host::engine::Machine;
 use sdax::*;
 use sdax_tokio::{PlanStart, TokioRuntime};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,14 +10,14 @@ fn budget() -> Shutdown {
     Shutdown::within(Duration::from_secs(5))
 }
 
-fn invalid_plan(
+fn bound_plan(
     template_constructor: bool,
     used: bool,
     placement: u8,
     calls: Arc<AtomicUsize>,
 ) -> (Plan<()>, String) {
     let mut bad = if template_constructor {
-        Plan::template::<()>("bad")
+        Plan::builder("bad")
     } else {
         Plan::with_input::<()>("bad")
     };
@@ -40,26 +39,26 @@ fn invalid_plan(
         .release(|_, _| async { Ok(()) });
     let path = match placement {
         0 => {
-            root.component("Bad", &bad);
+            root.component("Bad", &bad, ());
             "Bad/input"
         }
         1 => {
             let mut middle = Plan::builder("middle");
-            middle.component("Bad", &bad);
+            middle.component("Bad", &bad, ());
             let middle = middle
                 .build(Policy::FailFast, budget(), Mode::Finite)
                 .unwrap();
-            root.component("Middle", &middle);
+            root.component("Middle", &middle, ());
             "Middle/Bad/input"
         }
         _ => {
-            let mut template = Plan::template::<u32>("template");
+            let mut template = Plan::with_input::<u32>("template");
             let input = template.input();
             template
                 .step("OwnInput")
                 .needs(input)
                 .run(|_, _: Arc<u32>| async { Ok(()) });
-            template.component("Bad", &bad);
+            template.component("Bad", &bad, ());
             let template = template
                 .build(Policy::FailFast, budget(), Mode::Finite)
                 .unwrap();
@@ -67,7 +66,7 @@ fn invalid_plan(
                 root.template("Factory", &template);
                 "Factory/Bad/input"
             } else {
-                let mut outer = Plan::template::<u16>("outer");
+                let mut outer = Plan::with_input::<u16>("outer");
                 outer.template("Inner", &template);
                 let outer = outer
                     .build(Policy::FailFast, budget(), Mode::Resident)
@@ -89,7 +88,7 @@ fn invalid_plan(
 }
 
 #[test]
-fn invalid_component_inputs_refuse_before_root_effects_in_every_entry_point() {
+fn explicitly_bound_unit_components_work_at_every_boundary() {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
@@ -102,28 +101,19 @@ fn invalid_component_inputs_refuse_before_root_effects_in_every_entry_point() {
         for used in [false, true] {
             for placement in 0..4 {
                 let calls = Arc::new(AtomicUsize::new(0));
-                let (plan, path) = invalid_plan(constructor, used, placement, calls.clone());
-                let expected = EngineError::TemplateAsScope(
-                    path.split('/')
-                        .fold(NodePath::default(), |prefix, segment| prefix.child(segment)),
-                );
-                assert_eq!(Machine::new(&plan).unwrap_err(), expected);
-                assert_eq!(Machine::with_input(&plan).unwrap_err(), expected);
-                assert!(matches!(plan.try_start(rt.clone(), ()), Err(e) if e == expected));
-                for simulation in [
-                    plan.simulate(&Script::new()),
-                    plan.simulate_with_input((), &Script::new()),
-                ] {
-                    assert!(matches!(simulation, Err(ScriptError::Engine(e)) if e == expected));
-                }
-                let running = plan.start(rt.clone(), ());
-                let report = executor.block_on(running);
-                assert_eq!(report.outcome, Outcome::Failed);
-                assert_eq!(report.faults.len(), 1);
-                assert!(
-                    matches!(&report.faults[0].kind, FaultKind::Error(e) if e.downcast_ref::<EngineError>() == Some(&expected))
-                );
-                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                let (plan, _) = bound_plan(constructor, used, placement, calls.clone());
+                assert!(Machine::new(&plan).is_ok());
+                assert!(Machine::with_input(&plan).is_ok());
+                let report = executor.block_on(async {
+                    let mut running = plan.try_start(rt.clone(), ()).unwrap();
+                    if placement >= 2 {
+                        running.ready().await.unwrap();
+                        running.shutdown();
+                    }
+                    running.await
+                });
+                assert_eq!(report.outcome, Outcome::Ok);
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
                 assert_eq!(rt.tracked(), 0);
             }
         }
@@ -142,15 +132,12 @@ fn supplied_unit_root_and_ordinary_component_remain_valid() {
     root.step("Input")
         .needs(input)
         .run(|_, _: Arc<()>| async { Ok(()) });
-    root.component("Child", &child);
+    root.component("Child", &child, ());
     let plan = root
         .build(Policy::FailFast, budget(), Mode::Finite)
         .unwrap();
     assert!(Machine::with_input(&plan).is_ok());
-    assert!(matches!(
-        Machine::new(&plan),
-        Err(EngineError::TemplateAsScope(_))
-    ));
+    assert!(Machine::new(&plan).is_ok());
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
@@ -166,7 +153,7 @@ fn supplied_unit_root_and_ordinary_component_remain_valid() {
 fn supplied_unit_template_input_remains_valid_at_spawn() {
     let read = Arc::new(AtomicUsize::new(0));
     let observed = read.clone();
-    let mut template = Plan::template::<()>("unit");
+    let mut template = Plan::with_input::<()>("unit");
     let input = template.input();
     template
         .step("Read")
@@ -183,11 +170,12 @@ fn supplied_unit_template_input_remains_valid_at_spawn() {
     root.service("Owner")
         .spawns(&unit)
         .stop_within(Duration::from_secs(1))
-        .start(move |cx, ()| async move {
+        .initialize(move |cx, ()| async move {
             let child = cx.spawn(&unit, ())?;
             child.ready().await?;
-            Ok(Serving::new((), async { Ok(()) }))
-        });
+            Ok(())
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let plan = root
         .build(Policy::FailFast, budget(), Mode::Resident)
         .unwrap();
@@ -228,7 +216,7 @@ fn inspection_and_independent_checker_agree_with_actual_imported_values() {
         .export(value)
         .build(Policy::FailFast, budget(), Mode::Finite)
         .unwrap();
-    let child = root.component("Child", &child);
+    let child = root.component("Child", &child, ());
     let plan = root
         .export(child)
         .build(Policy::FailFast, budget(), Mode::Finite)
@@ -256,17 +244,14 @@ fn inspection_and_independent_checker_agree_with_actual_imported_values() {
 }
 
 #[test]
-fn supplied_root_input_does_not_supply_a_components_own_unit_input() {
+fn explicit_unit_binding_is_independent_of_the_root_input_type() {
     let mut bad = Plan::with_input::<()>("bad");
     bad.step("Unused").run(|_, ()| async { Ok(()) });
     let bad = bad.build(Policy::FailFast, budget(), Mode::Finite).unwrap();
     let mut root = Plan::with_input::<u32>("root");
-    root.component("Bad", &bad);
+    root.component("Bad", &bad, ());
     let root = root
         .build(Policy::FailFast, budget(), Mode::Finite)
         .unwrap();
-    assert_eq!(
-        Machine::with_input(&root).unwrap_err(),
-        EngineError::TemplateAsScope(NodePath::root("Bad").child("input"))
-    );
+    assert!(Machine::with_input(&root).is_ok());
 }

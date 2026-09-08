@@ -10,7 +10,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 CHECKER=$(mktemp -t sdax-arch.XXXXXX)
-trap 'rm -f "$CHECKER"' EXIT
+# Retain the generated checker unless the owner requests cleanup.
 
 cat > "$CHECKER" <<'PYEOF'
 import json

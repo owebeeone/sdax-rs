@@ -170,14 +170,24 @@ fn add_one<D: Deps, In>(
             if a.terminal {
                 n = n.terminal();
             }
-            let k = n.start(|_cx, _d| async move { Ok(Serving::new(Unit, async { Ok(()) })) });
+            let k =
+                n.initialize(|_cx, _d| async move { Ok(Unit) })
+                    .serve(|cx, _handle| async move {
+                        cx.stop().await;
+                        Ok(())
+                    });
             keys.units.push((k, false));
             keys.services.push(k);
         }
         Kind::Effect => {
+            let identity = p
+                .step(&format!("{name}Operation"))
+                .run(|_, ()| async { Ok(0u64) });
             let n = common(p.effect(name).needs(deps), a)
                 .on_ambiguous(a.ambiguity)
-                .perform(|cx, _d| async move { Ok(cx.hold_value(Unit)) });
+                .identified_by(identity)
+                .perform(|cx, _d| async move { Ok(cx.hold_value(Unit)) })
+                .recover_unknown(|_, _| async { Ok(sdax::Recovery::Resolved) });
             let k = if a.persistent {
                 n.persistent()
             } else {

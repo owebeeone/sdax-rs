@@ -209,9 +209,16 @@ impl Machine {
                 self.fx.push(Effect::Release(key));
             }
             Kind::Effect => {
+                let recovery = self.slots[n].st == St::Ambiguous;
+                self.slots[n].recovering = recovery;
                 self.slots[n].st = St::Compensating;
-                self.emit(n, TraceKind::CompensateStart);
-                self.fx.push(Effect::Compensate(key));
+                if recovery {
+                    self.emit(n, TraceKind::RecoveryStart);
+                    self.fx.push(Effect::Recover(key));
+                } else {
+                    self.emit(n, TraceKind::CompensateStart);
+                    self.fx.push(Effect::Compensate(key));
+                }
             }
             Kind::Service => {
                 self.slots[n].st = St::Stopping;
@@ -301,6 +308,11 @@ impl Machine {
     }
 
     fn abandon(&mut self, n: usize) {
+        if self.slots[n].st == St::Compensating && self.slots[n].recovering {
+            self.emit(n, TraceKind::RecoveryFail(crate::FaultLabel::Timeout));
+            let fault = self.fault(n, crate::Phase::Recover, crate::FaultKind::Timeout);
+            self.cleanup_failures.push(fault);
+        }
         // A blocking body cannot be aborted (T7); a template has no task at
         // all, so an `Abort` for one would name a node the driver never
         // spawned.

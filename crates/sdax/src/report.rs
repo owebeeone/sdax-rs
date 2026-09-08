@@ -37,7 +37,7 @@ pub struct RecordOrder {
 pub enum Phase {
     /// `acquire` or `perform`.
     Prepare,
-    /// `run`, or a service's `start`.
+    /// `run`, or a service's initializer.
     Run,
     /// A service's serve future.
     Serve,
@@ -45,6 +45,8 @@ pub enum Phase {
     ReleaseBody,
     /// An effect's `compensate`.
     Compensate,
+    /// Reconciliation of an unknown effect using its recorded operation identity.
+    Recover,
     /// Stopping a service.
     Stop,
 }
@@ -57,6 +59,7 @@ impl std::fmt::Display for Phase {
             Phase::Serve => "serve",
             Phase::ReleaseBody => "release",
             Phase::Compensate => "compensate",
+            Phase::Recover => "recover",
             Phase::Stop => "stop",
         })
     }
@@ -71,8 +74,6 @@ pub enum FaultLabel {
     Panic,
     /// The body exceeded `within` or a budget.
     Timeout,
-    /// A start body dropped its context without returning `Serving`.
-    NeverReady,
     /// A body registered twice in one attempt.
     DoubleHold,
 }
@@ -86,8 +87,6 @@ pub enum FaultKind {
     Panic(Box<dyn std::any::Any + Send>),
     /// The body exceeded `within` or the remaining budget.
     Timeout,
-    /// A start body returned without a `Serving`.
-    NeverReady,
     /// A body called `hold` more than once in one attempt.
     DoubleHold,
 }
@@ -99,8 +98,46 @@ impl FaultKind {
             FaultKind::Error(_) => FaultLabel::Error,
             FaultKind::Panic(_) => FaultLabel::Panic,
             FaultKind::Timeout => FaultLabel::Timeout,
-            FaultKind::NeverReady => FaultLabel::NeverReady,
             FaultKind::DoubleHold => FaultLabel::DoubleHold,
+        }
+    }
+}
+
+impl std::fmt::Display for FaultKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Error(error) => {
+                write!(f, "{error}")?;
+                let mut source = error.source();
+                // User-defined Error::source can cycle. Bound formatting only;
+                // the original typed error and its sources remain in the report.
+                for _ in 0..16 {
+                    match source {
+                        Some(cause) => {
+                            write!(f, ": {cause}")?;
+                            source = cause.source();
+                        }
+                        None => return Ok(()),
+                    }
+                }
+                if source.is_some() {
+                    f.write_str(": [further error sources omitted]")?;
+                }
+                Ok(())
+            }
+            Self::Panic(payload) => {
+                if let Some(message) = payload.downcast_ref::<String>() {
+                    write!(f, "panic: {message}")
+                } else if let Some(message) = payload.downcast_ref::<&str>() {
+                    write!(f, "panic: {message}")
+                } else {
+                    f.write_str("panic (non-text payload retained in report)")
+                }
+            }
+            Self::Timeout => f.write_str("timeout: inspect the node deadline and shutdown budget"),
+            Self::DoubleHold => {
+                f.write_str("acquisition capability already used; declare separate resource nodes")
+            }
         }
     }
 }
@@ -195,6 +232,12 @@ pub enum TraceKind {
     CompensateOk,
     /// A compensation failed.
     CompensateFail(FaultLabel),
+    /// Unknown-outcome recovery started after the attempt joined.
+    RecoveryStart,
+    /// Recovery resolved the original uncertainty.
+    RecoveryOk,
+    /// Recovery failed or still cannot determine the external outcome.
+    RecoveryFail(FaultLabel),
     /// A template instance was created.
     InstanceSpawned(InstanceId),
     /// A template instance ended.
@@ -359,7 +402,7 @@ impl<Out> std::fmt::Display for Report<Out> {
             ("cleanup_failures", &self.cleanup_failures),
         ] {
             for x in list.iter() {
-                writeln!(f, "{label}: {} ({}) {:?}", x.node, x.phase, x.kind.label())?;
+                writeln!(f, "{label}: {} ({}) {}", x.node, x.phase, x.kind)?;
             }
         }
         for (label, list) in [

@@ -187,7 +187,7 @@ fn missing_component_export<T: Default + Send + Sync + 'static>() {
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .unwrap();
     let mut parent = Plan::builder("Parent");
-    let component = parent.component("child", &child);
+    let component = parent.component("child", &child, ());
     let consumed = Arc::new(Mutex::new(false));
     let count = consumed.clone();
     parent
@@ -200,7 +200,12 @@ fn missing_component_export<T: Default + Send + Sync + 'static>() {
     let plan = parent
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .unwrap();
-    let (report, record, calls) = drive(&plan, None, Some(value.raw()));
+    let mounted_value = sdax::host::engine::Machine::declarations(&plan)
+        .into_iter()
+        .find(|(_, path, _)| *path == *"child/value")
+        .unwrap()
+        .0;
+    let (report, record, calls) = drive(&plan, None, Some(mounted_value));
     assert_eq!(report.outcome, Outcome::Failed);
     assert_eq!(calls, [component.raw()]);
     assert!(!*consumed.lock().unwrap());

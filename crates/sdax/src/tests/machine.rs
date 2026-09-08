@@ -391,7 +391,7 @@ fn f10_a_body_outcome_for_a_component_or_a_join_is_refused() {
     let a = p.step("A").run(|_cx, ()| async move { Ok(()) });
     let b = p.step("B").run(|_cx, ()| async move { Ok(()) });
     p.join("J", (a, b));
-    p.component("C", &child);
+    p.component("C", &child, ());
     let plan = p
         .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
         .expect("valid");

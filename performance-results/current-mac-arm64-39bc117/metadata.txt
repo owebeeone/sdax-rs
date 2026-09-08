@@ -1,0 +1,17 @@
+measurement_kind=current
+source_commit=bdea94200ae743fc94ea76987cfd4f6927e0ff8d
+source_revision=39bc1174d8a3dc276716adc9bab91fa2a4d0a104adfa9dcb62f7cd81fe4f7d54
+fixture_revision=72474da50b3369460370ad60601d182837d89efcb494067616e5f803ebfef21a
+harness_dir=performance-harness
+captured_utc=2026-09-08T06:25:24Z
+hostname=Giannis-MacBook-Pro.local
+uname=Darwin Giannis-MacBook-Pro.local 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:16:36 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6030 arm64
+rustc=rustc 1.96.0 (ac68faa20 2026-05-25);binary: rustc;commit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96;commit-date: 2026-05-25;host: aarch64-apple-darwin;release: 1.96.0;LLVM version: 22.1.2;
+cargo=cargo 1.96.0 (30a34c682 2026-05-25)
+profile=release(codegen-units=1,lto=thin)
+runtime=tokio-current-thread
+workers=1
+warmup=8
+timed_samples=40
+build_samples=20
+trace=per-workload(default-or-counting-observer)

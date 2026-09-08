@@ -32,8 +32,8 @@ pub(crate) fn empty(c: &mut Ctx<'_>) {
 
 /// `V-FOREIGN-KEY`: for every node N, every key in `needs(N)`, `exclusive(N)`,
 /// `shared(N)` and `spawns(N)`, and every pool N names, must belong to this
-/// plan. An `Import` node's source is exempt: naming a parent key is what an
-/// import is for.
+/// plan. The exported key must resolve to a declaration in this plan as well.
+/// An `Import` node's source is exempt: naming a parent key is what an import is for.
 ///
 /// A late `spawns(key, &template)` whose key is not a node of this plan is the
 /// same mistake reached another way: the builder records it in
@@ -91,6 +91,15 @@ pub(crate) fn foreign_key(c: &mut Ctx<'_>) {
                 key.plan, key.idx, key.plan, id
             ),
         ));
+    }
+    if let Some(key) = c.ir.export.filter(|key| c.ir.node(*key).is_none()) {
+        c.add(
+            Rule::ForeignKey,
+            vec!["export".to_string()],
+            vec![key],
+            format!("plan {:?} exports key {}/{}, which is not a declaration in this plan ({})", c.ir.name, key.plan, key.idx, id),
+            "export a key declared in this plan; mount a child and export its component key instead",
+        );
     }
     for (node, key, detail) in findings {
         c.add(
@@ -226,22 +235,39 @@ pub(crate) fn import_scope(c: &mut Ctx<'_>) {
         if !matches!(n.kind, Kind::Component | Kind::Template) {
             continue;
         }
+        if let Some(child) = &n.child {
+            for port in child
+                .nodes
+                .iter()
+                .filter(|p| p.kind == Kind::Import && p.source.is_none())
+            {
+                findings.push((format!("{}/{}", n.name, port.name), port.key, true));
+            }
+        }
         for k in &n.needs {
-            if k.plan != id {
-                findings.push((n.name.clone(), *k));
+            if k.plan != id || c.ir.node(*k).is_none() {
+                findings.push((n.name.clone(), *k, false));
             }
         }
     }
-    for (child, key) in findings {
+    for (child, key, unbound) in findings {
         c.add(
             Rule::ImportScope,
             vec![child.clone()],
             vec![key],
-            format!(
-                "child plan {child:?} imports key {}/{}, which plan {} does not own",
-                key.plan, key.idx, id
-            ),
-            "import the key at this level first, then pass this plan's key to the child",
+            if unbound {
+                format!("child port {child:?} has no binding")
+            } else {
+                format!(
+                    "child plan {child:?} imports key {}/{}, which plan {} does not own",
+                    key.plan, key.idx, id
+                )
+            },
+            if unbound {
+                "bind the formal port with `plan.bind(port, parent_key)` before mounting"
+            } else {
+                "import the key at this level first, then pass this plan's key to the child"
+            },
         );
     }
 }
@@ -250,7 +276,7 @@ pub(crate) fn import_scope(c: &mut Ctx<'_>) {
 /// `spawns(S)`, no key T imports may be S itself.
 ///
 /// T's instances would wait for S to be `Ready`, and S is ready only when its
-/// start body returns — which, if it awaits `Child::ready()`, waits for the
+/// initializer returns — which, if it awaits `Child::ready()`, waits for the
 /// instance. Neither side can move.
 pub(crate) fn spawn_self_import(c: &mut Ctx<'_>) {
     let mut findings = Vec::new();
@@ -371,34 +397,97 @@ pub(crate) fn blocking_cancel(c: &mut Ctx<'_>) {
     }
 }
 
-/// `V-PERSIST-AMBIG`: `on_ambiguous(Compensate)` on a `persistent` effect.
-///
-/// Decision procedure: a node whose `release` is `ReleaseStyle::Persistent` and
-/// whose `on_ambiguous` is `Ambiguity::Compensate` is a finding.
-///
-/// `persistent` says the record stands and is never compensated, and the engine
-/// honours that over the ambiguity policy (`OD-PERSIST-AMBIG`). The pair is
-/// therefore two declarations that cancel out, and
-/// `V-IDEMPOTENT-REQUIRED` then obliges the author to assert the idempotency of
-/// a compensation that can never run.
+/// `V-RECOVERY-MISSING`: explicit recovery requires typed identity and handler.
+/// Decision procedure: every Recover effect without its recovery terminal is a finding.
 pub(crate) fn persist_ambig(c: &mut Ctx<'_>) {
     let names: Vec<String> =
         c.ir.nodes
             .iter()
             .filter(|n| {
-                n.attrs.release == crate::plan::ReleaseStyle::Persistent
-                    && n.attrs.on_ambiguous == Some(crate::policy::Ambiguity::Compensate)
+                n.attrs.on_ambiguous == Some(crate::policy::Ambiguity::Recover) && !n.attrs.recovery
             })
             .map(|n| n.name.clone())
             .collect();
     for node in names {
+        c.add(Rule::RecoveryMissing, vec![node.clone()], Vec::new(),
+            format!("effect {node:?} requests recovery without a typed identity and handler"),
+            "bind an operation key with `.identified_by(key)` and install `.recover_unknown(handler)`");
+    }
+}
+
+/// `V-LIVE-EXPORT`: reject direct capability outputs from finite scopes.
+/// A step may still return arbitrary user data; this is not a proof that such
+/// data contains no cloned handle. Resident component outputs remain usable
+/// within their parent's dependency lifetime.
+pub(crate) fn live_export(c: &mut Ctx<'_>) {
+    if c.ir.mode != crate::policy::Mode::Finite {
+        return;
+    }
+    if let Some(node) = c.ir.export.and_then(|key| c.ir.node(key)) {
+        if exports_live_capability(c.ir, node.key, &mut Vec::new()) {
+            c.add(Rule::LiveExport, vec![node.name.clone()], vec![node.key],
+                format!("finite plan exports live capability {:?} after its cleanup", node.name),
+                "export completed data from a step; use a resident scope for a live component handle");
+        }
+    }
+}
+
+// Follow declaration-level forwarding only. User step outputs are opaque data.
+fn exports_live_capability(
+    root: &crate::plan::PlanIr,
+    key: RawKey,
+    seen: &mut Vec<RawKey>,
+) -> bool {
+    if seen.contains(&key) {
+        return false;
+    }
+    seen.push(key);
+    fn find(ir: &crate::plan::PlanIr, key: RawKey) -> Option<&crate::plan::NodeDecl> {
+        ir.node(key).or_else(|| {
+            ir.nodes
+                .iter()
+                .filter_map(|n| n.child.as_ref())
+                .find_map(|child| find(child, key))
+        })
+    }
+    match find(root, key) {
+        Some(node) => match node.kind {
+            Kind::Resource | Kind::Service => true,
+            Kind::Component => node
+                .child
+                .as_ref()
+                .and_then(|child| child.export)
+                .map(|export| exports_live_capability(root, export, seen))
+                .unwrap_or(false),
+            Kind::Import | Kind::Input => node
+                .source
+                .map(|source| exports_live_capability(root, source, seen))
+                .unwrap_or(false),
+            _ => false,
+        },
+        None => false,
+    }
+}
+
+/// `V-BLOCKING-LIMIT`: a blocking body has exactly one execution-pool contract.
+/// Reject a declaration containing both `on(pool)` and `limit(pool)` instead
+/// of silently letting the general limit override the execution pool.
+pub(crate) fn blocking_limit(c: &mut Ctx<'_>) {
+    let nodes: Vec<_> =
+        c.ir.nodes
+            .iter()
+            .filter(|n| {
+                n.kind == Kind::BlockingStep && n.attrs.pool.is_some() && n.attrs.limit.is_some()
+            })
+            .map(|n| (n.name.clone(), n.key))
+            .collect();
+    for (name, key) in nodes {
         c.add(
-            Rule::PersistAmbig,
-            vec![node.clone()],
-            Vec::new(),
-            format!("persistent effect {node:?} declares `on_ambiguous(Compensate)`"),
-            "a persistent effect has nothing to compensate: use `Ambiguity::Report` or \
-             `Ambiguity::Retry`, or drop `.persistent()`",
+            Rule::BlockingLimit,
+            vec![name.clone()],
+            vec![key],
+            format!("blocking node {name:?} declares both an execution pool and a general limit"),
+            "remove `.limit(...)`; choose the blocking concurrency cap with `.on(pool)`",
         );
     }
 }

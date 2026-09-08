@@ -26,15 +26,15 @@ Nothing waits for a layer, only for its needs.
 | step | finite work | `run` returns `Ok` | nothing |
 | try-step | finite work whose failure is a value | `run` returns; dependents see `Arc<Result<T, E>>` | nothing |
 | blocking step | synchronous work on a declared pool | `run` returns | nothing |
-| service | long-lived | `start` returns `Serving` | stop, then the rest of the graph |
+| service | long-lived | `initialize` returns its handle | stop, then the rest of the graph |
 | effect | an externally visible action | `perform` returns `Held<R>` | `compensate`, or `persistent` |
 | join | synchronisation only | every need is ready | nothing |
 | component | a nested plan, once per parent run | the child plan is ready | the child's release graph |
 | template | a nested plan factory | *(the node itself is never "ready")* | stop every live instance |
 
 A resource or effect body must return `Held<T>`. Only `cx.hold` and
-`cx.hold_value` can mint one. A service is ready when `start` *returns*
-`Serving` — being spawned is not readiness.
+`cx.hold_value` can mint one. A service is ready when `initialize` returns
+its handle — being spawned is not readiness.
 
 ## Policy is an argument
 

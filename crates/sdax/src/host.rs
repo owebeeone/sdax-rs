@@ -15,7 +15,7 @@
 //!   plan's erased bodies ([`bodies_of`], [`BodySource`]), build a body
 //!   context ([`CxInner`]) and take what the body left in it
 //!   ([`CxInner::take_held`], [`CxInner::put_output`],
-//!   [`CxInner::take_serve`], [`CxInner::hold_count`]);
+//!   [`CxInner::hold_count`]);
 //! - a run implements [`Scope`] and [`ChildControl`] so that `cx.spawn` and
 //!   `Child::ready` mean something;
 //! - [`engine`] is the vocabulary a machine, a scripted driver and a trace

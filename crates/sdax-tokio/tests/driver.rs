@@ -116,14 +116,13 @@ fn dropped_plan(marks: Arc<Marks>) -> Plan {
     p.service("Worker")
         .needs(transport)
         .stop_within(secs(2))
-        .start(move |cx, _t: Arc<Unit>| {
+        .initialize(|_cx, _t: Arc<Unit>| async move { Ok(()) })
+        .serve(move |cx, _handle| {
             let m = m2.clone();
             async move {
-                Ok(Serving::new((), async move {
-                    cx.stop().await;
-                    m.stopped.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }))
+                cx.stop().await;
+                m.stopped.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
         });
     p.build(Policy::FailFast, Shutdown::within(secs(5)), Mode::Resident)
@@ -185,8 +184,9 @@ fn r02_the_release_never_precedes_the_join_of_the_aborted_body() {
         .acquire(move |cx, ()| {
             let m = m1.clone();
             async move {
+                let shared = cx.shared();
                 let held = cx.hold_value(Unit);
-                cx.sleep(secs(10)).await;
+                shared.sleep(secs(10)).await;
                 m.second_half.fetch_add(1, Ordering::SeqCst);
                 Ok(held)
             }
@@ -291,27 +291,30 @@ fn r03_a_dropped_runtime_with_nothing_running_is_silent() {
 
 /// The bug `R-05` found, pinned under paused time.
 ///
-/// A start body that returns `Serving` *after* the engine signalled it is
+/// An initializer that returns only after the engine signalled it is
 /// `Interrupted`, not ready (T5). The driver used to spawn the serve future on
 /// the body's `Ok` alone, which left a task nobody owned (INV-15) and fed the
 /// machine a `ServeEnded` for a service that was not serving (D1). The serve
 /// future is now armed only once the machine says the node became `Ready`.
 #[test]
-fn r05_regression_a_signalled_start_body_never_starts_its_serve_future() {
+fn r05_regression_a_signalled_initializer_never_starts_its_serve_future() {
     let served = Arc::new(AtomicUsize::new(0));
     let s = served.clone();
     let mut p = Plan::builder("Late start");
-    p.service("Late").stop_within(secs(5)).start(move |cx, ()| {
-        let s = s.clone();
-        async move {
+    p.service("Late")
+        .stop_within(secs(5))
+        .initialize(move |cx, ()| async move {
             // Returns only once the engine has asked it to stop.
             cx.stop().await;
-            Ok(Serving::new((), async move {
+            Ok(())
+        })
+        .serve(move |_cx, _handle| {
+            let s = s.clone();
+            async move {
                 s.fetch_add(1, Ordering::SeqCst);
                 Ok(())
-            }))
-        }
-    });
+            }
+        });
     let plan = p
         .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
         .expect("valid");
@@ -335,7 +338,7 @@ fn r05_regression_a_signalled_start_body_never_starts_its_serve_future() {
     assert_eq!(
         served.load(Ordering::SeqCst),
         0,
-        "the serve future of an interrupted start never runs"
+        "the serve factory of an interrupted initializer never runs"
     );
     let rejections = record.lock().expect("record").rejections.clone();
     assert!(rejections.is_empty(), "{rejections:?}");

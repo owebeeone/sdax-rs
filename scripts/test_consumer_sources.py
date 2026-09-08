@@ -34,7 +34,7 @@ class ConsumerSourceTests(unittest.TestCase):
                 manifest = consumer.build_git_manifest(consumer.build_local_manifest(), Path(temporary) / "repo", "b" * 40)
             self.assertNotIn("tokio", tomllib.loads(manifest).get("dev-dependencies", {}))
 
-    def test_cleanup_removes_readonly_git_objects(self):
+    def test_default_retains_readonly_git_objects(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "consumer"
             root.mkdir()
@@ -50,7 +50,8 @@ class ConsumerSourceTests(unittest.TestCase):
                  patch.object(consumer, "run_case"), \
                  patch.object(consumer, "check_git_source", side_effect=git_fixture):
                 consumer.main()
-            self.assertFalse(root.exists(), "consumer check must clean its entire temporary directory")
+            self.assertEqual((root / "cargo-home/git/objects/pack/fixture.idx").read_bytes(),
+                             b"read-only Git object")
 
     def test_no_clean_retains_the_consumer_directory(self):
         with tempfile.TemporaryDirectory() as temporary:

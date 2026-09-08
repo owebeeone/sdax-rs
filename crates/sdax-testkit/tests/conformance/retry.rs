@@ -107,10 +107,10 @@ fn c40_a_service_restarts_idempotently_across_a_partition() {
     let d = ScriptedDriver::run(&i40(), &script).expect("runs");
     d.check();
     let t = d.eol();
-    assert_eq!(t.attempts("Renew"), 4);
-    assert_eq!(t.start_attempt("Renew", 2), Some(4.0));
-    assert_eq!(t.start_attempt("Renew", 3), Some(6.0));
-    assert_eq!(t.start_attempt("Renew", 4), Some(10.0));
+    assert_eq!(t.attempts("Renew"), 1, "initialization runs once");
+    assert_eq!(t.count(is_episode_start, "Renew"), 4);
+    assert_eq!(t.at(is_episode_start, "Renew"), Some(2.0));
+    assert_eq!(t.last_at(is_episode_start, "Renew"), Some(10.0));
     assert_eq!(t.attempts("LocalReg"), 1, "never(duplicate registration)");
     assert!(
         t.cleanup_start("LocalReg").unwrap() >= 12.0,
@@ -155,10 +155,13 @@ fn c57_a_restarted_service_does_not_stop_or_restart_its_dependents() {
     );
     assert_eq!(
         t.count(is_ready, "Exporter"),
-        2,
-        "ready(Exporter) is emitted again"
+        1,
+        "readiness stays latched across recovery"
     );
-    assert_eq!(t.last_at(is_ready, "Exporter"), Some(5.0));
+    assert_eq!(t.last_at(is_ready, "Exporter"), Some(1.0));
+    assert_eq!(t.count(is_episode_start, "Exporter"), 2);
+    assert_eq!(t.at(is_episode_start, "Exporter"), Some(1.0));
+    assert_eq!(t.last_at(is_episode_start, "Exporter"), Some(5.0));
     assert_eq!(
         t.count(is_fail, "Exporter"),
         1,
@@ -192,7 +195,7 @@ fn c61_a_timed_out_effect_is_ambiguous_and_compensated_only_when_declared() {
     assert_eq!(d.report.faults[0].kind.label(), FaultLabel::Timeout);
 
     let d = ScriptedDriver::run(
-        &i15(Mode::Resident, Some(secs(2)), Ambiguity::Compensate),
+        &i15(Mode::Resident, Some(secs(2)), Ambiguity::Recover),
         &script,
     )
     .expect("runs");
@@ -208,6 +211,6 @@ fn c61_a_timed_out_effect_is_ambiguous_and_compensated_only_when_declared() {
         .iter()
         .map(|r| r.node.to_string())
         .collect();
-    assert_eq!(amb, ["Registration"], "still listed (INV-11)");
+    assert!(amb.is_empty(), "resolved recovery discharges uncertainty");
     assert!(t.pos(is_cleanup_end, "Registration") < t.pos(is_cleanup_start, "Transport"));
 }

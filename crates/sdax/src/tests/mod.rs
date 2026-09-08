@@ -14,4 +14,3 @@ mod planner_validate;
 mod planner_view;
 mod report_order;
 mod seam;
-mod shorthand;

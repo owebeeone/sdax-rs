@@ -1,5 +1,5 @@
 //! The simulator's half of `cx.spawn`: a scripted body's spawn directives,
-//! the readiness a start body may await (INV-17), and the stop a serve future
+//! the readiness an initializer may await (INV-17), and the stop a serve future
 //! may ask for.
 //!
 //! The simulator has no bodies, so a [`SpawnSpec`](super::script::SpawnSpec)
@@ -157,7 +157,7 @@ impl Simulator {
     }
 
     /// A serving episode began: queue the stops this node's directives asked
-    /// for, against the instances its start body actually created.
+    /// for, against the instances its initializer actually created.
     pub(super) fn arm_stops(&mut self, node: RawKey, start: Time) {
         let Some(i) = self.index_of(node) else { return };
         let pairs: Vec<(InstanceId, crate::sim::At)> = self.nodes[i]

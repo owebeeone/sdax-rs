@@ -19,6 +19,11 @@ use crate::plan::PlanIr;
 /// The validate-stage rules, in the order findings are emitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rule {
+    /// `V-INCOMPLETE-DECLARATION`: every reserved builder chain must reach a
+    /// terminal before build, even when its intermediate value is forgotten.
+    IncompleteDeclaration,
+    /// `V-LIVE-EXPORT`: finite plans export completed data, not a resource or service handle.
+    LiveExport,
     /// `V-EMPTY`: a plan with no nodes to run.
     Empty,
     /// `V-FOREIGN-KEY`: a key or pool of another plan named in this one.
@@ -60,14 +65,18 @@ pub enum Rule {
     /// `V-BLOCKING-CANCEL`: `cooperative` on a blocking step, whose grace can
     /// never be spent — a thread is signalled and never aborted.
     BlockingCancel,
-    /// `V-PERSIST-AMBIG`: `on_ambiguous(Compensate)` on a `persistent` effect,
-    /// which has nothing to compensate.
-    PersistAmbig,
+    /// `V-BLOCKING-LIMIT`: a blocking node declares both its execution pool and a general limit.
+    BlockingLimit,
+    /// `V-RECOVERY-MISSING`: an effect requests recovery without binding
+    /// a typed operation identity and installing a recovery handler.
+    RecoveryMissing,
 }
 
 impl Rule {
     /// Every rule, in emission order.
-    pub const ALL: [Rule; 17] = [
+    pub const ALL: [Rule; 20] = [
+        Rule::IncompleteDeclaration,
+        Rule::LiveExport,
         Rule::Empty,
         Rule::ForeignKey,
         Rule::DupName,
@@ -84,12 +93,15 @@ impl Rule {
         Rule::BudgetOrder,
         Rule::Mode,
         Rule::BlockingCancel,
-        Rule::PersistAmbig,
+        Rule::BlockingLimit,
+        Rule::RecoveryMissing,
     ];
 
     /// The rule's stable identifier, as it appears in the gate inventory.
     pub fn id(&self) -> &'static str {
         match self {
+            Rule::IncompleteDeclaration => "V-INCOMPLETE-DECLARATION",
+            Rule::LiveExport => "V-LIVE-EXPORT",
             Rule::Empty => "V-EMPTY",
             Rule::ForeignKey => "V-FOREIGN-KEY",
             Rule::DupName => "V-DUP-NAME",
@@ -106,7 +118,8 @@ impl Rule {
             Rule::BudgetOrder => "V-BUDGET-ORDER",
             Rule::Mode => "V-MODE",
             Rule::BlockingCancel => "V-BLOCKING-CANCEL",
-            Rule::PersistAmbig => "V-PERSIST-AMBIG",
+            Rule::BlockingLimit => "V-BLOCKING-LIMIT",
+            Rule::RecoveryMissing => "V-RECOVERY-MISSING",
         }
     }
 }
@@ -190,13 +203,45 @@ impl Ctx<'_> {
 }
 
 /// Run every rule over a plan's declaration.
+#[cfg(test)]
 pub(crate) fn validate(ir: &PlanIr) -> Vec<Finding> {
+    validate_build(ir, &[])
+}
+
+/// Validate reserved authoring chains as well as the completed graph.
+pub(crate) fn validate_build(ir: &PlanIr, unfinished: &[RawKey]) -> Vec<Finding> {
     let mut c = Ctx {
         ir,
         out: Vec::new(),
     };
     for rule in Rule::ALL {
         match rule {
+            Rule::IncompleteDeclaration => {
+                for key in unfinished {
+                    if let Some(node) = ir.node(*key) {
+                        let fix = match node.kind {
+                            crate::plan::Kind::Resource => {
+                                "finish the resource with acquire and release"
+                            }
+                            crate::plan::Kind::Effect => {
+                                "finish the effect with perform and compensate or persistent"
+                            }
+                            crate::plan::Kind::Service => {
+                                "finish the service with initialize and serve"
+                            }
+                            _ => "finish the node with run",
+                        };
+                        c.add(
+                            Rule::IncompleteDeclaration,
+                            vec![node.name.clone()],
+                            vec![*key],
+                            format!("node {:?} has an unfinished declaration", node.name),
+                            fix,
+                        );
+                    }
+                }
+            }
+            Rule::LiveExport => rules::live_export(&mut c),
             Rule::Empty => rules::empty(&mut c),
             Rule::ForeignKey => rules::foreign_key(&mut c),
             Rule::DupName => rules::dup_name(&mut c),
@@ -213,7 +258,8 @@ pub(crate) fn validate(ir: &PlanIr) -> Vec<Finding> {
             Rule::BudgetOrder => budgets::budget_order(&mut c),
             Rule::Mode => budgets::mode(&mut c),
             Rule::BlockingCancel => rules::blocking_cancel(&mut c),
-            Rule::PersistAmbig => rules::persist_ambig(&mut c),
+            Rule::BlockingLimit => rules::blocking_limit(&mut c),
+            Rule::RecoveryMissing => rules::persist_ambig(&mut c),
         }
     }
     c.out

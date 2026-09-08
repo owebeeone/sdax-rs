@@ -28,7 +28,7 @@ pub(crate) fn idempotent_required(c: &mut Ctx<'_>) {
         }
         if matches!(
             n.attrs.on_ambiguous,
-            Some(Ambiguity::Compensate) | Some(Ambiguity::Retry)
+            Some(Ambiguity::Recover) | Some(Ambiguity::Retry)
         ) {
             because.push("on_ambiguous");
         }

@@ -1,0 +1,8 @@
+hw.ncpu: 12
+hw.memsize: 38654705664
+hw.memsize_usable: 37981782016
+machdep.cpu.cores_per_package: 12
+machdep.cpu.core_count: 12
+machdep.cpu.logical_per_package: 12
+machdep.cpu.thread_count: 12
+machdep.cpu.brand_string: Apple M3 Pro

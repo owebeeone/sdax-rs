@@ -128,7 +128,7 @@ fn component_plan(nested_join: bool) -> Plan<()> {
     }
     let child = child.build(Policy::FailFast, budget, Mode::Finite).unwrap();
     let mut root = Plan::builder("root");
-    let child = root.component("Child", &child);
+    let child = root.component("Child", &child, ());
     root.step("Consumer")
         .needs(child)
         .run(|_, _| async { Ok(()) });
@@ -221,8 +221,8 @@ fn stopped_instance_waits_for_component_descendant_publication_only_in_that_inst
     let child = child
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .unwrap();
-    let mut template = Plan::template::<u8>("worker");
-    template.component("Child", &child);
+    let mut template = Plan::with_input::<u8>("worker");
+    template.component("Child", &child, ());
     let template = template
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .unwrap();
@@ -231,7 +231,8 @@ fn stopped_instance_waits_for_component_descendant_publication_only_in_that_inst
     root.service("Owner")
         .stop_within(std::time::Duration::from_secs(1))
         .spawns(&template)
-        .start(|_, ()| async { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_, ()| async { Ok(()) })
+        .serve(|_, _handle| async { Ok(()) });
     let p = root
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Resident)
         .unwrap();

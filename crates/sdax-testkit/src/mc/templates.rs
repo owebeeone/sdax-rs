@@ -24,7 +24,7 @@ fn template_plan(
     lines: &mut Vec<String>,
 ) -> Result<(Plan<(), u8>, usize), Invalid> {
     let parent_budget = parent.budget;
-    let mut p = Plan::template::<u8>(name);
+    let mut p = Plan::with_input::<u8>(name);
     let input = p.input();
     let mut keys = Keys::default();
     let mut imported = 0usize;

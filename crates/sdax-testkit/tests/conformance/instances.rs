@@ -24,7 +24,7 @@ fn secs(n: u64) -> Duration {
 
 /// The link template: it imports the endpoint and holds one socket.
 fn link(endpoint: Key<Endpoint>, terminal: bool) -> Plan<(), u8> {
-    let mut t = Plan::template::<u8>("Link");
+    let mut t = Plan::with_input::<u8>("Link");
     let imported = t.import(endpoint);
     let sock = t
         .resource("Sock")
@@ -36,7 +36,8 @@ fn link(endpoint: Key<Endpoint>, terminal: bool) -> Plan<(), u8> {
             .needs(sock)
             .terminal()
             .stop_within(secs(1))
-            .start(|_cx, _s: Arc<Conn>| async move { Ok(Serving::new((), async { Ok(()) })) });
+            .initialize(|_cx, _s: Arc<Conn>| async move { Ok(()) })
+            .serve(|_cx, _handle| async move { Ok(()) });
     }
     t.build(Policy::FailFast, Shutdown::within(secs(3)), Mode::Resident)
         .expect("a valid template")
@@ -56,7 +57,8 @@ fn hc(terminal: bool, router: bool) -> Plan {
         .needs(endpoint)
         .spawns(&links)
         .stop_within(secs(2))
-        .start(|_cx, _e: Arc<Endpoint>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _e: Arc<Endpoint>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     if router {
         p.step("Router")
             .needs(acceptor)
@@ -235,7 +237,7 @@ fn c14_a_cancel_with_a_live_instance_drains_it_before_the_import_releases() {
 /// `I-34` — a node that depends on **every** instance being ready.
 ///
 /// The acceptor's start body spawns its links and awaits each `Child::ready()`
-/// before returning `Serving` (INV-17), so the scope's readiness includes the
+/// before initializer completion (INV-17), so the scope's readiness includes the
 /// instances and anything that `needs` the acceptor starts after them. This is
 /// the intent the design comparison recorded as the one uncovered case.
 #[test]

@@ -99,7 +99,7 @@ fn a_plan_records_typed_declarations_and_is_send_sync() {
         .resource("PeerStore")
         .within(secs(3))
         .needs(transport)
-        .acquire(|cx, t: Arc<dyn Endpoint>| async move { cx.hold(open_peers(t)).await })
+        .acquire(|cx, t: Arc<dyn Endpoint>| async move { cx.hold(|| open_peers(t)).await })
         .release(|_cx, _s| async move { Ok(()) });
 
     let routes = p
@@ -126,15 +126,16 @@ fn a_plan_records_typed_declarations_and_is_send_sync() {
     p.service("Api")
         .needs((receipt, transport))
         .stop_within(secs(1))
-        .start(
-            |cx, (_r, t): (Arc<Receipt>, Arc<dyn Endpoint>)| async move {
+        .initialize(
+            |_cx, (_r, t): (Arc<Receipt>, Arc<dyn Endpoint>)| async move {
                 let _port: u16 = "9000".parse()?;
-                Ok(Serving::new(t.addr(), async move {
-                    cx.until_stop(std::future::pending::<()>()).await;
-                    Ok(())
-                }))
+                Ok(t.addr())
             },
-        );
+        )
+        .serve(|cx, _address| async move {
+            cx.until_stop(std::future::pending::<()>()).await;
+            Ok(())
+        });
 
     let plan = p
         .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
@@ -165,7 +166,7 @@ fn a_plan_records_typed_declarations_and_is_send_sync() {
         Some("drop")
     );
     assert_eq!(v.node("Registration").unwrap().kind, Kind::Effect);
-    assert_eq!(plan.semantics(), "sdax/1");
+    assert_eq!(plan.semantics(), "sdax/2");
 }
 
 /// A6 — the validator's findings are values that name the rule and the node.
@@ -197,9 +198,9 @@ fn validation_findings_are_values() {
 fn hold_registers_in_the_completing_poll() {
     let clock = Arc::new(TestClock(Arc::new(AtomicU64::new(0))));
     let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, clock.clone());
-    let cx: Cx<Acquire> = Cx::new(inner.clone());
+    let cx: Cx<Acquire> = inner.acquire();
 
-    let mut held = Box::pin(cx.hold(async {
+    let mut held = Box::pin(cx.hold(|| async {
         let mut once = false;
         std::future::poll_fn(move |_| {
             if once {
@@ -226,26 +227,23 @@ fn hold_registers_in_the_completing_poll() {
     assert_eq!(inner.hold_count(), 1, "registered in the completing poll");
 
     let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, clock);
-    let cx: Cx<Acquire> = Cx::new(inner.clone());
-    let mut failing = Box::pin(cx.hold(async { Err::<u8, _>(std::io::Error::other("no")) }));
+    let cx: Cx<Acquire> = inner.acquire();
+    let mut failing = Box::pin(cx.hold(|| async { Err::<u8, _>(std::io::Error::other("no")) }));
     assert!(matches!(poll_once(failing.as_mut()), Poll::Ready(Err(_))));
     assert_eq!(inner.hold_count(), 0, "a failed effect registers nothing");
 }
 
-/// W-15 — a start body that moves its context into the serve future
-/// type-checks against `start`'s bound, and the serve future observes `stop`.
+/// W-15 — a serving context moves into a serving future and observes `stop`.
 #[test]
-fn a_service_hands_over_a_serve_future_that_observes_stop() {
+fn a_service_factory_can_build_a_serve_future_that_observes_stop() {
     let clock = Arc::new(TestClock(Arc::new(AtomicU64::new(0))));
     let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, clock);
-    let cx: Cx<Start> = Cx::new(inner.clone());
+    let cx: Cx<ServingPhase> = inner.context();
 
-    let serving = Serving::new("127.0.0.1:9000".to_string(), async move {
+    let mut serve = Box::pin(async move {
         cx.until_stop(std::future::pending::<()>()).await;
-        Ok(())
+        Ok::<(), Error>(())
     });
-    let (handle, mut serve) = serving.into_parts();
-    assert_eq!(handle, "127.0.0.1:9000");
     assert!(poll_once(serve.as_mut()).is_pending());
     inner.stop_signal().request();
     assert!(matches!(poll_once(serve.as_mut()), Poll::Ready(Ok(()))));
@@ -258,7 +256,7 @@ fn a_release_body_can_wait_then_kill_against_the_injected_clock() {
     let nanos = Arc::new(AtomicU64::new(0));
     let clock = Arc::new(TestClock(nanos.clone()));
     let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, clock);
-    let cx: Cx<Release> = Cx::new(inner);
+    let cx: Cx<Release> = inner.context();
 
     let killed = Arc::new(AtomicU64::new(0));
     let k = killed.clone();
@@ -289,8 +287,8 @@ fn a_release_body_can_wait_then_kill_against_the_injected_clock() {
 fn stage_0_has_no_execution_and_says_so() {
     let clock = Arc::new(TestClock(Arc::new(AtomicU64::new(0))));
     let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, clock);
-    let cx: Cx<Start> = Cx::new(inner);
-    let mut t = Plan::template::<u8>("Link");
+    let cx: Cx<Start> = inner.context();
+    let mut t = Plan::with_input::<u8>("Link");
     t.step("Inner").run(|_cx, ()| async { Ok(()) });
     let child = t
         .build(Policy::Isolate, Shutdown::within(secs(1)), Mode::Finite)

@@ -1,0 +1,25 @@
+tally,workload,scales_or_variants,baseline_status,primary_boundary,correctness_guard
+A,synthetic graph fixture generation,"chain/wide/sparse; 1/10/100/1000 body nodes",supported,Name and parent-index generation only; excluded from engine timer,generated names and edge count observed
+B,Rust compilation,cold and warm,supported,Whole standalone harness and local path dependencies,successful optimized build and artifact byte count
+C,plan build,"chain/wide/sparse; 1/10/100/1000 body nodes",supported,Declaration through validation and immutable Plan production,inspect node count observed
+D,tiny finite,immediate and one-yield body,supported,Before start/input binding through report observation and disposal,Ok clean output observed
+D,dependency graph,"chain/wide/sparse; 1/10/100/1000 body nodes",supported,Complete per-run lifecycle,Ok clean output observed
+D,machine state setup,"chain; 1/10/100/1000 body nodes",supported,Machine::with_input construction only,node count observed
+D,body state setup,"chain/wide/sparse; 1/10/100/1000 body nodes",supported,bodies_of_with_input construction only,export state observed
+D,pure machine events,"chain; 1/10/100/1000 body nodes",supported,Pre-seeded machine begin/events/report only,Ok report observed
+D,component layout,flat versus one nested mount at 10 and 100 inner nodes,supported,Complete per-run lifecycle,Ok clean output observed
+D,repeated mount of one definition,2/10/100 typed mounts,current-only; baseline unsupported,Complete per-run lifecycle and separate plan build,output proves every typed mount executed in sequence
+D,typed static component input,typed and explicit unit,current-only; baseline unsupported,Complete per-run lifecycle,typed repeated-mount output checked; shared nested fixture checks explicit unit binding
+D,resource teardown,"normal/startup failure/release failure/cleanup failure",supported and directly comparable,Complete per-run lifecycle,release counters and report fields asserted
+D,cancel after acquisition,one resource followed by an unreachable completed-data export,current API adapted and not directly comparable,Complete per-run lifecycle,current validator requires a finite completed-data export; release counter and report fields asserted
+D,resident service,ready then shutdown,supported,Complete per-run lifecycle,Ok clean report and zero tracked tasks
+D,stable-handle recovery,two failures then recovery; exhaustion after one restart,current-only; baseline unsupported,Complete per-run lifecycle,one initialization per run; 3 or 2 episodes; Arc identity stable; outcome and fault asserted
+D,dynamic children,"1/10/100 live instances; 3 body nodes each",supported,Creation readiness shutdown cleanup report and disposal all timed,Ok clean report and zero tracked tasks
+D,dynamic sequential churn,1/10/100 created and ended instances,current-only diagnostic,Each instance reaches ready and releases before the next is created; full parent lifecycle timed,release count and zero tracked tasks asserted; allocation calls and requested bytes are total churn not retained or peak memory
+D,known receipt compensation,one effect,supported and directly comparable,Complete per-run lifecycle,compensation counter asserted
+D,unknown-outcome recovery,resolved and failed reconciliation,current-only; baseline unsupported,Pending identified effect through cancellation recovery report and disposal,recovery count; ambiguity and cleanup-failure fields asserted
+D,retry,one initial failure then success,supported,Complete per-run lifecycle,Ok output asserted
+D,observability,default versus counting observer,supported,Complete per-run lifecycle under the same always-recorded full trace,observer event count asserted; this is not trace-off versus trace-on
+D,resident whole-process probe,10-second ready wait,current-only native host probe,Optimized harness process startup readiness wait shutdown report and exit,process CPU and native peak resident memory recorded separately; not pure idle CPU or engine-only bytes; wakeups unmeasured
+E,CPU hash pipeline,10 and 100 bodies,supported,Complete sdax per-run lifecycle,output checksum observed
+E,handwritten CPU lower bound,10 and 100 transforms,supported,Computation only and explicitly not lifecycle-equivalent,output checksum observed

@@ -69,16 +69,25 @@ impl Machine {
                     self.flush_faults(n);
                 }
                 St::Backoff => {
-                    // The attempt that would have followed is the one cut
-                    // short; the failed one keeps its fault record.
+                    // The initialization attempt, or serving episode, that
+                    // would have followed is the one cut short; the failed
+                    // one keeps its fault record.
                     let id = self.slots[n].timer.take();
                     self.drop_timer(id);
                     self.slots[n].st = St::Interrupted;
-                    self.slots[n].attempt += 1;
+                    if self.t.nodes[n].kind == Kind::Service && self.slots[n].initialized {
+                        self.slots[n].episode = self.slots[n].restarts + 1;
+                    } else {
+                        self.slots[n].attempt += 1;
+                    }
                     self.emit(n, TraceKind::Interrupted { held: false });
                     self.flush_faults(n);
                 }
                 St::Running | St::Publishing => self.interrupt(n, because),
+                // A between-attempt release is shielded from cancellation,
+                // but the scope budget that just became active still bounds
+                // it and must become visible through its existing context.
+                St::RetryRelease => self.fx.push(Effect::RefreshDeadline(self.t.nodes[n].key)),
                 _ => {}
             }
             // A component's inner scope stops admitting with the node, whether
@@ -154,10 +163,12 @@ impl Machine {
                 self.end_component_attempt(n);
             }
             Kind::Service => {
-                // A start body in flight: signal-then-deadline, the service's
+                // An initializer in flight: signal-then-deadline, the service's
                 // own cancel mode; the deadline is its stop budget.
                 self.slots[n].cancelling = true;
                 self.slots[n].signalled = true;
+                let id = self.slots[n].timer.take();
+                self.drop_timer(id);
                 self.fx.push(Effect::Signal(key));
                 let scope = self.t.nodes[n].scope;
                 let at = match (

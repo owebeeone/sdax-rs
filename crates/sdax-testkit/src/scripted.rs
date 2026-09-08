@@ -14,8 +14,7 @@ use sdax::host::engine::{EngineError, Machine};
 use sdax::host::sim::{SpawnOutcome, FOREIGN};
 use sdax::host::{BodySource, CxInner, InstanceId, RawKey, Task, Time};
 use sdax::{
-    Acquire, At, Body, Child, Cleanup, Cx, Ending, Error, Kind, Plan, Run, Script, Serve, Serving,
-    SpawnSpec, Start,
+    Acquire, At, Body, Child, Cleanup, Cx, Ending, Error, Kind, Plan, Run, Script, Serve, SpawnSpec,
 };
 use std::any::Any;
 use std::collections::HashMap;
@@ -75,6 +74,8 @@ struct Spawning {
     log: Arc<Mutex<Vec<SpawnOutcome>>>,
 }
 
+type ChildStops = Arc<Mutex<HashMap<(RawKey, Option<InstanceId>), Vec<(Arc<Child>, At)>>>>;
+
 /// A plan's bodies, replaced by what a [`Script`] says they do.
 ///
 /// Nodes are keyed by their **declaration** key, so one script line covers
@@ -84,6 +85,7 @@ pub struct ScriptedBodies {
     nodes: HashMap<RawKey, NodeScript>,
     templates: Arc<Vec<(String, RawKey)>>,
     episodes: Mutex<HashMap<(RawKey, Option<InstanceId>), usize>>,
+    stops: ChildStops,
     spawns: Arc<Mutex<Vec<SpawnOutcome>>>,
 }
 
@@ -147,6 +149,7 @@ impl ScriptedBodies {
             nodes,
             templates: Arc::new(templates),
             episodes: Mutex::new(HashMap::new()),
+            stops: Arc::new(Mutex::new(HashMap::new())),
             spawns: Arc::new(Mutex::new(Vec::new())),
         }))
     }
@@ -222,15 +225,16 @@ async fn do_spawns(
     out
 }
 
-/// One attempt of a scripted prepare, run or start body.
+/// One attempt of a scripted prepare, run or initialization body.
 async fn scripted_body(
     inner: Arc<CxInner>,
     kind: Kind,
     spec: Body,
-    serve: Option<Serve>,
     spawning: Spawning,
+    stop_key: (RawKey, Option<InstanceId>),
+    stops: ChildStops,
 ) -> Result<(), Error> {
-    let cx: Cx<Run> = Cx::new(inner.clone());
+    let cx: Cx<Run> = inner.context();
     let start = cx.now();
     let end = match &spec.ending {
         Ending::Ok(at) | Ending::Fail(at, _) | Ending::Panic(at) => Some(target(*at, start)),
@@ -251,7 +255,7 @@ async fn scripted_body(
             None => h,
         }) {
             wait_until(&cx, t).await;
-            let acq: Cx<Acquire> = Cx::new(inner.clone());
+            let acq: Cx<Acquire> = inner.acquire();
             let _ = acq.hold_value(Registered);
         }
     }
@@ -277,37 +281,35 @@ async fn scripted_body(
         Ending::Pending => unreachable!("pending never ends"),
     }
     if kind == Kind::Service {
-        let s = serve.unwrap_or_default();
-        let start_cx: Cx<Start> = Cx::new(inner.clone());
-        let stops: Vec<(Child, At)> = children
+        let episode_stops: Vec<(Arc<Child>, At)> = children
             .into_iter()
-            .filter_map(|(c, at, _)| at.map(|a| (c, a)))
+            .filter_map(|(c, at, _)| at.map(|a| (Arc::new(c), a)))
             .collect();
-        let serving = Serving::new((), scripted_serve(inner.clone(), s, stops));
-        let (handle, fut) = serving.into_parts();
-        inner.put_output(Box::new(Arc::new(handle)));
-        inner.put_serve(fut);
-        let _ = start_cx;
+        stops
+            .lock()
+            .expect("stops poisoned")
+            .insert(stop_key, episode_stops);
+        inner.put_output(Box::new(Arc::new(())));
     } else if !kind.can_hold() {
         inner.put_output(Box::new(Arc::new(())));
     }
     Ok(())
 }
 
-/// One serving episode, with the instance stops the start body's directives
+/// One serving episode, with the instance stops the initializer's directives
 /// asked for running beside it.
 async fn scripted_serve(
     inner: Arc<CxInner>,
     spec: Serve,
-    stops: Vec<(Child, At)>,
+    stops: Vec<(Arc<Child>, At)>,
 ) -> Result<(), Error> {
-    let cx: Cx<Run> = Cx::new(inner.clone());
+    let cx: Cx<Run> = inner.context();
     let start = cx.now();
     if stops.is_empty() {
         return serve_body(inner, spec).await;
     }
     let stopper = async move {
-        let mut order: Vec<(Time, Child)> = stops
+        let mut order: Vec<(Time, Arc<Child>)> = stops
             .into_iter()
             .map(|(c, at)| (target(at, start), c))
             .collect();
@@ -332,7 +334,7 @@ async fn scripted_serve(
 
 /// The serve behaviour itself.
 async fn serve_body(inner: Arc<CxInner>, spec: Serve) -> Result<(), Error> {
-    let cx: Cx<Run> = Cx::new(inner);
+    let cx: Cx<Run> = inner.context();
     let start = cx.now();
     match spec {
         Serve::Ok(at) => {
@@ -356,7 +358,7 @@ async fn serve_body(inner: Arc<CxInner>, spec: Serve) -> Result<(), Error> {
 
 /// One release or compensation.
 async fn scripted_cleanup(inner: Arc<CxInner>, spec: Cleanup) -> Result<(), Error> {
-    let cx: Cx<sdax::Release> = Cx::new(inner);
+    let cx: Cx<sdax::Release> = inner.context();
     match spec {
         Cleanup::Ok(d) => {
             if !d.is_zero() {
@@ -398,17 +400,8 @@ impl BodySource for ScriptedBodies {
 
     fn body(&self, node: RawKey, instance: Option<InstanceId>, cx: &Arc<CxInner>) -> Option<Task> {
         let ns = self.nodes.get(&node)?;
-        let attempt = Cx::<Run>::new(cx.clone()).attempt() as usize;
+        let attempt = cx.context::<Run>().attempt() as usize;
         let spec = ns.bodies[(attempt - 1).min(ns.bodies.len() - 1)].clone();
-        let serve = if ns.kind == Kind::Service {
-            let mut eps = self.episodes.lock().expect("episodes poisoned");
-            let e = eps.entry((node, instance)).or_insert(0);
-            let s = ns.serves[(*e).min(ns.serves.len() - 1)].clone();
-            *e += 1;
-            Some(s)
-        } else {
-            None
-        };
         let spawning = Spawning {
             node: ns.path.clone(),
             specs: ns.spawns.clone(),
@@ -422,9 +415,32 @@ impl BodySource for ScriptedBodies {
             cx.clone(),
             ns.kind,
             spec,
-            serve,
             spawning,
+            (node, instance),
+            self.stops.clone(),
         ))))
+    }
+
+    fn serve(
+        &self,
+        node: RawKey,
+        instance: Option<InstanceId>,
+        cx: &Arc<CxInner>,
+    ) -> Option<sdax::host::BoxFuture<'static, Result<(), Error>>> {
+        let ns = self.nodes.get(&node)?;
+        let mut eps = self.episodes.lock().expect("episodes poisoned");
+        let e = eps.entry((node, instance)).or_insert(0);
+        let spec = ns.serves[(*e).min(ns.serves.len() - 1)].clone();
+        *e += 1;
+        drop(eps);
+        let stops = self
+            .stops
+            .lock()
+            .expect("stops poisoned")
+            .get(&(node, instance))
+            .cloned()
+            .unwrap_or_default();
+        Some(Box::pin(scripted_serve(cx.clone(), spec, stops)))
     }
 
     fn cleanup(

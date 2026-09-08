@@ -1,4 +1,14 @@
+use sdax::host::engine::Machine;
 use sdax::host::{bodies_of, InstanceId};
+
+fn mounted<O, I>(plan: &Plan<O, I>, path: &str) -> sdax::host::RawKey {
+    Machine::declarations(plan)
+        .into_iter()
+        .find(|(_, p, _)| *p == *path)
+        .unwrap()
+        .0
+}
+
 use sdax::prelude::*;
 use std::sync::Arc;
 
@@ -36,7 +46,7 @@ fn component_publication_clones_real_export_and_refuses_missing_or_wrong_type() 
         )
         .unwrap();
     let mut root = Plan::builder("root");
-    let component = root.component("child", &child);
+    let component = root.component("child", &child, ());
     let root = root
         .export(component)
         .build(
@@ -47,10 +57,14 @@ fn component_publication_clones_real_export_and_refuses_missing_or_wrong_type() 
         .unwrap();
     let source = bodies_of(&root);
     assert!(source.publish_ready(component.raw(), None).is_err());
-    source.store(value.raw(), None, Box::new(Arc::new(())));
+    source.store(mounted(&root, "child/value"), None, Box::new(Arc::new(())));
     assert!(source.publish_ready(component.raw(), None).is_err());
     let actual = Arc::new(99_u32);
-    source.store(value.raw(), None, Box::new(actual.clone()));
+    source.store(
+        mounted(&root, "child/value"),
+        None,
+        Box::new(actual.clone()),
+    );
     source.publish_ready(component.raw(), None).unwrap();
     let exported = source.export().unwrap().downcast::<Arc<u32>>().unwrap();
     assert!(Arc::ptr_eq(&actual, &exported));
@@ -71,7 +85,7 @@ fn explicit_unit_export_is_required_but_unexported_component_gets_unit() {
         )
         .unwrap();
     let mut root = Plan::builder("root");
-    let component = root.component("child", &child);
+    let component = root.component("child", &child, ());
     let root = root
         .export(component)
         .build(
@@ -82,7 +96,9 @@ fn explicit_unit_export_is_required_but_unexported_component_gets_unit() {
         .unwrap();
     let source = bodies_of(&root);
     assert!(source.publish_ready(component.raw(), None).is_err());
-    source.publish_ready(unit.raw(), None).unwrap();
+    source
+        .publish_ready(mounted(&root, "child/unit"), None)
+        .unwrap();
     source.publish_ready(component.raw(), None).unwrap();
     assert!(source.export().unwrap().downcast::<Arc<()>>().is_ok());
 
@@ -96,7 +112,7 @@ fn explicit_unit_export_is_required_but_unexported_component_gets_unit() {
         )
         .unwrap();
     let mut root = Plan::builder("root");
-    let component = root.component("empty", &child);
+    let component = root.component("empty", &child, ());
     let root = root
         .export(component)
         .build(
@@ -125,7 +141,7 @@ fn component_can_export_imported_parent_value() {
             Mode::Finite,
         )
         .unwrap();
-    let component = root.component("child", &child);
+    let component = root.component("child", &child, ());
     let root = root
         .export(component)
         .build(
@@ -155,7 +171,7 @@ fn instance_publication_never_reads_another_instance_or_closed_scope() {
         )
         .unwrap();
     let mut template = Plan::with_input::<()>("template");
-    let component = template.component("child", &child);
+    let _component = template.component("child", &child, ());
     let template = template
         .build(
             Policy::FailFast,
@@ -177,12 +193,30 @@ fn instance_publication_never_reads_another_instance_or_closed_scope() {
     let b = InstanceId(2);
     source.open_instance(template.node(), None, a, Box::new(Arc::new(())));
     source.open_instance(template.node(), Some(a), b, Box::new(Arc::new(())));
-    source.store(value.raw(), Some(a), Box::new(Arc::new(10_u32)));
-    source.publish_ready(component.raw(), Some(a)).unwrap();
-    assert!(source.publish_ready(component.raw(), Some(b)).is_err());
-    source.store(value.raw(), Some(b), Box::new(Arc::new(20_u32)));
-    source.publish_ready(component.raw(), Some(b)).unwrap();
+    source.store(
+        mounted(&root, "template/child/value"),
+        Some(a),
+        Box::new(Arc::new(10_u32)),
+    );
+    source
+        .publish_ready(mounted(&root, "template/child"), Some(a))
+        .unwrap();
+    assert!(source
+        .publish_ready(mounted(&root, "template/child"), Some(b))
+        .is_err());
+    source.store(
+        mounted(&root, "template/child/value"),
+        Some(b),
+        Box::new(Arc::new(20_u32)),
+    );
+    source
+        .publish_ready(mounted(&root, "template/child"), Some(b))
+        .unwrap();
     source.close_instance(b);
-    assert!(source.publish_ready(component.raw(), Some(b)).is_err());
-    assert!(source.publish_ready(component.raw(), None).is_err());
+    assert!(source
+        .publish_ready(mounted(&root, "template/child"), Some(b))
+        .is_err());
+    assert!(source
+        .publish_ready(mounted(&root, "template/child"), None)
+        .is_err());
 }

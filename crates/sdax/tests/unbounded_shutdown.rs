@@ -14,7 +14,9 @@ fn leaf(stop_bounded: bool) -> Plan<()> {
     } else {
         service
     };
-    service.start(|_cx, ()| async { Ok(Serving::new((), std::future::pending())) });
+    service
+        .initialize(|_cx, ()| async { Ok(()) })
+        .serve(|_cx, _handle| std::future::pending());
     p.build(Policy::FailFast, bounded(), Mode::Resident)
         .unwrap()
 }
@@ -34,7 +36,7 @@ fn tree(
         if templates & (1 << level) != 0 {
             parent.template(&name, &child);
         } else {
-            parent.component(&name, &child);
+            parent.component(&name, &child, ());
         }
         let result = parent.build(
             Policy::FailFast,
@@ -82,9 +84,10 @@ fn bounded_root_or_explicit_service_stop_accepts_the_same_trees() {
 fn reused_child_reports_each_registration_in_declaration_order() {
     let child = leaf(false);
     let mut p = Plan::builder("Root");
-    p.component("First", &child);
+    p.component("First", &child, ());
     p.service("Local")
-        .start(|_cx, ()| async { Ok(Serving::new((), std::future::pending())) });
+        .initialize(|_cx, ()| async { Ok(()) })
+        .serve(|_cx, _handle| std::future::pending());
     p.template("Second", &child);
     let invalid = p
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Resident)

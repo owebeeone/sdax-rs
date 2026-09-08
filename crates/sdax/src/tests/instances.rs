@@ -25,7 +25,7 @@ pub(crate) fn mesh() -> Plan {
         .acquire(|cx, ()| async move { Ok(cx.hold_value(Endpoint)) })
         .release(|_cx, _e| async move { Ok(()) });
 
-    let mut t = Plan::template::<u8>("Link");
+    let mut t = Plan::with_input::<u8>("Link");
     let imported = t.import(endpoint);
     t.resource("Sock")
         .needs(imported)
@@ -40,7 +40,8 @@ pub(crate) fn mesh() -> Plan {
         .needs(endpoint)
         .spawns(&link)
         .stop_within(secs(1))
-        .start(|_cx, _e: Arc<Endpoint>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _e: Arc<Endpoint>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     root.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
         .expect("valid plan")
 }

@@ -38,9 +38,6 @@ struct Live<H> {
     epoch: u64,
     cx: Arc<CxInner>,
     handle: Option<H>,
-    /// A service's serve future, taken from the start body's context and held
-    /// until the machine says the node is `Ready`.
-    serve: Option<sdax::host::BoxFuture<'static, Result<(), sdax::Error>>>,
 }
 
 /// What a finished run hands back: the machine's report, and the exported
@@ -67,9 +64,6 @@ pub(crate) struct Driver<R: Runtime> {
     tx: Tx,
     rx: UnboundedReceiver<Msg>,
     live: HashMap<RawKey, Live<R::Task>>,
-    /// The service whose serve future is waiting for the machine's verdict on
-    /// the start body that produced it.
-    arming: Option<RawKey>,
     kinds: HashMap<RawKey, Kind>,
     /// The declaration a run key was made from, and the instance it belongs
     /// to: what a `BodySource` is addressed by. An instance's nodes join it
@@ -121,7 +115,6 @@ impl<R: Runtime> Driver<R> {
             tx,
             rx,
             live: HashMap::new(),
-            arming: None,
             kinds,
             origins,
             paths,
@@ -190,11 +183,9 @@ impl<R: Runtime> Driver<R> {
             }
         };
         self.step(ev);
-        self.arm_serve();
     }
 
-    /// A body outcome: bank what it registered before the machine acts on it,
-    /// and hand a service's serve future to a task of its own.
+    /// A body outcome: bank what it registered before the machine acts on it.
     fn settled(&mut self, node: RawKey, ev: Event) -> Option<Event> {
         let terminal = matches!(
             ev,
@@ -207,62 +198,44 @@ impl<R: Runtime> Driver<R> {
             return Some(ev);
         };
         let cx = live.cx.clone();
-        let epoch = live.epoch;
         if let Some(v) = cx.take_held() {
             // INV-3: taken whatever the outcome, so a held-then-failed attempt
             // still has a value for its release to discharge.
             let (decl, inst) = self.origin(node);
             self.src.store(decl, inst, v);
         }
-        let _ = epoch;
-        if self.kinds.get(&node) == Some(&Kind::Service) && matches!(ev, Event::NodeOk(_)) {
-            return Some(match cx.take_serve() {
-                Some(serve) => {
-                    // Held, not spawned: a start body that returns after the
-                    // engine has already signalled it is `Interrupted`, not
-                    // ready (T5), and a serve future started for it would be a
-                    // task nobody owns (INV-15). `arm_serve` spawns it only if
-                    // the machine says the node became `Ready`.
-                    if let Some(l) = self.live.get_mut(&node) {
-                        l.serve = Some(serve);
-                    }
-                    self.arming = Some(node);
-                    ev
-                }
-                // A start body that returned without a `Serving` never became
-                // ready; the contract names the fault (§ 7).
-                None => Event::NodeErr(node, FaultKind::NeverReady),
-            });
-        }
         Some(ev)
     }
 
-    /// The machine has spoken about the start body: serve, or discard.
-    fn arm_serve(&mut self) {
-        let Some(node) = self.arming.take() else {
-            return;
-        };
-        let ready = matches!(
-            self.machine.state(node),
-            Some(sdax::host::engine::NodeState::Ready)
-        );
-        let Some(live) = self.live.get_mut(&node) else {
-            return;
-        };
-        let Some(serve) = live.serve.take() else {
-            return;
-        };
-        if !ready {
-            // Dropped: the start body's own teardown, and no episode ever
-            // began, so the machine is told nothing.
-            return;
+    /// Start one explicit serving episode with a fresh stop context.
+    fn start_serving(&mut self, node: RawKey, episode: u32) {
+        self.epoch += 1;
+        let epoch = self.epoch;
+        let mut cx = CxInner::new(node, self.clock.clone())
+            .with_episode(episode)
+            .with_scope(self.scope.clone());
+        if let Some(at) = self.machine.deadline_for(node) {
+            cx = cx.with_deadline(at);
         }
-        let epoch = live.epoch;
         let tx = self.tx.clone();
-        let task = self.rt.spawn(Box::pin(run_serve(tx, node, epoch, serve)));
-        if let Some(l) = self.live.get_mut(&node) {
-            l.handle = Some(task);
-        }
+        let (decl, inst) = self.origin(node);
+        let handle = match self.src.serve(decl, inst, &cx) {
+            Some(serve) => Some(self.rt.spawn(Box::pin(run_serve(tx, node, epoch, serve)))),
+            None => {
+                let _ = tx.send(Msg::Body {
+                    node,
+                    epoch,
+                    ev: Event::ServeEnded {
+                        node,
+                        fault: Some(FaultKind::Error(Box::new(DriverError(
+                            "the body source has no serving factory for this service",
+                        )))),
+                    },
+                });
+                None
+            }
+        };
+        self.live.insert(node, Live { epoch, cx, handle });
     }
 
     fn step(&mut self, ev: Event) {
@@ -332,13 +305,21 @@ impl<R: Runtime> Driver<R> {
             }
             Effect::Spawn { node, attempt } => self.spawn_body(node, attempt),
             Effect::SpawnBlocking { node, attempt } => self.spawn_body(node, attempt),
+            Effect::Serve { node, episode } => self.start_serving(node, episode),
             Effect::Abort(node) => self.abort(node),
             Effect::Signal(node) | Effect::StopService(node) => {
                 if let Some(l) = self.live.get(&node) {
+                    l.cx.set_deadline(self.machine.deadline_for(node));
                     l.cx.stop_signal().request();
                 }
             }
-            Effect::Release(node) | Effect::Compensate(node) => self.spawn_cleanup(node),
+            Effect::RefreshDeadline(node) => {
+                if let Some(l) = self.live.get(&node) {
+                    l.cx.set_deadline(self.machine.deadline_for(node));
+                }
+            }
+            Effect::Release(node) | Effect::Compensate(node) => self.spawn_cleanup(node, false),
+            Effect::Recover(node) => self.spawn_cleanup(node, true),
             Effect::Timer { id, at } => self.arm(id, at),
             Effect::CancelTimer(id) => {
                 if let Some(t) = self.timers.remove(&id) {
@@ -422,18 +403,10 @@ impl<R: Runtime> Driver<R> {
                 None
             }
         };
-        self.live.insert(
-            node,
-            Live {
-                epoch,
-                cx,
-                handle,
-                serve: None,
-            },
-        );
+        self.live.insert(node, Live { epoch, cx, handle });
     }
 
-    fn spawn_cleanup(&mut self, node: RawKey) {
+    fn spawn_cleanup(&mut self, node: RawKey, recovery: bool) {
         let epoch = self.live.get(&node).map(|l| l.epoch).unwrap_or_else(|| {
             self.epoch += 1;
             self.epoch
@@ -441,6 +414,12 @@ impl<R: Runtime> Driver<R> {
         let mut cx = CxInner::new(node, self.clock.clone()).with_scope(self.scope.clone());
         if let Some(at) = self.machine.deadline_for(node) {
             cx = cx.with_deadline(at);
+        }
+        if let Some(live) = self.live.get(&node) {
+            cx = cx.with_attempt(live.cx.context::<sdax::Run>().attempt());
+        }
+        if recovery {
+            cx = cx.with_recovery();
         }
         let tx = self.tx.clone();
         let (decl, inst) = self.origin(node);
@@ -475,15 +454,7 @@ impl<R: Runtime> Driver<R> {
                 None
             }
         };
-        self.live.insert(
-            node,
-            Live {
-                epoch,
-                cx,
-                handle,
-                serve: None,
-            },
-        );
+        self.live.insert(node, Live { epoch, cx, handle });
     }
 
     /// T5: abort, then join in a task of the engine's own, so the node counts

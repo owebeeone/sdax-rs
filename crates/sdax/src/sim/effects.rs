@@ -7,7 +7,6 @@ use super::simulator::{Item, Scripted, Simulator};
 use crate::host::engine::{Effect, Event};
 use crate::plan::Kind;
 use crate::report::{FaultKind, TraceEvent, TraceKind};
-use crate::view::NodePath;
 
 impl Simulator {
     /// Perform one effect.
@@ -102,6 +101,7 @@ impl Simulator {
                     self.push(t, Item::Body(node, ev));
                 }
             }
+            Effect::Serve { node, .. } => self.serve_begins(node),
             Effect::Abort(node) => {
                 // Outcomes already due stand; later ones are dropped, and the
                 // join reports the cancellation.
@@ -135,7 +135,10 @@ impl Simulator {
                     }
                 }
             }
-            Effect::Release(node) | Effect::Compensate(node) => {
+            // Scripted bodies do not expose a live `Cx`; the Tokio host uses
+            // this metadata-only effect to refresh one without cancellation.
+            Effect::RefreshDeadline(_) => {}
+            Effect::Release(node) | Effect::Compensate(node) | Effect::Recover(node) => {
                 let cleanup = self.node_mut(node).cleanup.clone();
                 match cleanup {
                     Cleanup::Ok(d) => self.push(now + d, Item::Body(node, Event::NodeOk(node))),
@@ -170,10 +173,6 @@ impl Simulator {
     }
 
     pub(super) fn observe(&mut self, ev: TraceEvent) {
-        // A service's readiness starts its serving episode.
-        if let (TraceKind::Ready, Some(path)) = (&ev.kind, &ev.node) {
-            self.serve_begins(path.clone(), ev.order.as_ref());
-        }
         if let (TraceKind::Held, Some(_)) = (&ev.kind, &ev.node) {
             if let Some(key) = self.observed_key(&ev) {
                 self.node_mut(key).held = true;
@@ -202,18 +201,7 @@ impl Simulator {
             .map(|n| n.key)
     }
 
-    fn serve_begins(&mut self, path: NodePath, order: Option<&crate::report::RecordOrder>) {
-        let inst = order.and_then(|o| o.steps.iter().find_map(|(_, i)| *i));
-        let ev = TraceEvent {
-            at: self.now,
-            node: Some(path),
-            order: order.cloned(),
-            kind: TraceKind::Ready,
-        };
-        let _ = inst;
-        let Some(key) = self.observed_key(&ev) else {
-            return;
-        };
+    fn serve_begins(&mut self, key: crate::key::RawKey) {
         let now = self.now;
         let ns = self.node_mut(key);
         if ns.kind != Kind::Service {

@@ -1,0 +1,4 @@
+# Preserve native benchmark output byte-for-byte, including CRLF and log spacing.
+performance-results/** -text -whitespace
+# Frozen fixture manifests are hashed as captured.
+performance-harness/Cargo.toml whitespace=-blank-at-eof

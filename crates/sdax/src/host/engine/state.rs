@@ -22,16 +22,6 @@ pub enum EngineError {
     TemplateAsScope(NodePath),
     /// A root run cannot resolve these import nodes (`L-IMPORTS`).
     UnresolvedImports(Vec<NodePath>),
-    /// One child plan is registered as two components. The engine addresses
-    /// nodes by key, and a plan used twice cannot keep those unique.
-    DuplicateComponent {
-        /// The child plan's name.
-        plan: String,
-        /// Where it was used first.
-        first: NodePath,
-        /// Where it was used again.
-        second: NodePath,
-    },
 }
 
 impl std::fmt::Display for EngineError {
@@ -52,15 +42,6 @@ impl std::fmt::Display for EngineError {
                 f,
                 "a root run cannot resolve import(s) {} (L-IMPORTS)",
                 names(v)
-            ),
-            EngineError::DuplicateComponent {
-                plan,
-                first,
-                second,
-            } => write!(
-                f,
-                "child plan {plan:?} is used as component {first} and again as {second}; the \
-                 engine addresses nodes by key, so one child plan can be one component"
             ),
         }
     }
@@ -108,6 +89,18 @@ pub enum NodeState {
         attempt: u32,
         /// When the next one starts.
         until: Time,
+    },
+    /// A service is waiting to start another episode with its published handle.
+    RestartBackoff {
+        /// The episode that will start after the wait, counting from 1.
+        episode: u32,
+        /// When that episode may start.
+        until: Time,
+    },
+    /// A service is running one episode against its published handle.
+    Serving {
+        /// The current episode, counting from 1.
+        episode: u32,
     },
     /// A structural value transfer is awaiting host acknowledgement.
     Publishing,
@@ -206,6 +199,10 @@ pub(super) struct Slot {
     pub timer: Option<TimerId>,
     pub backoff_until: Time,
     pub restarts: u32,
+    /// Whether this service has published its handle in this run.
+    pub initialized: bool,
+    /// The current serving episode, or zero before initialization succeeds.
+    pub episode: u32,
     /// FIFO position among waiters, taken when the node became need-ready.
     pub queued: Option<u64>,
     /// The earlier waiter whose unmet want refused this one its grant (T1's
@@ -221,6 +218,7 @@ pub(super) struct Slot {
     /// An ambiguous attempt's record, parked with the faults: reported if the
     /// node never becomes Ready, dropped if an `Ambiguity::Retry` resolves it.
     pub ambiguity: Option<NodeRecord>,
+    pub recovering: bool,
 }
 
 impl Slot {
@@ -237,6 +235,8 @@ impl Slot {
             timer: None,
             backoff_until: Time::ZERO,
             restarts: 0,
+            initialized: false,
+            episode: 0,
             queued: None,
             blocked_by: None,
             granted: false,
@@ -244,6 +244,7 @@ impl Slot {
             because: None,
             faults: Vec::new(),
             ambiguity: None,
+            recovering: false,
         }
     }
 }
@@ -311,7 +312,7 @@ pub(super) enum Purpose {
 
 /// The pure state machine. See the module docs.
 pub struct Machine {
-    pub(super) t: Table,
+    pub(super) t: std::sync::Arc<Table>,
     pub(super) slots: Vec<Slot>,
     pub(super) locks: Vec<Lock>,
     pub(super) scopes: Vec<ScopeRun>,
@@ -336,7 +337,7 @@ pub struct Machine {
 }
 
 impl Machine {
-    pub(super) fn from_table(t: Table) -> Machine {
+    pub(super) fn from_table(t: std::sync::Arc<Table>) -> Machine {
         let n = t.nodes.len();
         let scopes = t
             .scopes
@@ -383,9 +384,32 @@ impl Machine {
         }
     }
 
+    pub(super) fn service_order(&self, n: usize) -> RecordOrder {
+        RecordOrder {
+            steps: self.t.nodes[n].steps.clone(),
+            attempt: self.slots[n].episode.max(1),
+        }
+    }
+
     /// Write one observation about a node.
     pub(super) fn emit(&mut self, n: usize, kind: TraceKind) {
-        let ev = TraceEvent::node(self.now, self.t.nodes[n].path.clone(), self.order(n), kind);
+        let serving = self.t.nodes[n].kind == Kind::Service
+            && matches!(
+                kind,
+                TraceKind::Start(Phase::Serve)
+                    | TraceKind::Fail(Phase::Serve | Phase::Stop, _)
+                    | TraceKind::StopRequested
+                    | TraceKind::Stopped
+            )
+            || self.t.nodes[n].kind == Kind::Service
+                && self.slots[n].initialized
+                && matches!(kind, TraceKind::Interrupted { .. } | TraceKind::Abandoned);
+        let order = if serving {
+            self.service_order(n)
+        } else {
+            self.order(n)
+        };
+        let ev = TraceEvent::node(self.now, self.t.nodes[n].path.clone(), order, kind);
         self.fx.push(Effect::Emit(Box::new(ev)));
     }
 
@@ -398,7 +422,13 @@ impl Machine {
     pub(super) fn fault(&self, n: usize, phase: Phase, kind: FaultKind) -> Fault {
         Fault {
             node: self.t.nodes[n].path.clone(),
-            order: self.order(n),
+            order: if self.t.nodes[n].kind == Kind::Service
+                && matches!(phase, Phase::Serve | Phase::Stop)
+            {
+                self.service_order(n)
+            } else {
+                self.order(n)
+            },
             phase,
             kind,
         }
@@ -407,7 +437,11 @@ impl Machine {
     pub(super) fn record(&self, n: usize) -> NodeRecord {
         NodeRecord {
             node: self.t.nodes[n].path.clone(),
-            order: self.order(n),
+            order: if self.t.nodes[n].kind == Kind::Service && self.slots[n].initialized {
+                self.service_order(n)
+            } else {
+                self.order(n)
+            },
         }
     }
 
@@ -440,8 +474,8 @@ impl Machine {
     pub(super) fn compensates_ambiguity(&self, n: usize) -> bool {
         let node = &self.t.nodes[n];
         node.kind == Kind::Effect
-            && node.attrs.on_ambiguous == Some(Ambiguity::Compensate)
-            && node.attrs.release != ReleaseStyle::Persistent
+            && node.attrs.on_ambiguous == Some(Ambiguity::Recover)
+            && node.attrs.recovery
     }
 
     /// The outcome a scope's end reports.

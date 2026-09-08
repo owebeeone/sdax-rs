@@ -277,7 +277,7 @@ impl Simulator {
                 None => ("spawn refused".to_string(), Vec::new()),
             },
             Item::Body(node, ev) => {
-                // INV-17: a start body that awaits `Child::ready()` returns
+                // INV-17: an initializer that awaits `Child::ready()` returns
                 // only once the instances it awaits have answered.
                 if self.hold_for_ready(node, &ev) {
                     ("awaiting an instance".to_string(), Vec::new())

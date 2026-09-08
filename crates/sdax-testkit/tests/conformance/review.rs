@@ -65,7 +65,8 @@ fn review_r1b_a_queued_waiter_names_the_waiter_ahead_of_it() {
         .needs(db)
         .exclusive(db)
         .stop_within(secs(1))
-        .start(|_cx, _d: Arc<Unit>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _d: Arc<Unit>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.step("A")
         .needs(db)
         .exclusive(db)
@@ -341,7 +342,8 @@ fn nested_budget_child() -> Plan<Unit> {
         .service("Svc")
         .needs(conn)
         .stop_within(secs(1))
-        .start(|_cx, _c: Arc<Unit>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _c: Arc<Unit>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     inner
         .export(conn)
         .build(Policy::FailFast, Shutdown::within(secs(2)), Mode::Resident)
@@ -353,12 +355,13 @@ fn nested_budget_child() -> Plan<Unit> {
 fn nested_budget_plan() -> Plan {
     let child = nested_budget_child();
     let mut p = Plan::builder("P");
-    let c = p.component("C", &child);
+    let c = p.component("C", &child, ());
     let sess = unit_res_needs(&mut p, "Sess", c);
     p.service("Api")
         .needs(sess)
         .stop_within(secs(1))
-        .start(|_cx, _s: Arc<Unit>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _s: Arc<Unit>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::Isolate, Shutdown::within(secs(30)), Mode::Resident)
         .expect("valid")
 }
@@ -368,7 +371,7 @@ fn nested_budget_plan() -> Plan {
 fn nested_budget_failfast_plan() -> Plan {
     let child = nested_budget_child();
     let mut p = Plan::builder("P");
-    let c = p.component("C", &child);
+    let c = p.component("C", &child, ());
     unit_res_needs(&mut p, "Sess", c);
     p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
         .expect("valid")
@@ -392,7 +395,7 @@ fn isolate_child() -> Plan<()> {
 fn isolate_child_plan() -> Plan {
     let child = isolate_child();
     let mut p = Plan::builder("P");
-    let c = p.component("C", &child);
+    let c = p.component("C", &child, ());
     p.step("U")
         .needs(c)
         .run(|_cx, _c: Arc<()>| async move { Ok(()) });
@@ -409,7 +412,7 @@ fn isolate_child_export_plan() -> Plan {
         .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Finite)
         .expect("valid");
     let mut p = Plan::builder("P");
-    let c = p.component("C", &child);
+    let c = p.component("C", &child, ());
     p.step("U")
         .needs(c)
         .run(|_cx, _c: Arc<()>| async move { Ok(()) });
@@ -438,7 +441,7 @@ fn imported_lock_plan() -> Plan {
             .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite)
             .expect("valid child")
     };
-    p.component("C", &child);
+    p.component("C", &child, ());
     p.build(Policy::FailFast, Shutdown::within(secs(20)), Mode::Finite)
         .expect("valid")
 }

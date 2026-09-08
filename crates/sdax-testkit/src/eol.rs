@@ -20,7 +20,11 @@ pub fn secs_of(e: &TraceEvent) -> f64 {
 
 /// `start(N.*)`.
 pub fn is_start(k: &TraceKind) -> bool {
-    matches!(k, TraceKind::Start(_))
+    matches!(k, TraceKind::Start(phase) if *phase != Phase::Serve)
+}
+/// The start of one serving episode.
+pub fn is_episode_start(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Start(Phase::Serve))
 }
 /// `held(N)`.
 pub fn is_held(k: &TraceKind) -> bool {
@@ -45,7 +49,10 @@ pub fn is_interrupted(k: &TraceKind) -> bool {
 pub fn is_cleanup_start(k: &TraceKind) -> bool {
     matches!(
         k,
-        TraceKind::ReleaseStart | TraceKind::CompensateStart | TraceKind::StopRequested
+        TraceKind::ReleaseStart
+            | TraceKind::CompensateStart
+            | TraceKind::RecoveryStart
+            | TraceKind::StopRequested
     )
 }
 /// The end of `cleanup(N)`, however it ended.
@@ -54,6 +61,8 @@ pub fn is_cleanup_end(k: &TraceKind) -> bool {
         k,
         TraceKind::ReleaseOk
             | TraceKind::ReleaseFail(_)
+            | TraceKind::RecoveryOk
+            | TraceKind::RecoveryFail(_)
             | TraceKind::CompensateOk
             | TraceKind::CompensateFail(_)
             | TraceKind::Stopped

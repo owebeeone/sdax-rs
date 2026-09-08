@@ -6,6 +6,10 @@
 //! eligibility, the release graph, layers, arbitration — is derived from the
 //! declaration recorded here and from nothing else (INV-1).
 
+mod mounting;
+pub(crate) use mounting::mount_ir;
+pub use mounting::InputBinding;
+
 use crate::cx::{Child, Cx, SpawnError};
 use crate::host::bodies::Bodies;
 use crate::key::RawKey;
@@ -17,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// The semantics tag every plan carries. A change of meaning changes this tag.
-pub const SEMANTICS: &str = "sdax/1";
+pub const SEMANTICS: &str = "sdax/2";
 
 pub(crate) static PLAN_IDS: AtomicU64 = AtomicU64::new(1);
 
@@ -32,7 +36,8 @@ pub enum Kind {
     TryStep,
     /// Synchronous work on a declared pool.
     BlockingStep,
-    /// Long-lived; readiness is the return of `start` with a `Serving`.
+    /// Long-lived; initialization publishes one stable handle, then serving
+    /// runs in explicit restartable episodes.
     Service,
     /// An externally visible action with a compensation, or declared persistent.
     Effect,
@@ -154,6 +159,8 @@ pub struct Attrs {
     pub terminal: bool,
     /// What to do about an ambiguous effect. Required on effects.
     pub on_ambiguous: Option<Ambiguity>,
+    /// Explicit typed unknown-outcome recovery has been installed.
+    pub recovery: bool,
     /// How an in-flight body is cancelled.
     pub cancel: CancelMode,
     /// Resources this node takes exclusively. Several different resources may
@@ -185,6 +192,7 @@ impl Default for Attrs {
             stop_within: None,
             terminal: false,
             on_ambiguous: None,
+            recovery: false,
             cancel: CancelMode::Drop,
             exclusive: Vec::new(),
             shared: Vec::new(),
@@ -222,6 +230,8 @@ pub struct NodeDecl {
 pub struct PlanIr {
     /// Identity of the builder that produced this plan.
     pub id: u64,
+    /// Original definition identity, retained when mounting a reusable plan.
+    pub origin: u64,
     /// The author's name for the plan.
     pub name: String,
     /// The semantics tag, always [`SEMANTICS`] for this crate version.
@@ -238,7 +248,7 @@ pub struct PlanIr {
     pub mode: Mode,
     /// The exported node, if any.
     pub export: Option<RawKey>,
-    /// The template input node, if this plan is a template.
+    /// The typed input node, including ordinary unit input.
     pub input: Option<RawKey>,
     /// Late `spawns(key, &template)` declarations whose key is not a node of
     /// this plan, as `(the key named, the template node)`. They are recorded
@@ -262,13 +272,16 @@ impl PlanIr {
 
 /// An immutable, reusable lifecycle declaration.
 ///
-/// `Out` is the plan's exported value; `In` is a template's per-instance input.
-/// A plan with `In = ()` is a root or a component; a template is
-/// `Plan<Out, In>` and has no `start`.
+/// `Out` is completed exported data; `In` is the typed input supplied at
+/// root start, bound at static mounting, or supplied at dynamic spawning.
+/// One definition supports all three uses. Every run and mount has its own
+/// mutable state; immutable topology and body factories are shared.
 #[allow(clippy::type_complexity)] // the phantom encodes variance, not data
 pub struct Plan<Out = (), In = ()> {
     pub(crate) ir: Arc<PlanIr>,
     pub(crate) bodies: Arc<Bodies>,
+    pub(crate) body_layout: Arc<crate::host::bodies::BodyLayout>,
+    pub(crate) layout: Result<Arc<crate::host::engine::Table>, crate::host::engine::EngineError>,
     pub(crate) _t: PhantomData<fn() -> (Arc<Out>, In)>,
 }
 
@@ -277,6 +290,8 @@ impl<Out, In> Clone for Plan<Out, In> {
         Plan {
             ir: self.ir.clone(),
             bodies: self.bodies.clone(),
+            body_layout: self.body_layout.clone(),
+            layout: self.layout.clone(),
             _t: PhantomData,
         }
     }
@@ -292,20 +307,50 @@ impl<Out, In> std::fmt::Debug for Plan<Out, In> {
 }
 
 impl<Out, In> Plan<Out, In> {
-    /// The recorded declaration. Host API, like
-    /// [`bodies_ref`](Self::bodies_ref): the engine and the run driver read
-    /// it, an author does not.
-    pub(crate) fn ir(&self) -> &PlanIr {
-        &self.ir
+    pub(crate) fn from_parts(ir: PlanIr, bodies: Arc<Bodies>) -> Self {
+        let ir = Arc::new(ir);
+        let layout = crate::host::engine::compile_layout(&ir);
+        let body_layout = crate::host::bodies::BodyLayout::build(&ir, &bodies);
+        Plan {
+            ir,
+            bodies,
+            layout,
+            body_layout,
+            _t: PhantomData,
+        }
     }
 
-    /// The erased bodies this plan recorded.
-    ///
-    /// Host API, reached through
-    /// [`host::bodies_of`](crate::host::bodies_of) rather than named here by
-    /// an author.
-    pub(crate) fn bodies_ref(&self) -> &Arc<Bodies> {
-        &self.bodies
+    /// Bind a typed formal import for one parent, sharing immutable bodies.
+    /// The original definition remains available for other bindings and runs.
+    /// Returns a finding if `port` is not an import of this definition.
+    pub fn bind<T: ?Sized>(
+        &self,
+        port: crate::Key<T>,
+        parent: crate::Key<T>,
+    ) -> Result<Self, crate::Invalid> {
+        let mut ir = (*self.ir).clone();
+        let valid = ir
+            .node(port.raw())
+            .map(|n| n.kind == Kind::Import)
+            .unwrap_or(false);
+        if !valid {
+            return Err(crate::Invalid {
+                checks: vec![crate::Finding {
+                    rule: crate::Rule::ImportScope,
+                    nodes: vec![ir.name.clone()],
+                    keys: vec![port.raw()],
+                    detail: "binding does not name an import of this definition".into(),
+                    fix: "bind a typed port returned by this plan builder".into(),
+                }],
+            });
+        }
+        ir.nodes[port.raw().idx as usize].source = Some(parent.raw());
+        Ok(Self::from_parts(ir, self.bodies.clone()))
+    }
+
+    /// The recorded declaration used by the engine and run driver.
+    pub(crate) fn ir(&self) -> &PlanIr {
+        &self.ir
     }
 
     /// The plan's name.
@@ -371,13 +416,13 @@ impl<P> Cx<P> {
     ///
     /// The input lands in the instance's own slot table, which every body of
     /// the instance reads, so `I` is `Send + Sync` — which
-    /// `Plan::template::<In>` already requires, so no `Template` that can be
+    /// `Plan::with_input::<In>` already requires, so no `Template` that can be
     /// built is excluded (`OD-SPAWN-INPUT`).
     ///
     /// Only a node that declared `spawns(&template)` may do this, and only
     /// while the scope is still admitting starts. From a `Cx<Start>` body the
     /// returned [`Child`] can be awaited with
-    /// [`Child::ready`](crate::Child::ready), so a service's readiness can
+    /// [`Child::ready`](crate::Child::ready), so a service initializer's readiness can
     /// include its instances (F1).
     pub fn spawn<I: Send + Sync + 'static>(
         &self,

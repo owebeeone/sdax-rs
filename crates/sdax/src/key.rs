@@ -157,6 +157,14 @@ impl Slots {
         self.inner[key.idx as usize] = Some(v);
     }
 
+    /// Remove an engine-owned value without dropping it under the slot lock.
+    pub(crate) fn take_erased(
+        &mut self,
+        key: RawKey,
+    ) -> Option<Box<dyn std::any::Any + Send + Sync>> {
+        self.inner.get_mut(key.idx as usize)?.take()
+    }
+
     /// Read a node's output, or `None` if the slot is empty or holds another type.
     pub fn get<T: ?Sized + Send + Sync + 'static>(&self, key: RawKey) -> Option<Arc<T>> {
         self.inner[key.idx as usize]

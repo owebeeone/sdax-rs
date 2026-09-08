@@ -42,6 +42,12 @@ impl Machine {
     /// `UndeclaredTemplate`, and only a node that could otherwise spawn is told
     /// `ScopeStopping`.
     pub fn spawn_check(&self, spawner: RawKey, template: RawKey) -> Result<(), SpawnError> {
+        let template = self
+            .t
+            .index_of(spawner)
+            .and_then(|s| self.t.template_in(self.t.nodes[s].scope, template))
+            .map(|t| self.t.nodes[t].decl)
+            .unwrap_or(template);
         let known = self
             .t
             .nodes
@@ -83,6 +89,14 @@ impl Machine {
             for &tpl in &n.spawns {
                 let open = self.spawn_check(n.key, tpl).is_ok();
                 pairs.push((n.key, tpl, open));
+                let scope = &self.t.scopes[n.scope];
+                let original = RawKey {
+                    plan: scope.origin,
+                    idx: tpl.idx,
+                };
+                if original != tpl {
+                    pairs.push((n.key, original, open));
+                }
             }
         }
         SpawnTable {
@@ -91,7 +105,15 @@ impl Machine {
                 .nodes
                 .iter()
                 .filter(|n| n.kind == Kind::Template)
-                .map(|n| n.decl)
+                .flat_map(|n| {
+                    [
+                        n.decl,
+                        RawKey {
+                            plan: self.t.scopes[n.scope].origin,
+                            idx: n.decl.idx,
+                        },
+                    ]
+                })
                 .collect(),
             pairs,
         }
@@ -150,6 +172,11 @@ impl Machine {
         let Some(sp) = self.t.index_of(spawner) else {
             return Err("InstanceSpawned for an unknown spawner");
         };
+        let template = self
+            .t
+            .template_in(self.t.nodes[sp].scope, template)
+            .map(|t| self.t.nodes[t].decl)
+            .unwrap_or(template);
         if !self.t.nodes[sp].spawns.contains(&template) {
             return Err("InstanceSpawned for a template this node did not declare");
         }
@@ -163,7 +190,8 @@ impl Machine {
         // ended at once, so `Child::ready()` answers rather than hanging.
         let admitting = self.admitting(scope)
             && matches!(self.slots[t].st, St::Pending | St::Waiting | St::Live);
-        let Ok((inst_scope, added)) = self.t.instantiate(t, id) else {
+        let Ok((inst_scope, added)) = std::sync::Arc::make_mut(&mut self.t).instantiate(t, id)
+        else {
             return Err("InstanceSpawned for a node that is not a template");
         };
         self.grow_to(self.t.nodes.len(), self.t.scopes.len());

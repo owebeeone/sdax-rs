@@ -37,7 +37,8 @@ fn p01_foreign_key_is_rejected_naming_the_node_the_key_and_both_plans() {
     p.service("Reporter")
         .needs(session)
         .stop_within(secs(1))
-        .start(|_cx, _s: Arc<()>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _s: Arc<()>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     let inv = invalid(p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident));
     let f = only(&inv, Rule::ForeignKey);
     assert_eq!(f.nodes, ["Reporter"]);
@@ -96,7 +97,7 @@ fn p06_idempotency_is_required_for_retry_restart_and_compensating_ambiguity() {
     assert!(f.detail.contains("retry"), "{}", f.detail);
 
     let inv = invalid(i15_with(I15Opts {
-        ambiguity: Ambiguity::Compensate,
+        ambiguity: Ambiguity::Recover,
         ..I15Opts::default()
     }));
     assert!(only(&inv, Rule::IdempotentRequired)
@@ -124,7 +125,8 @@ fn p06_a_restarted_service_must_be_idempotent() {
             .stop_within(secs(2))
             .restart(Restart::on_error(Backoff::fixed(secs(1))));
         let svc = if idempotent { svc.idempotent() } else { svc };
-        svc.start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+        svc.initialize(|_cx, ()| async move { Ok(()) })
+            .serve(|_cx, _handle| async move { Ok(()) });
         p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
     }
     assert!(build(true).is_ok());
@@ -165,10 +167,10 @@ fn p07_a_two_level_nesting_is_accepted_when_each_level_imports() {
         .acquire(|cx, ()| async move { Ok(cx.hold_value(Endpoint)) })
         .release(|_cx, _e| async move { Ok(()) });
 
-    let mut mid = Plan::template::<PeerLink>("Mid");
+    let mut mid = Plan::with_input::<PeerLink>("Mid");
     let mid_ep = mid.import(endpoint);
     let grandchild = {
-        let mut g = Plan::template::<PeerLink>("Grandchild");
+        let mut g = Plan::with_input::<PeerLink>("Grandchild");
         let g_ep = g.import(mid_ep);
         g.resource("Entry")
             .needs(g_ep)
@@ -181,7 +183,8 @@ fn p07_a_two_level_nesting_is_accepted_when_each_level_imports() {
     mid.service("Spawner")
         .stop_within(secs(1))
         .spawns(&gtpl)
-        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     let mid = mid
         .build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Resident)
         .expect("valid");
@@ -191,7 +194,8 @@ fn p07_a_two_level_nesting_is_accepted_when_each_level_imports() {
         .needs(endpoint)
         .spawns(&mtpl)
         .stop_within(secs(2))
-        .start(|_cx, _e: Arc<Endpoint>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _e: Arc<Endpoint>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     assert!(root
         .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
         .is_ok());
@@ -229,11 +233,12 @@ fn p09_pool_starvation_is_rejected() {
 fn p09_a_child_plan_cannot_take_a_parent_pool() {
     let mut p = Plan::builder("Mesh");
     let cpu = p.pool("cpu", 3);
-    let mut t = Plan::template::<PeerLink>("Link");
+    let mut t = Plan::with_input::<PeerLink>("Link");
     t.service("Worker")
         .limit(cpu)
         .stop_within(secs(1))
-        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     let inv = invalid(t.build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Resident));
     let f = only(&inv, Rule::ForeignKey);
     assert_eq!(f.nodes, ["Worker"]);
@@ -326,7 +331,8 @@ fn v_mode_rejects_a_finite_plan_that_contains_a_service_or_a_template() {
     let mut p = Plan::builder("Daemon");
     p.service("Loop")
         .stop_within(secs(1))
-        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     let inv = invalid(p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite));
     let f = only(&inv, Rule::Mode);
     assert_eq!(f.nodes, ["Loop"]);
@@ -357,9 +363,10 @@ fn v_spawn_self_import_rejects_a_readiness_deadlock() {
         .service("AcceptLoop")
         .needs(endpoint)
         .stop_within(secs(2))
-        .start(|_cx, _e: Arc<Endpoint>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _e: Arc<Endpoint>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     let tpl = {
-        let mut t = Plan::template::<PeerLink>("Link");
+        let mut t = Plan::with_input::<PeerLink>("Link");
         let a = t.import(accept);
         let conn = t.input();
         t.resource("LinkEntry")
@@ -411,7 +418,8 @@ fn a_service_may_spawn_in_the_chain_form_and_in_the_late_form() {
     let accept = p
         .service("AcceptLoop")
         .stop_within(secs(2))
-        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.spawns(accept, &tpl);
     let plan = p
         .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
@@ -433,7 +441,8 @@ fn v_foreign_key_catches_a_late_spawns_whose_key_belongs_to_another_plan() {
     let stray = other
         .service("Stray")
         .stop_within(secs(1))
-        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     let other_id = other.id();
     let _ = other.build(Policy::FailFast, Shutdown::within(secs(2)), Mode::Resident);
 
@@ -576,11 +585,11 @@ fn v_persist_ambig_rejects_a_persistent_effect_that_compensates_an_ambiguity() {
     let mut p = Plan::builder("Persist");
     p.effect("Charge")
         .idempotent()
-        .on_ambiguous(Ambiguity::Compensate)
+        .on_ambiguous(Ambiguity::Recover)
         .perform(|cx, ()| async move { Ok(cx.hold_value(Receipt("r"))) })
         .persistent();
     let inv = invalid(p.build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Finite));
-    let f = only(&inv, Rule::PersistAmbig);
+    let f = only(&inv, Rule::RecoveryMissing);
     assert_eq!(f.nodes, ["Charge"]);
-    assert!(f.fix.contains("Ambiguity::Report"), "{f}");
+    assert!(f.fix.contains("identified_by"), "{f}");
 }

@@ -14,22 +14,34 @@ fn i01_is_recorded_exactly_as_written() {
     assert_send_sync::<Plan>();
     let ir = plan.ir();
     assert_eq!(ir.name, "Startup");
-    assert_eq!(ir.semantics, "sdax/1");
+    assert_eq!(ir.semantics, "sdax/2");
     let names: Vec<&str> = ir.nodes.iter().map(|n| n.name.as_str()).collect();
     assert_eq!(
         names,
-        ["Transport", "PeerStore", "RoutingTable", "Registration"]
+        [
+            "input",
+            "Transport",
+            "PeerStore",
+            "RoutingTable",
+            "Registration"
+        ]
     );
     let kinds: Vec<Kind> = ir.nodes.iter().map(|n| n.kind).collect();
     assert_eq!(
         kinds,
-        [Kind::Resource, Kind::Resource, Kind::Resource, Kind::Effect]
+        [
+            Kind::Input,
+            Kind::Resource,
+            Kind::Resource,
+            Kind::Resource,
+            Kind::Effect
+        ]
     );
-    assert_eq!(ir.nodes[0].needs, vec![]);
-    assert_eq!(ir.nodes[1].needs, vec![ir.nodes[0].key]);
-    assert_eq!(ir.nodes[2].needs, vec![ir.nodes[0].key]);
-    assert_eq!(ir.nodes[3].needs, vec![ir.nodes[1].key, ir.nodes[2].key]);
-    assert_eq!(ir.nodes[3].attrs.on_ambiguous, Some(Ambiguity::Report));
+    assert_eq!(ir.nodes[1].needs, vec![]);
+    assert_eq!(ir.nodes[2].needs, vec![ir.nodes[1].key]);
+    assert_eq!(ir.nodes[3].needs, vec![ir.nodes[1].key]);
+    assert_eq!(ir.nodes[4].needs, vec![ir.nodes[2].key, ir.nodes[3].key]);
+    assert_eq!(ir.nodes[4].attrs.on_ambiguous, Some(Ambiguity::Report));
     assert_eq!(ir.policy, Policy::FailFast);
     assert_eq!(ir.mode, Mode::Finite);
     assert_eq!(ir.shutdown, Shutdown::within(secs(10)));
@@ -40,16 +52,16 @@ fn release_by_drop_is_recorded_as_drop_not_as_a_body() {
     let plan = i01().expect("valid");
     let ir = plan.ir();
     assert_eq!(
-        ir.nodes[0].attrs.release,
+        ir.nodes[1].attrs.release,
         ReleaseStyle::Async,
         "Transport has a release body"
     );
     assert_eq!(
-        ir.nodes[2].attrs.release,
+        ir.nodes[3].attrs.release,
         ReleaseStyle::Drop,
         "RoutingTable is release::by_drop()"
     );
-    assert_eq!(ir.nodes[3].attrs.release, ReleaseStyle::Compensate);
+    assert_eq!(ir.nodes[4].attrs.release, ReleaseStyle::Compensate);
 }
 
 #[test]
@@ -59,7 +71,7 @@ fn an_effect_may_be_persistent_instead_of_compensated() {
         ..I15Opts::default()
     })
     .expect("valid");
-    assert_eq!(plan.ir().nodes[1].attrs.release, ReleaseStyle::Persistent);
+    assert_eq!(plan.ir().nodes[2].attrs.release, ReleaseStyle::Persistent);
 }
 
 #[test]
@@ -86,6 +98,7 @@ fn attribute_order_is_free_and_the_recorded_declaration_is_identical() {
         format!("{:?}", p.ir())
             .replace(&format!("plan: {}", p.ir().id), "plan: N")
             .replace(&format!("id: {},", p.ir().id), "id: N,")
+            .replace(&format!("origin: {},", p.ir().origin), "origin: N,")
     }
     assert_eq!(normalised(&build(true)), normalised(&build(false)));
 }
@@ -93,7 +106,7 @@ fn attribute_order_is_free_and_the_recorded_declaration_is_identical() {
 #[test]
 fn a_component_carries_its_child_plan_and_a_template_records_its_imports() {
     let composed = i32(Shutdown::within(secs(5))).expect("valid");
-    let net = &composed.ir().nodes[0];
+    let net = &composed.ir().nodes[1];
     assert_eq!(net.kind, Kind::Component);
     assert_eq!(net.child.as_ref().expect("inner plan").name, "Networking");
 
@@ -114,7 +127,7 @@ fn a_component_carries_its_child_plan_and_a_template_records_its_imports() {
         .expect("import node");
     assert_eq!(
         import.source,
-        Some(mesh.ir().nodes[0].key),
+        Some(mesh.ir().nodes[1].key),
         "imports the mesh Endpoint"
     );
     assert!(
@@ -138,8 +151,8 @@ fn a_component_carries_its_child_plan_and_a_template_records_its_imports() {
 fn a_step_and_a_try_step_differ_in_their_recorded_kind() {
     let plan = i23(true).expect("valid");
     let kinds: Vec<Kind> = plan.ir().nodes.iter().map(|n| n.kind).collect();
-    assert_eq!(kinds[1], Kind::TryStep);
-    assert_eq!(kinds[6], Kind::Step);
+    assert_eq!(kinds[2], Kind::TryStep);
+    assert_eq!(kinds[7], Kind::Step);
 }
 
 #[test]
@@ -166,8 +179,8 @@ fn locks_and_exports_are_recorded() {
         .iter()
         .find(|n| n.name == "MigA")
         .expect("MigA");
-    assert_eq!(miga.attrs.exclusive, vec![plan.ir().nodes[0].key]);
+    assert_eq!(miga.attrs.exclusive, vec![plan.ir().nodes[1].key]);
 
     let net = networking().expect("valid");
-    assert_eq!(net.ir().export, Some(net.ir().nodes[3].key));
+    assert_eq!(net.ir().export, Some(net.ir().nodes[4].key));
 }

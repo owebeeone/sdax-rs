@@ -21,7 +21,7 @@ use sdax::{
     Held, Hold, Invalid, Key, Kind, Mode, NeedsCompensate, NeedsRelease, NoAmbiguity, NoPool, Node,
     NodePath, NodeRecord, NodeView, Outcome, Phase, Plan, PlanBuilder, PlanDiff, PlanView, Policy,
     Pool, PoolView, Reason, RecordOrder, Release, ReleaseOrder, ReleaseStyle, Report, Request,
-    Resource, Restart, Retry, Rule, Run, Schedule, Script, Serve, Service, Serving, Shutdown,
+    Resource, Restart, Retry, Rule, Run, Schedule, Script, Serve, Service, ServingPhase, Shutdown,
     SpawnError, Start, Step, Stop, Template, Timeout, Trace, TraceEvent, TraceKind, TryStep, Why,
 };
 
@@ -73,15 +73,15 @@ mod prelude_only {
         v.why("Db")
     }
 
-    /// `Cx`, its four phases, `Held`, `Serving` and `Child`: everything a body
+    /// `Cx`, its service phases, `Held` and `Child`: everything a body
     /// is handed, named from the prelude alone.
     pub fn seam_shapes(
         _a: &Cx<Acquire>,
         _r: &Cx<Run>,
         _s: &Cx<Start>,
+        _serving: &Cx<ServingPhase>,
         _rel: &Cx<Release>,
         _h: &Held<Db>,
-        _sv: &Serving<()>,
         _c: &Child,
     ) {
     }
@@ -166,7 +166,7 @@ fn the_author_api_builds_and_inspects_a_plan_through_the_prelude_alone() {
 
 #[test]
 fn the_host_surface_carries_the_semantics_tag_and_the_engine_vocabulary() {
-    assert_eq!(SEMANTICS, "sdax/1");
+    assert_eq!(SEMANTICS, "sdax/2");
     assert_eq!(prelude_only::build().expect("valid").semantics(), SEMANTICS);
 
     let node = RawKey { plan: 1, idx: 0 };
@@ -183,24 +183,26 @@ fn the_driver_hand_offs_are_reachable_from_another_crate() {
     // hand-offs must be usable from outside this crate — under `host`, never
     // at the root.
     let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, std::sync::Arc::new(Frozen));
-    let cx: Cx<Acquire> = Cx::new(inner.clone());
+    let cx: Cx<Acquire> = inner.acquire();
     assert_eq!(cx.node(), RawKey { plan: 1, idx: 0 });
     assert_eq!(inner.hold_count(), 0);
-    assert!(inner.take_held().is_none());
-    assert!(inner.take_serve().is_none());
 
+    let shared = cx.shared();
     let held = cx.hold_value(7u8);
     assert_eq!(*held, 7);
     assert_eq!(inner.hold_count(), 1);
     assert!(inner.take_held().is_some());
 
     inner.put_output(Box::new(std::sync::Arc::new(1u8)));
-    assert!(inner.take_held().is_some());
+    assert!(
+        inner.take_held().is_none(),
+        "a discharged attempt cannot register again"
+    );
 
     let stop: &std::sync::Arc<StopSignal> = inner.stop_signal();
     assert!(!stop.is_stopping());
     stop.request();
-    assert!(cx.is_stopping());
+    assert!(shared.is_stopping());
 
     drop(takes_a_clock(&Frozen));
     assert_eq!(takes_a_runtime(&NoRuntime(Frozen)), Time::ZERO);
@@ -262,10 +264,10 @@ fn unresolved_imports_names_the_import_nodes_rather_than_raw_keys() {
         .expect("valid");
 
     let unresolved: Vec<NodePath> = child.unresolved_imports();
-    assert_eq!(unresolved, vec![NodePath::root("import#0")]);
-    assert_eq!(unresolved[0].to_string(), "import#0");
+    assert_eq!(unresolved, vec![NodePath::root("import#1")]);
+    assert_eq!(unresolved[0].to_string(), "import#1");
 
-    root.component("Child", &child);
+    root.component("Child", &child, ());
     let root = root
         .build(
             Policy::FailFast,
@@ -310,14 +312,23 @@ fn the_run_drivers_hand_offs_are_reachable_from_another_crate() {
     let src: std::sync::Arc<dyn BodySource> = bodies_of(&plan);
     assert!(src.export().is_none());
 
-    let machine = Machine::new(&plan).expect("a static plan");
+    let mut machine = Machine::new(&plan).expect("a static plan");
     let nodes = machine.nodes();
     assert_eq!(nodes.len(), 2);
     let (key, path, kind) = nodes[0].clone();
     assert_eq!(path.to_string(), "Db");
     assert_eq!(kind, Kind::Resource);
     assert_eq!(machine.kind_of(key), Some(Kind::Resource));
-    // `Db` declares `within(3s)`, and the machine's clock has not moved.
+    assert_eq!(
+        machine.deadline_for(key),
+        None,
+        "no body phase before begin"
+    );
+    let effects = machine.begin();
+    assert!(effects.iter().any(
+        |effect| matches!(effect, sdax::host::engine::Effect::Spawn { node, .. } if *node == key)
+    ));
+    // `Db` declares `within(3s)`, and its execution timer is now armed.
     assert_eq!(
         machine.deadline_for(key),
         Some(Time::ZERO + std::time::Duration::from_secs(3))

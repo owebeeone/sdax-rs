@@ -47,7 +47,7 @@ fn direct_child_import_of_root_input_omits_only_the_root_input_wait() {
             Mode::Finite,
         )
         .expect("valid child");
-    let _ = root.component("Child", &child);
+    let _ = root.component("Child", &child, ());
     let root = root
         .build(
             Policy::FailFast,
@@ -116,7 +116,7 @@ fn nested_component_imports_preserve_supplied_root_input_within_chains() {
             Mode::Finite,
         )
         .expect("valid nested");
-    let _ = child.component("Nested", &nested);
+    let _ = child.component("Nested", &nested, ());
 
     let child = child
         .build(
@@ -125,7 +125,7 @@ fn nested_component_imports_preserve_supplied_root_input_within_chains() {
             Mode::Finite,
         )
         .expect("valid child");
-    let _ = root.component("Component", &child);
+    let _ = root.component("Component", &child, ());
 
     let root = root
         .build(
@@ -170,7 +170,7 @@ fn template_imports_root_input_without_phantom_waits() {
         .acquire(|cx, ()| async move { Ok(cx.hold_value(3u32)) })
         .release(|_cx, _t| async move { Ok(()) });
 
-    let mut template = Plan::template::<u8>("Template");
+    let mut template = Plan::with_input::<u8>("Template");
     let template_input = template.input();
     let from_root_request = template.import(request);
     let from_root_token = template.import(token);
@@ -281,7 +281,7 @@ fn template_inside_component_preserves_own_input_boundary_through_child_imports(
     let input = root.input();
     let mut middle = Plan::builder("middle");
     let from_root = middle.import(input);
-    let mut factory = Plan::template::<u8>("factory");
+    let mut factory = Plan::with_input::<u8>("factory");
     let own = factory.input();
     let imported = factory.import(from_root);
     let mut child = Plan::builder("child");
@@ -294,7 +294,7 @@ fn template_inside_component_preserves_own_input_boundary_through_child_imports(
     let child = child
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .unwrap();
-    factory.component("Child", &child);
+    factory.component("Child", &child, ());
     let factory = factory
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .unwrap();
@@ -302,7 +302,7 @@ fn template_inside_component_preserves_own_input_boundary_through_child_imports(
     let middle = middle
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Resident)
         .unwrap();
-    root.component("Middle", &middle);
+    root.component("Middle", &middle, ());
     let root = root
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .unwrap();

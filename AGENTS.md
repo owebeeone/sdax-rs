@@ -1,6 +1,6 @@
 # Working rules for `sdax-rs`
 
-Read this before changing anything here. `dev-docs/SdaxContract-v1.md` is the
+Read this before changing anything here. `dev-docs/SdaxContract-v2.md` is the
 normative contract; this file is how the work is done.
 
 `docs/` is how to use the crate. `dev-docs/` is plans, the contract, stage
@@ -66,6 +66,14 @@ form is `cx.spawn(&template, input)`. `clippy.toml` refuses
 everywhere. `sdax-tokio` is the one exception; its two call sites carry a
 scoped `#[allow(clippy::disallowed_methods)]` and a comment saying why. Do not
 widen that allow, and do not add a crate-level one.
+
+## No unsolicited cleanup
+
+The owner prefers retaining workspaces, build outputs, temporary files and recovery copies over reclaiming disk space. Do not delete them unless the owner explicitly asks for cleanup. Report disk-space concerns instead. Use a new isolated directory for another run; leave previous directories available for review and recovery.
+
+## Windows remote execution
+
+Use the installed Git/MinGW Bash for remote scripts on `dabeest`. Send script text through SSH standard input to `C:/Progra~1/Git/bin/bash.exe --noprofile --norc -s`; do not embed scripts in nested PowerShell command strings. The user's instruction is to avoid PowerShell translation. Pass native Windows tool arguments as a Python `subprocess` argument list, so Bash/MSYS does not rewrite their paths or options. Fail on errors and validate literal destinations before mutations. Do not clear a workspace with an interpolated recursive-delete pipeline; use a fresh isolated directory instead.
 
 ## Offline, and pinned
 

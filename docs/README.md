@@ -24,6 +24,7 @@ purpose, not an application trimmed for the page.
 | Understand the graph, kinds, and policy | [Concepts](https://github.com/owebeeone/sdax-rs/blob/main/docs/Concepts.md) |
 | Not leak a connection | [Cleanup](https://github.com/owebeeone/sdax-rs/blob/main/docs/Cleanup.md) |
 | Declare every kind of node | [Authoring](https://github.com/owebeeone/sdax-rs/blob/main/docs/Authoring.md) |
+| Give an AI the exact authoring forms | [AI authoring reference](https://github.com/owebeeone/sdax-rs/blob/main/docs/AI-Authoring.md) |
 | Start, stop, cancel, and drop a run | [Running](https://github.com/owebeeone/sdax-rs/blob/main/docs/Running.md) |
 | Read `build` findings and a `Report` | [Errors](https://github.com/owebeeone/sdax-rs/blob/main/docs/Errors.md) |
 | Inspect a plan or simulate a run | [Inspect](https://github.com/owebeeone/sdax-rs/blob/main/docs/Inspect.md) |

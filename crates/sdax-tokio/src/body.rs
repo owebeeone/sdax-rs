@@ -83,19 +83,13 @@ impl Future for Guarded {
     }
 }
 
-/// What the machine is told a finished body did.
-///
-/// A body that registered twice in one attempt broke the seam's one-value
-/// rule, and it broke it whatever it then returned: only the last value can be
-/// discharged and the first is dropped with the body's locals, unreleased and
-/// unrecorded. So `DoubleHold` outranks the body's own `Err` — the error is
-/// the body's opinion of its work, the double hold is the engine's observation
-/// that the seam was broken, and only one of them can be the attempt's fault.
-/// A panic still outranks both: its payload is carried nowhere else.
+/// What the machine is told a finished body did. Invalid repeated host
+/// acquisition is reported as DoubleHold, while the first stored value remains
+/// available for cleanup. A panic retains priority so its payload is preserved.
 fn outcome_event(node: RawKey, cx: &Arc<CxInner>, out: Outcome) -> Event {
     match out {
         Err(payload) => Event::NodeErr(node, FaultKind::Panic(payload)),
-        Ok(_) if cx.hold_count() > 1 => Event::NodeErr(node, FaultKind::DoubleHold),
+        Ok(_) if cx.repeated_registration() => Event::NodeErr(node, FaultKind::DoubleHold),
         Ok(Err(e)) => Event::NodeErr(node, FaultKind::Error(e)),
         Ok(Ok(())) => Event::NodeOk(node),
     }
@@ -135,7 +129,7 @@ pub(crate) async fn run_body(
     let _ = tx.send(Msg::Body { node, epoch, ev });
 }
 
-/// A service's serve future, once its start body handed it over.
+/// One service episode produced by its serving factory.
 pub(crate) async fn run_serve(
     tx: Tx,
     node: RawKey,

@@ -117,7 +117,9 @@ pub fn i15_with(o: I15Opts) -> Result<Plan, Invalid> {
     }
     let performed = eff
         .on_ambiguous(o.ambiguity)
-        .perform(|cx, _t: Arc<Transport>| async move { Ok(cx.hold_value(Receipt("r"))) });
+        .identified_by(transport)
+        .perform(|cx, (_t, _id)| async move { Ok(cx.hold_value(Receipt("r"))) })
+        .recover_unknown(|_, _| async { Ok(Recovery::Resolved) });
     if o.persistent {
         performed.persistent();
     } else {
@@ -137,11 +139,10 @@ pub fn i05() -> Result<Plan, Invalid> {
         .service("AcceptLoop")
         .needs(endpoint)
         .stop_within(secs(2))
-        .start(|cx, _e: Arc<Endpoint>| async move {
-            Ok(Serving::new((), async move {
-                cx.until_stop(std::future::pending::<()>()).await;
-                Ok(())
-            }))
+        .initialize(|_cx, _e: Arc<Endpoint>| async move { Ok(()) })
+        .serve(|cx, _handle| async move {
+            cx.until_stop(std::future::pending::<()>()).await;
+            Ok(())
         });
     p.effect("PublishAddr")
         .needs(accept)
@@ -159,11 +160,14 @@ pub fn i07(shutdown: Shutdown, exporter_stop: Option<Duration>) -> Result<Plan, 
     if let Some(d) = exporter_stop {
         exporter = exporter.stop_within(d);
     }
-    let exporter = exporter.start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+    let exporter = exporter
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.service("Api")
         .needs((migrate, exporter))
         .stop_within(secs(1))
-        .start(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown, Mode::Resident)
 }
 
@@ -182,7 +186,8 @@ pub fn i18(worker_stop: Duration, dup_db: bool) -> Result<Plan, Invalid> {
     p.service("Worker")
         .needs(db)
         .stop_within(worker_stop)
-        .start(|_cx, _d: Arc<Db>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _d: Arc<Db>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
 }
 
@@ -249,7 +254,8 @@ pub fn i27(migb_needs_db: bool) -> Result<Plan, Invalid> {
     p.service("App")
         .needs((miga, migb))
         .stop_within(secs(1))
-        .start(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
 }
 
@@ -266,7 +272,8 @@ pub fn i29(pool_limit: usize, resident_holders: usize) -> Result<Plan, Invalid> 
         p.service(if i == 0 { "Hold0" } else { "Hold1" })
             .limit(cpu)
             .stop_within(secs(1))
-            .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+            .initialize(|_cx, ()| async move { Ok(()) })
+            .serve(|_cx, _handle| async move { Ok(()) });
     }
     let verify = p
         .blocking_step("Verify")
@@ -276,7 +283,8 @@ pub fn i29(pool_limit: usize, resident_holders: usize) -> Result<Plan, Invalid> 
     p.service("Serve")
         .needs(verify)
         .stop_within(secs(1))
-        .start(|_cx, _v: Arc<()>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _v: Arc<()>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
 }
 
@@ -330,7 +338,7 @@ pub fn i32(inner: Shutdown) -> Result<Plan, Invalid> {
         .build(Policy::FailFast, inner, Mode::Finite)?;
 
     let mut p = Plan::builder("Process");
-    let net_key = p.component("Net", &net);
+    let net_key = p.component("Net", &net, ());
     p.effect("Registration")
         .needs(net_key)
         .on_ambiguous(Ambiguity::Report)
@@ -341,7 +349,7 @@ pub fn i32(inner: Shutdown) -> Result<Plan, Invalid> {
 
 /// I-30's per-connection template, importing the mesh endpoint.
 pub fn link_plan(endpoint: Key<Endpoint>) -> Result<Plan<(), PeerLink>, Invalid> {
-    let mut t = Plan::template::<PeerLink>("Link");
+    let mut t = Plan::with_input::<PeerLink>("Link");
     let ep = t.import(endpoint);
     let conn = t.input();
     let entry = t
@@ -354,19 +362,21 @@ pub fn link_plan(endpoint: Key<Endpoint>) -> Result<Plan<(), PeerLink>, Invalid>
     t.service("Dispatcher")
         .needs(entry)
         .stop_within(secs(1))
-        .start(|_cx, _e: Arc<LinkEntry>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _e: Arc<LinkEntry>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     t.service("UnlinkOnClose")
         .needs(entry)
         .terminal()
         .stop_within(secs(1))
-        .start(|_cx, _e: Arc<LinkEntry>| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, _e: Arc<LinkEntry>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     t.build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Resident)
 }
 
 /// A template with no imports at all, for the tests that need one registered
 /// without tying it to any particular key.
 pub fn plain_link() -> Result<Plan<(), PeerLink>, Invalid> {
-    let mut t = Plan::template::<PeerLink>("Link");
+    let mut t = Plan::with_input::<PeerLink>("Link");
     let conn = t.input();
     t.step("Inner")
         .needs(conn)
@@ -386,10 +396,11 @@ pub fn i30() -> Result<Plan, Invalid> {
         .needs(endpoint)
         .spawns(&links)
         .stop_within(secs(2))
-        .start(move |cx, _e: Arc<Endpoint>| async move {
+        .initialize(move |cx, _e: Arc<Endpoint>| async move {
             let child = cx.spawn(&links, PeerLink(1))?;
             child.ready().await?;
-            Ok(Serving::new((), async { Ok(()) }))
-        });
+            Ok(())
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
 }

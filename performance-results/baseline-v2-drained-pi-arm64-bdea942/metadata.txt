@@ -1,0 +1,15 @@
+baseline_commit=bdea94200ae743fc94ea76987cfd4f6927e0ff8d
+source_revision=cfd2b4f5d82a1940ae567b89492ffe768901e843c77eb332107eceac318aec1d
+fixture_revision=5bd68fd521f80941e4ead3e25af70e88aa70f497df6b9ee7a47810f81c0debc7
+captured_utc=2026-09-08T06:31:20Z
+hostname=weftpi
+uname=Linux weftpi 6.12.62+rpt-rpi-2712 #1 SMP PREEMPT Debian 1:6.12.62-1+rpt1 (2025-12-18) aarch64 GNU/Linux
+rustc=rustc 1.96.0 (ac68faa20 2026-05-25);binary: rustc;commit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96;commit-date: 2026-05-25;host: aarch64-unknown-linux-gnu;release: 1.96.0;LLVM version: 22.1.2;
+cargo=cargo 1.96.0 (30a34c682 2026-05-25)
+profile=release(codegen-units=1,lto=thin)
+runtime=tokio-current-thread
+workers=1
+warmup=8
+timed_samples=40
+build_samples=20
+trace=per-workload(default-or-counting-observer)

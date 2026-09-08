@@ -176,7 +176,7 @@ fn many_concurrent_runs_each_keep_their_own_input() {
 fn a_spawned_instance_body_receives_the_input_cx_spawn_was_given() {
     let seen = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let inner_seen = seen.clone();
-    let mut t = Plan::template::<u8>("Link");
+    let mut t = Plan::with_input::<u8>("Link");
     let conn = t.input();
     t.step("Inner").needs(conn).run(move |_cx, v: Arc<u8>| {
         let seen = inner_seen.clone();
@@ -194,11 +194,12 @@ fn a_spawned_instance_body_receives_the_input_cx_spawn_was_given() {
     p.service("Accept")
         .spawns(&links)
         .stop_within(secs(1))
-        .start(move |cx, ()| async move {
+        .initialize(move |cx, ()| async move {
             let instance = cx.spawn(&links, 42u8)?;
             instance.ready().await?;
-            Ok(Serving::new((), async { Ok(()) }))
-        });
+            Ok(())
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let plan = p
         .build(Policy::FailFast, Shutdown::within(secs(10)), Mode::Resident)
         .expect("valid");

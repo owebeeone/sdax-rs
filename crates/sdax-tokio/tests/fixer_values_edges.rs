@@ -40,7 +40,7 @@ fn failed_and_skipped_exports_never_construct_parent_consumer() {
             .build(Policy::Isolate, shutdown(), Mode::Finite)
             .unwrap();
         let mut root = Plan::builder("root");
-        let component = root.component("child", &child);
+        let component = root.component("child", &child, ());
         let counter = constructed.clone();
         root.step("consumer")
             .needs(component)
@@ -70,7 +70,7 @@ fn isolated_unrelated_child_failure_retains_fault_and_delivers_export() {
         .build(Policy::Isolate, shutdown(), Mode::Finite)
         .unwrap();
     let mut root = Plan::builder("root");
-    let component = root.component("child", &child);
+    let component = root.component("child", &child, ());
     let value = root
         .step("consumer")
         .needs(component)
@@ -88,7 +88,7 @@ fn isolated_unrelated_child_failure_retains_fault_and_delivers_export() {
 #[test]
 fn concurrent_template_instances_publish_component_values_before_child_ready() {
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let mut template = Plan::template::<u32>("template");
+    let mut template = Plan::with_input::<u32>("template");
     let input = template.input();
     let mut child = Plan::builder("child");
     let imported = child.import(input);
@@ -100,7 +100,7 @@ fn concurrent_template_instances_publish_component_values_before_child_ready() {
         .export(value)
         .build(Policy::FailFast, shutdown(), Mode::Finite)
         .unwrap();
-    let component = template.component("child", &child);
+    let component = template.component("child", &child, ());
     let values = seen.clone();
     template
         .step("consume")
@@ -118,7 +118,7 @@ fn concurrent_template_instances_publish_component_values_before_child_ready() {
     root.service("owner")
         .spawns(&registered)
         .stop_within(Duration::from_secs(1))
-        .start(move |cx, ()| {
+        .initialize(move |cx, ()| {
             let at_ready = at_ready.clone();
             async move {
                 let first = cx.spawn(&registered, 11u32)?;
@@ -128,9 +128,10 @@ fn concurrent_template_instances_publish_component_values_before_child_ready() {
                 let mut observed = at_ready.lock().unwrap().clone();
                 observed.sort_unstable();
                 assert_eq!(observed, vec![11, 22]);
-                Ok(Serving::new((), async { Ok(()) }))
+                Ok(())
             }
-        });
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let plan = root
         .build(Policy::FailFast, shutdown(), Mode::Resident)
         .unwrap();
@@ -155,16 +156,17 @@ fn resident_ready_without_observation_on_multithread_has_real_value() {
         .build(Policy::FailFast, shutdown(), Mode::Finite)
         .unwrap();
     let mut root = Plan::builder("root");
-    let component = root.component("child", &child);
+    let component = root.component("child", &child, ());
     let seen = Arc::new(AtomicU32::new(0));
     let value = seen.clone();
     root.service("consumer")
         .needs(component)
         .stop_within(Duration::from_secs(1))
-        .start(move |_, input: Arc<u32>| {
+        .initialize(move |_, input: Arc<u32>| {
             value.store(*input, Ordering::SeqCst);
-            async { Ok(Serving::new((), async { Ok(()) })) }
-        });
+            async { Ok(()) }
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let plan = root
         .export(component)
         .build(Policy::FailFast, shutdown(), Mode::Resident)
@@ -189,9 +191,9 @@ fn resident_ready_without_observation_on_multithread_has_real_value() {
 #[test]
 fn nested_template_component_reads_own_input_and_ancestor_import() {
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let mut outer = Plan::template::<u32>("outer");
+    let mut outer = Plan::with_input::<u32>("outer");
     let outer_input = outer.input();
-    let mut inner = Plan::template::<u32>("inner");
+    let mut inner = Plan::with_input::<u32>("inner");
     let inner_input = inner.input();
     let ancestor = inner.import(outer_input);
     let mut component = Plan::builder("component");
@@ -205,7 +207,7 @@ fn nested_template_component_reads_own_input_and_ancestor_import() {
         .export(sum)
         .build(Policy::FailFast, shutdown(), Mode::Finite)
         .unwrap();
-    let component = inner.component("component", &component);
+    let component = inner.component("component", &component, ());
     let values = seen.clone();
     inner
         .step("consume")
@@ -223,10 +225,11 @@ fn nested_template_component_reads_own_input_and_ancestor_import() {
         .needs(outer_input)
         .spawns(&nested)
         .stop_within(Duration::from_secs(1))
-        .start(move |cx, input: Arc<u32>| async move {
+        .initialize(move |cx, input: Arc<u32>| async move {
             cx.spawn(&nested, *input + 100)?.ready().await?;
-            Ok(Serving::new((), async { Ok(()) }))
-        });
+            Ok(())
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let outer = outer
         .build(Policy::FailFast, shutdown(), Mode::Resident)
         .unwrap();
@@ -235,13 +238,14 @@ fn nested_template_component_reads_own_input_and_ancestor_import() {
     root.service("owner")
         .spawns(&instances)
         .stop_within(Duration::from_secs(1))
-        .start(move |cx, ()| async move {
+        .initialize(move |cx, ()| async move {
             let a = cx.spawn(&instances, 11u32)?;
             let b = cx.spawn(&instances, 22u32)?;
             a.ready().await?;
             b.ready().await?;
-            Ok(Serving::new((), async { Ok(()) }))
-        });
+            Ok(())
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let plan = root
         .build(Policy::FailFast, shutdown(), Mode::Resident)
         .unwrap();

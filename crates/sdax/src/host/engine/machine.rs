@@ -2,7 +2,7 @@
 //! `step`, and what a host may read back.
 
 use super::state::{Machine, NodeState, Purpose, St};
-use super::table::{RootInput, Table};
+use super::table::Table;
 use super::{Effect, Event, Rejected, RunState};
 use crate::contracts::Time;
 use crate::key::RawKey;
@@ -12,36 +12,25 @@ use crate::sim::Schedule;
 use crate::view::{NodePath, Reason, Why};
 
 impl Machine {
-    /// A machine for one run of a plan the caller supplies **no** input for:
-    /// resources, steps, services, effects, joins, components and templates.
-    ///
-    /// Refuses a plan that declares a per-run input (nothing would ever fill
-    /// its slot, so the nodes that need it could never start), a root plan with
-    /// unresolved imports (`L-IMPORTS`), and one child plan used as two
-    /// components. Components declaring input are refused throughout the
-    /// declaration tree, including inside templates, before any effect.
-    /// [`Machine::with_input`] is the constructor for a run that
-    /// does supply one.
+    /// A machine for a unit-input run, using the plan's cached topology.
+    /// Non-unit inputs require [`Machine::with_input`]; unresolved root
+    /// imports are refused before any effects.
     pub fn new<Out, In>(plan: &Plan<Out, In>) -> Result<Machine, super::EngineError> {
-        Table::build(plan.ir(), RootInput::Absent).map(Machine::from_table)
+        if let Some(input) = plan.ir().input {
+            if std::any::type_name::<In>() != "()" {
+                return Err(super::EngineError::TemplateAsScope(NodePath::root(
+                    &plan.ir().nodes[input.idx as usize].name,
+                )));
+            }
+        }
+        plan.layout.clone().map(Machine::from_table)
     }
 
-    /// A machine for one run of a plan whose per-run input the caller supplies:
-    /// `start(rt, input)` at the root, `cx.spawn(&template, input)` for an
-    /// instance.
-    ///
-    /// The caller owes the run one thing the machine cannot check: the value
-    /// must be in the run's slot for the input node *before* the first body is
-    /// built (`bodies_of_with_input`, `BodySource::open_instance`). The input
-    /// node is then not a node of the run at all, and a need on it is satisfied
-    /// from the first step.
-    ///
-    /// A plan that declares no input is accepted here too — there is simply
-    /// nothing to seed. Supplying root input does not supply a component's
-    /// declared input; those are refused before any effects, including inside
-    /// template declarations.
+    /// A machine using the plan's cached immutable topology and fresh run state.
+    /// The host must supply the typed root value before any body is built,
+    /// using `bodies_of_with_input`. Static inputs were bound during build.
     pub fn with_input<Out, In>(plan: &Plan<Out, In>) -> Result<Machine, super::EngineError> {
-        Table::build(plan.ir(), RootInput::Supplied).map(Machine::from_table)
+        plan.layout.clone().map(Machine::from_table)
     }
 
     /// Every node the declaration tree holds, a template's inner nodes
@@ -276,22 +265,35 @@ impl Machine {
 
     /// What kind of node this key names.
     ///
-    /// A run driver needs it: a service's readiness hands over a serve future
+    /// A run driver needs it: a service's readiness starts a serving episode
     /// and a component never gets a body at all.
     pub fn kind_of(&self, key: RawKey) -> Option<Kind> {
         self.t.index_of(key).map(|i| self.t.nodes[i].kind)
     }
 
-    /// The deadline a body of this node must respect: its declared `within`
-    /// from now, or else the scope's remaining shutdown budget.
+    /// The absolute deadline the node's current body phase must respect.
     ///
-    /// What `cx.deadline()` reads (contract § 6). The machine arms the timer
-    /// either way; this is the same number, for the body to see.
+    /// Prepare/run bodies use their already-armed `within` timer, capped by an
+    /// inherited scope budget. Release, compensation and recovery use only
+    /// the active scope budget. A service's serving context has no deadline
+    /// until stop begins, then uses its already-armed stop deadline.
     pub fn deadline_for(&self, key: RawKey) -> Option<Time> {
         let i = self.t.index_of(key)?;
-        match self.t.nodes[i].attrs.within {
-            Some(d) => Some(self.now + d),
-            None => self.scopes[self.t.nodes[i].scope].deadline,
+        let scope = self.scopes[self.t.nodes[i].scope].deadline;
+        let timer = self.slots[i].timer.and_then(|id| {
+            self.timers
+                .iter()
+                .find_map(|(candidate, _, at)| (*candidate == id).then_some(*at))
+        });
+        let earliest = |a: Option<Time>, b: Option<Time>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        match self.slots[i].st {
+            St::Running | St::Stopping => earliest(timer, scope),
+            St::RetryRelease | St::Releasing | St::Compensating => scope,
+            St::Ready if self.t.nodes[i].kind == Kind::Service => None,
+            _ => scope,
         }
     }
 
@@ -386,12 +388,21 @@ impl Machine {
                 attempt: s.attempt,
                 held: s.held,
             },
+            St::Backoff if s.initialized && self.t.nodes[i].kind == Kind::Service => {
+                NodeState::RestartBackoff {
+                    episode: s.restarts + 1,
+                    until: s.backoff_until,
+                }
+            }
             St::Backoff => NodeState::Backoff {
                 attempt: s.attempt,
                 until: s.backoff_until,
             },
             St::RetryRelease => NodeState::Releasing,
             St::Publishing => NodeState::Publishing,
+            St::Ready if s.initialized && self.t.nodes[i].kind == Kind::Service => {
+                NodeState::Serving { episode: s.episode }
+            }
             St::Ready => NodeState::Ready,
             St::Live => NodeState::Live,
             St::StoppingInstances => NodeState::Stopping,

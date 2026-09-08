@@ -8,7 +8,9 @@
 //! never observed" a real check when two instances share a path.
 
 use super::occ::{instance, label, occ_of, occurrences, Occ};
-use super::trace::{attempt, expected_steps, is_body_end, is_cleanup_end, is_cleanup_start, Ctx};
+use super::trace::{
+    attempt, expected_steps, is_attempt_start, is_body_end, is_cleanup_end, is_cleanup_start, Ctx,
+};
 use super::{violation, Violation};
 use sdax::host::InstanceId;
 use sdax::{Kind, NodePath, Phase, PlanView, RecordOrder, Report, Trace, TraceEvent, TraceKind};
@@ -112,7 +114,7 @@ pub fn check_report_with_slack<Out>(
                 .filter(|(_, e)| attempt(e) == k)
                 .map(|(_, e)| *e)
                 .collect();
-            let started = evk.iter().any(|e| matches!(e.kind, TraceKind::Start(_)));
+            let started = evk.iter().any(|e| is_attempt_start(&e.kind));
             let ended = evk.iter().any(|e| is_body_end(&e.kind));
             // INV-15: every spawned body was joined or recorded abandoned.
             if started && !ended {
@@ -184,9 +186,15 @@ pub fn check_report_with_slack<Out>(
             for e in &evk {
                 match &e.kind {
                     TraceKind::Fail(phase @ (Phase::Prepare | Phase::Run | Phase::Serve), l) => {
-                        let absorbed = mine
-                            .iter()
-                            .any(|(_, x)| attempt(x) > k && matches!(x.kind, TraceKind::Ready));
+                        let absorbed = mine.iter().any(|(_, x)| {
+                            (attempt(x) > k
+                                && if *phase == Phase::Serve {
+                                    matches!(x.kind, TraceKind::Start(Phase::Serve))
+                                } else {
+                                    matches!(x.kind, TraceKind::Ready)
+                                })
+                                || (attempt(x) == k && matches!(x.kind, TraceKind::RecoveryOk))
+                        });
                         // The engine cancelled this attempt, so whatever the
                         // body returned is not a fault (INV-10) — a panic is
                         // observed in the trace and nowhere else. For an
@@ -207,6 +215,7 @@ pub fn check_report_with_slack<Out>(
                     }
                     TraceKind::ReleaseFail(l)
                     | TraceKind::CompensateFail(l)
+                    | TraceKind::RecoveryFail(l)
                     | TraceKind::Fail(Phase::Stop, l) => {
                         let recorded = report
                             .cleanup_failures
@@ -233,9 +242,10 @@ pub fn check_report_with_slack<Out>(
                         // effect may simply be done again, and doing it again
                         // successfully is the answer to the ambiguity. The
                         // trace still carries it.
-                        let absorbed = mine
-                            .iter()
-                            .any(|(_, x)| attempt(x) > k && matches!(x.kind, TraceKind::Ready));
+                        let absorbed = mine.iter().any(|(_, x)| {
+                            (attempt(x) > k && matches!(x.kind, TraceKind::Ready))
+                                || (attempt(x) == k && matches!(x.kind, TraceKind::RecoveryOk))
+                        });
                         if !absorbed && !ambiguous(&path) {
                             out.push(violation(
                                 "INV-9",

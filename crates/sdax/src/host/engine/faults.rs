@@ -91,7 +91,14 @@ impl Machine {
             }
             St::Compensating => {
                 self.slots[n].st = St::Compensated;
-                self.emit(n, TraceKind::CompensateOk);
+                if self.slots[n].recovering {
+                    let record = self.record(n);
+                    self.ambiguous.retain(|r| r != &record);
+                    self.slots[n].ambiguity = None;
+                    self.emit(n, TraceKind::RecoveryOk);
+                } else {
+                    self.emit(n, TraceKind::CompensateOk);
+                }
                 self.after_cleanup(n);
             }
             St::RetryRelease => {
@@ -119,9 +126,20 @@ impl Machine {
         self.slots[n].cancelling = false;
         self.slots[n].timing_out = false;
         self.slots[n].st = St::Ready;
+        if self.t.nodes[n].kind == Kind::Service {
+            self.slots[n].initialized = true;
+            self.slots[n].episode = 1;
+        }
         self.slots[n].faults.clear();
         self.slots[n].ambiguity = None;
         self.emit(n, TraceKind::Ready);
+        if self.t.nodes[n].kind == Kind::Service {
+            self.emit(n, TraceKind::Start(Phase::Serve));
+            self.fx.push(Effect::Serve {
+                node: self.t.nodes[n].key,
+                episode: 1,
+            });
+        }
         self.after_settle(n);
     }
 
@@ -154,8 +172,14 @@ impl Machine {
             }
             St::Compensating => {
                 self.slots[n].st = St::ReleaseFailed;
-                self.emit(n, TraceKind::CompensateFail(Self::label(&kind)));
-                let fault = self.fault(n, Phase::Compensate, kind);
+                let phase = if self.slots[n].recovering {
+                    self.emit(n, TraceKind::RecoveryFail(Self::label(&kind)));
+                    Phase::Recover
+                } else {
+                    self.emit(n, TraceKind::CompensateFail(Self::label(&kind)));
+                    Phase::Compensate
+                };
+                let fault = self.fault(n, phase, kind);
                 self.cleanup_failures.push(fault);
                 self.after_cleanup(n);
             }

@@ -22,6 +22,10 @@ use crate::contracts::{BoxFuture, Error};
 use crate::cx::{CxInner, InstanceId};
 use crate::key::{RawKey, Slots};
 use crate::plan::{Kind, Plan, PlanIr};
+mod disposal;
+mod layout;
+pub(crate) use layout::BodyLayout;
+use layout::{open_scopes, BoundBodies};
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 
@@ -33,6 +37,9 @@ pub type ErasedPrepare = Box<
 /// A release or compensation body, with its plumbing erased.
 pub type ErasedRelease = ErasedPrepare;
 
+/// A service's serving factory, with its stable handle lookup erased.
+pub type ErasedServe = ErasedPrepare;
+
 /// A blocking body, run on a pool thread.
 pub type ErasedBlocking = Box<
     dyn Fn(Arc<CxInner>, &Slots) -> Option<Box<dyn FnOnce() -> Result<(), Error> + Send>>
@@ -41,7 +48,7 @@ pub type ErasedBlocking = Box<
 >;
 
 /// Copy one import node's value down from the scope that declared it.
-pub type ErasedImport = Box<dyn Fn(&Slots, &mut Slots) + Send + Sync>;
+pub type ErasedImport = Box<dyn Fn(RawKey, &Slots, &mut Slots) + Send + Sync>;
 
 /// Read the exported slot of a finished run, still erased.
 pub type ErasedExport = Box<dyn Fn(&Slots) -> Option<Box<dyn Any + Send + Sync>> + Send + Sync>;
@@ -103,11 +110,21 @@ impl std::fmt::Debug for Task {
 /// node is named by its **declaration** key plus the instance it belongs to,
 /// because a template's nodes have one declaration and one table per instance.
 pub trait BodySource: Send + Sync + 'static {
-    /// The prepare, run or start body for this node's next attempt.
+    /// The prepare, run or initialization body for this node's next attempt.
     ///
     /// `None` means the node has no body — a join, a component or a template,
     /// for which the machine pushes no spawn at all.
     fn body(&self, node: RawKey, instance: Option<InstanceId>, cx: &Arc<CxInner>) -> Option<Task>;
+
+    /// Build one serving episode against the service's published handle.
+    fn serve(
+        &self,
+        _node: RawKey,
+        _instance: Option<InstanceId>,
+        _cx: &Arc<CxInner>,
+    ) -> Option<BoxFuture<'static, Result<(), Error>>> {
+        None
+    }
 
     /// The release or compensation body for this node.
     fn cleanup(
@@ -163,10 +180,11 @@ pub struct Bodies {
     pub(crate) plan: u64,
     pub(crate) prepare: Vec<Option<ErasedPrepare>>,
     pub(crate) release: Vec<Option<ErasedRelease>>,
+    pub(crate) serve: Vec<Option<ErasedServe>>,
     pub(crate) blocking: Vec<Option<ErasedBlocking>>,
     /// One entry per import node: which plan the value comes from, and how to
     /// copy it into this plan's slots.
-    pub(crate) imports: Vec<(u64, ErasedImport)>,
+    pub(crate) imports: Vec<(RawKey, ErasedImport)>,
     pub(crate) ready_values: Vec<(RawKey, ReadyValue)>,
     /// The bodies of the child plans this plan uses — components and templates
     /// alike — in declaration order.
@@ -197,7 +215,7 @@ impl std::fmt::Debug for Bodies {
 
 /// One scope's bodies and its slot table.
 struct ScopeBodies {
-    bodies: Arc<Bodies>,
+    bodies: Arc<BoundBodies>,
     slots: Arc<Mutex<Slots>>,
 }
 
@@ -211,20 +229,13 @@ struct InstanceBodies {
 
 /// A scope resolved from an instance outwards: its bodies, its slot table,
 /// and which instance's copy it turned out to be.
-type Found = (Arc<Bodies>, Arc<Mutex<Slots>>, Option<InstanceId>);
-
-/// One template's declaration, kept so an instance can be opened at run time.
-struct TemplateBodies {
-    node: RawKey,
-    ir: Arc<PlanIr>,
-    bodies: Arc<Bodies>,
-}
+type Found = (Arc<BoundBodies>, Arc<Mutex<Slots>>, Option<InstanceId>);
 
 /// The [`BodySource`] a plan carries: its own bodies, its components' bodies,
 /// one slot table per scope, and one set of tables per live instance.
 struct PlanBodies {
     scopes: Vec<ScopeBodies>,
-    templates: Vec<TemplateBodies>,
+    layout: Arc<BodyLayout>,
     instances: Mutex<Vec<Arc<InstanceBodies>>>,
     export: Option<(usize, RawKey, ErasedExport)>,
 }
@@ -237,7 +248,7 @@ struct PlanBodies {
 /// input slot empty, which is what [`Machine::new`](crate::host::engine::Machine::new)
 /// refuses such a plan for.
 pub fn bodies_of<Out: Send + Sync + 'static, In>(plan: &Plan<Out, In>) -> Arc<dyn BodySource> {
-    build_bodies(plan, None)
+    build_bodies(plan, Some(Box::new(Arc::new(()))))
 }
 
 /// [`bodies_of`], with the plan's per-run input already in the root scope's
@@ -259,8 +270,7 @@ fn build_bodies<Out: Send + Sync + 'static, In>(
     plan: &Plan<Out, In>,
     input: Option<Box<dyn Any + Send + Sync>>,
 ) -> Arc<dyn BodySource> {
-    let mut scopes = Vec::new();
-    collect(plan.ir(), plan.bodies_ref(), &mut scopes);
+    let scopes = open_scopes(&plan.body_layout.scopes);
     // The root's per-run input, in the root scope's slots before any body is
     // built — the same moment `open_instance` fills an instance's.
     if let (Some(key), Some(v)) = (plan.ir().input, input) {
@@ -270,8 +280,6 @@ fn build_bodies<Out: Send + Sync + 'static, In>(
             .expect("slots poisoned")
             .set_erased(key, v);
     }
-    let mut templates = Vec::new();
-    collect_templates(plan.ir(), plan.bodies_ref(), &mut templates);
     let export = plan.ir().export.map(|key| {
         let reader: ErasedExport = Box::new(move |slots: &Slots| {
             slots
@@ -282,62 +290,10 @@ fn build_bodies<Out: Send + Sync + 'static, In>(
     });
     Arc::new(PlanBodies {
         scopes,
-        templates,
+        layout: plan.body_layout.clone(),
         instances: Mutex::new(Vec::new()),
         export,
     })
-}
-
-/// A child plan's bodies sit in `children` in the declaration order of the
-/// component and template nodes together.
-fn child_bodies<'a>(ir: &PlanIr, bodies: &'a Arc<Bodies>) -> Vec<(&'a Arc<Bodies>, usize)> {
-    let mut out = Vec::new();
-    let mut child = 0usize;
-    for (i, n) in ir.nodes.iter().enumerate() {
-        if matches!(n.kind, Kind::Component | Kind::Template) {
-            if let Some(b) = bodies.children.get(child) {
-                out.push((b, i));
-            }
-            child += 1;
-        }
-    }
-    out
-}
-
-/// Walk the declaration and the bodies together, one [`ScopeBodies`] per plan.
-/// A template's plan is **not** a scope of the run: it has one table per
-/// instance, made by `open_instance`.
-fn collect(ir: &PlanIr, bodies: &Arc<Bodies>, out: &mut Vec<ScopeBodies>) {
-    out.push(ScopeBodies {
-        bodies: bodies.clone(),
-        slots: Arc::new(Mutex::new(Slots::new(ir.nodes.len()))),
-    });
-    for (b, i) in child_bodies(ir, bodies) {
-        if ir.nodes[i].kind != Kind::Component {
-            continue;
-        }
-        if let Some(inner) = &ir.nodes[i].child {
-            collect(inner, b, out);
-        }
-    }
-}
-
-/// Every template anywhere in the declaration tree, templates inside template
-/// plans included, so a nested `cx.spawn` finds its bodies.
-fn collect_templates(ir: &PlanIr, bodies: &Arc<Bodies>, out: &mut Vec<TemplateBodies>) {
-    for (b, i) in child_bodies(ir, bodies) {
-        let Some(inner) = &ir.nodes[i].child else {
-            continue;
-        };
-        if ir.nodes[i].kind == Kind::Template {
-            out.push(TemplateBodies {
-                node: ir.nodes[i].key,
-                ir: inner.clone(),
-                bodies: b.clone(),
-            });
-        }
-        collect_templates(inner, b, out);
-    }
 }
 
 impl PlanBodies {
@@ -391,12 +347,14 @@ impl PlanBodies {
     /// source slot is filled by the time a body of this scope is built.
     fn refresh_imports(
         &self,
-        bodies: &Arc<Bodies>,
+        bodies: &Arc<BoundBodies>,
         slots: &Arc<Mutex<Slots>>,
         instance: Option<InstanceId>,
     ) {
-        for (src_plan, copy) in &bodies.imports {
-            let Some((from_bodies, from_slots, from_inst)) = self.find(*src_plan, instance) else {
+        for &(source, index) in &bodies.bindings {
+            let copy = &bodies.imports[index].1;
+            let Some((from_bodies, from_slots, from_inst)) = self.find(source.plan, instance)
+            else {
                 continue;
             };
             if Arc::ptr_eq(&from_slots, slots) {
@@ -405,7 +363,7 @@ impl PlanBodies {
             self.refresh_imports(&from_bodies, &from_slots, from_inst);
             let parent = from_slots.lock().expect("slots poisoned");
             let mut mine = slots.lock().expect("slots poisoned");
-            copy(&parent, &mut mine);
+            copy(source, &parent, &mut mine);
         }
     }
 }
@@ -423,16 +381,44 @@ impl BodySource for PlanBodies {
         f(cx.clone(), &slots).map(Task::Async)
     }
 
+    fn serve(
+        &self,
+        node: RawKey,
+        instance: Option<InstanceId>,
+        cx: &Arc<CxInner>,
+    ) -> Option<BoxFuture<'static, Result<(), Error>>> {
+        let (bodies, slots, inst) = self.find(node.plan, instance)?;
+        self.refresh_imports(&bodies, &slots, inst);
+        let slots = slots.lock().expect("slots poisoned");
+        let f = bodies.serve.get(node.idx as usize)?.as_ref()?;
+        f(cx.clone(), &slots)
+    }
+
     fn cleanup(
         &self,
         node: RawKey,
         instance: Option<InstanceId>,
         cx: &Arc<CxInner>,
     ) -> Option<Task> {
-        let (bodies, slots, _) = self.find(node.plan, instance)?;
-        let slots = slots.lock().expect("slots poisoned");
+        let (bodies, slots, resolved_instance) = self.find(node.plan, instance)?;
         let f = bodies.release.get(node.idx as usize)?.as_ref()?;
-        f(cx.clone(), &slots).map(Task::Async)
+        let body = {
+            let values = slots.lock().expect("slots poisoned");
+            f(cx.clone(), &values)?
+        };
+        if bodies.ir.nodes[node.idx as usize].attrs.release != crate::plan::ReleaseStyle::Drop {
+            return Some(Task::Async(body));
+        }
+        // The terminal future already owns an Arc of the resource. Remove
+        // storage aliases without running user Drop under any storage lock.
+        let aliases = self.take_drop_aliases(node, resolved_instance, &slots);
+        let owned = slots.lock().expect("slots poisoned").take_erased(node);
+        Some(Task::Async(Box::pin(async move {
+            drop(aliases);
+            drop(owned);
+            // The terminal invokes by_drop in this guarded cleanup poll.
+            body.await
+        })))
     }
 
     fn store(&self, node: RawKey, instance: Option<InstanceId>, value: Box<dyn Any + Send + Sync>) {
@@ -459,19 +445,26 @@ impl BodySource for PlanBodies {
         let value = bodies
             .ready_values
             .iter()
-            .find(|(key, _)| *key == node)
+            .find(|(key, _)| key.idx == node.idx)
             .map(|(_, value)| value)
             .ok_or_else(|| fail(None, "node has no structural value"))?;
         let value: Box<dyn Any + Send + Sync> = match value {
             ReadyValue::Unit => Box::new(Arc::new(())),
-            ReadyValue::Export { source, read } => {
+            ReadyValue::Export {
+                source: original_source,
+                read,
+            } => {
+                let source = bodies.ir.nodes[node.idx as usize]
+                    .child
+                    .as_ref()
+                    .and_then(|ir| ir.export)
+                    .unwrap_or(*original_source);
                 let (source_bodies, source_slots, source_instance) = self
                     .find_exact(source.plan, instance)
-                    .ok_or_else(|| fail(Some(*source), "export scope unavailable"))?;
+                    .ok_or_else(|| fail(Some(source), "export scope unavailable"))?;
                 self.refresh_imports(&source_bodies, &source_slots, source_instance);
                 let slots = source_slots.lock().expect("slots poisoned");
-                read(&slots)
-                    .ok_or_else(|| fail(Some(*source), "export missing or wrongly typed"))?
+                read(&slots).ok_or_else(|| fail(Some(source), "export missing or wrongly typed"))?
             }
         };
         // The source lock above is released before taking the destination lock.
@@ -495,12 +488,11 @@ impl BodySource for PlanBodies {
         id: InstanceId,
         input: Box<dyn Any + Send + Sync>,
     ) {
-        let Some(t) = self.templates.iter().find(|t| t.node == template) else {
+        let Some(t) = self.layout.templates.iter().find(|t| t.node == template) else {
             return;
         };
-        let mut scopes = Vec::new();
-        collect(&t.ir, &t.bodies, &mut scopes);
-        if let Some(key) = t.ir.input {
+        let scopes = open_scopes(&t.scopes);
+        if let Some(key) = t.input {
             scopes[0]
                 .slots
                 .lock()

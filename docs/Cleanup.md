@@ -2,27 +2,41 @@
 
 A resource or effect body must return `Held<T>`. Only `cx.hold` and
 `cx.hold_value` can mint one, and both register the value with the
-engine *before* they hand it back. That is the whole contract: there is
-no await point between "the effect happened" and "the engine owns the
-cleanup".
+engine *before* they hand it back. For `hold`, registration happens in the
+poll that observes the future return success: there is no await point between
+acknowledged acquisition and engine-owned cleanup.
 
-- **`cx.hold(effect)`** — run an external effect under the engine's
-  wrapper. The poll that sees the effect complete writes the record and
+- **`cx.hold(|| future)`** — run an external effect under the engine's
+  wrapper. The poll that sees the future return `Ok` writes the record and
   *then* returns `Ready`. Use this to open a socket, take a lock, write
-  a row you will compensate.
+  a row you will compensate. If interruption leaves the remote outcome
+  unknown, model that effect with `on_ambiguous` and recovery.
 - **`cx.hold_value(v)`** — register a value you already own. Registration
   happens before this returns. Doing the effect yourself, awaiting
   something else, and then calling `hold_value` reopens the window by
   hand. The engine cannot see that.
 
 A service's own acquisitions belong in a resource node, not in its
-`start` body. A value a start body creates has no ledger entry and no
+`initialize` body. A value an initializer creates has no ledger entry and no
 async release.
 
 The release graph is the reverse of `needs`. Dropping a live `Running`
 still cancels the run and leaves one tracked task to finish that graph
 inside the shutdown budget. Compensation of an effect is a distinct
 record from a resource release. A `persistent` effect is never undone.
+
+For a RAII resource, `.release(release::by_drop())` removes its engine-owned
+value and declared input/import/component-output aliases during cleanup.
+Its destructor runs before parent cleanup when those were the last `Arc`
+references. Caller-retained clones, including clones hidden inside ordinary
+step outputs or service handles, can delay destruction; sdax cannot revoke
+those references. Completed data outputs remain available in the report, but
+an engine-owned RAII handle removed during cleanup is not retained merely to
+populate a post-cleanup output.
+
+`cx.deadline()` reflects the current phase: acquisition/run deadlines while
+work is running, the cleanup budget in release/compensation/recovery, and the
+stop deadline once a service is signalled. Parent budgets cap child deadlines.
 
 If the root uses `Shutdown::unbounded()`, every service must declare
 `stop_within`, including services inside components and templates. A child's

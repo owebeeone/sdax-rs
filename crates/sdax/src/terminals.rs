@@ -1,18 +1,18 @@
 //! The terminal methods, one per kind.
 //!
-//! A terminal is what commits a node and hands back its [`Key`]. Every
-//! required element of a kind sits between the constructor and the terminal, so
-//! omitting one is a compile error rather than a finding: a resource without
+//! A terminal completes a reserved declaration and hands back its [`Key`].
+//! Type state prevents using an incomplete chain as a key: a resource without
 //! `release` never yields a `Key`, an effect without `on_ambiguous` has no
-//! `perform`, a blocking step without `on` has no `run`.
+//! `perform`, and a blocking step without `on` has no `run`. Discarding an
+//! incomplete chain leaves a structured finding that prevents plan build.
 
 use crate::builder::Build;
 use crate::builder::{
     release, Blocking, Effect, NoAmbiguity, NoPool, Node, Resource, Service, Step, TryStep,
 };
 use crate::contracts::Error;
-use crate::cx::{Acquire, Cx, Held, Release, Run, Serving, Start};
-use crate::host::bodies::{ErasedBlocking, ErasedPrepare, ErasedRelease};
+use crate::cx::{Acquire, Cx, Held, Release, Run, ServingPhase, Start};
+use crate::host::bodies::{ErasedBlocking, ErasedPrepare, ErasedRelease, ErasedServe};
 use crate::key::{Deps, Key};
 use crate::plan::{NodeDecl, Pool, ReleaseStyle};
 use crate::policy::Ambiguity;
@@ -38,10 +38,12 @@ impl<'b, D: Deps> Node<'b, D, Resource> {
         T: ?Sized + Send + Sync + 'static,
     {
         let deps = self.deps;
+        let f = Arc::new(f);
         let prepare: ErasedPrepare = Box::new(move |inner, slots| {
             let d = deps.fetch(slots)?;
-            let fut = f(Cx::<Acquire>::new(inner), d);
+            let f = f.clone();
             Some(Box::pin(async move {
+                let fut = f(Cx::<Acquire>::new(inner), d);
                 // The engine already owns the Arc: `hold` registered it.
                 let _held = fut.await?;
                 Ok(())
@@ -57,7 +59,7 @@ impl<'b, D: Deps> Node<'b, D, Resource> {
 }
 
 /// A resource with an acquire body and no release yet. Not a [`Key`].
-#[must_use = "a resource joins the plan only when `.release(..)` is called"]
+#[must_use = "complete this resource with `.release(..)` before building the plan"]
 pub struct NeedsRelease<'b, T: ?Sized> {
     b: &'b mut Build,
     decl: NodeDecl,
@@ -80,10 +82,13 @@ impl<'b, T: ?Sized + Send + Sync + 'static> NeedsRelease<'b, T> {
         } else {
             ReleaseStyle::Async
         };
+        let f = Arc::new(f);
         let release: ErasedRelease = Box::new(move |inner, slots| {
             let arc = slots.get::<T>(me)?;
-            let fut = f(Cx::<Release>::new(inner), arc);
-            Some(Box::pin(fut))
+            let f = f.clone();
+            Some(Box::pin(
+                async move { f(Cx::<Release>::new(inner), arc).await },
+            ))
         });
         self.b.commit(decl, Some(self.prepare), Some(release), None)
     }
@@ -101,11 +106,12 @@ impl<'b, D: Deps> Node<'b, D, Step> {
         T: Send + Sync + 'static,
     {
         let deps = self.deps;
+        let f = Arc::new(f);
         let prepare: ErasedPrepare = Box::new(move |inner, slots| {
             let d = deps.fetch(slots)?;
-            let fut = f(Cx::<Run>::new(inner.clone()), d);
+            let f = f.clone();
             Some(Box::pin(async move {
-                let out = fut.await?;
+                let out = f(Cx::<Run>::new(inner.clone()), d).await?;
                 inner.put_output(Box::new(Arc::new(out)));
                 Ok(())
             }))
@@ -127,11 +133,12 @@ impl<'b, D: Deps> Node<'b, D, TryStep> {
         T: Send + Sync + 'static,
     {
         let deps = self.deps;
+        let f = Arc::new(f);
         let prepare: ErasedPrepare = Box::new(move |inner, slots| {
             let d = deps.fetch(slots)?;
-            let fut = f(Cx::<Run>::new(inner.clone()), d);
+            let f = f.clone();
             Some(Box::pin(async move {
-                let out = fut.await;
+                let out = f(Cx::<Run>::new(inner.clone()), d).await;
                 inner.put_output(Box::new(Arc::new(out)));
                 Ok(())
             }))
@@ -181,32 +188,70 @@ impl<'b, D: Deps> Node<'b, D, Blocking<Pool>> {
 // ---------------------------------------------------------------- service
 
 impl<'b, D: Deps> Node<'b, D, Service> {
-    /// Start the service. Readiness is the *return* of this body with a
-    /// [`Serving`]; being spawned never implies readiness (INV-2).
+    /// Initialize the service's stable handle once per run.
     ///
-    /// A start body may `cx.spawn` templates it declared and await
-    /// [`Child::ready`](crate::Child::ready) before returning, so the scope's
-    /// readiness can include its instances (F1).
-    pub fn start<F, Fut, H>(self, f: F) -> Key<H>
+    /// The successful return publishes one `Arc<H>` to dependents. A declared
+    /// [`Retry`](crate::Retry) may repeat this body before that first success;
+    /// serving recovery never invokes it again.
+    pub fn initialize<F, Fut, H>(self, f: F) -> NeedsServe<'b, H>
     where
         F: Fn(Cx<Start>, D::Out) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Serving<H>, Error>> + Send + 'static,
+        Fut: Future<Output = Result<H, Error>> + Send + 'static,
         H: Send + Sync + 'static,
     {
         let deps = self.deps;
+        let f = Arc::new(f);
         let mut decl = self.decl;
         decl.attrs.release = ReleaseStyle::Stop;
         let prepare: ErasedPrepare = Box::new(move |inner, slots| {
             let d = deps.fetch(slots)?;
-            let fut = f(Cx::<Start>::new(inner.clone()), d);
+            let f = f.clone();
             Some(Box::pin(async move {
-                let (handle, serve) = fut.await?.into_parts();
+                let handle = f(Cx::<Start>::new(inner.clone()), d).await?;
                 inner.put_output(Box::new(Arc::new(handle)));
-                inner.put_serve(serve);
                 Ok(())
             }))
         });
-        self.b.commit(decl, Some(prepare), None, None)
+        NeedsServe {
+            b: self.b,
+            decl,
+            prepare,
+            _h: PhantomData,
+        }
+    }
+}
+
+/// A service with an initializer whose restartable serving factory is not yet
+/// declared. It joins the plan only when [`NeedsServe::serve`] is called.
+#[must_use = "a service joins the plan only when `.serve(..)` is called"]
+pub struct NeedsServe<'b, H> {
+    b: &'b mut Build,
+    decl: NodeDecl,
+    prepare: ErasedPrepare,
+    _h: PhantomData<fn() -> Arc<H>>,
+}
+
+impl<'b, H: Send + Sync + 'static> NeedsServe<'b, H> {
+    /// Declare the restartable serving episode factory.
+    ///
+    /// Episode 1 starts after initialization publishes the handle. Recovery
+    /// invokes this factory again with a fresh context and the same `Arc<H>`;
+    /// it never re-runs initialization or dependent bodies.
+    pub fn serve<F, Fut>(self, f: F) -> Key<H>
+    where
+        F: Fn(Cx<ServingPhase>, Arc<H>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), Error>> + Send + 'static,
+    {
+        let me = self.decl.key;
+        let f = Arc::new(f);
+        let serve: ErasedServe = Box::new(move |inner, slots| {
+            let handle = slots.get::<H>(me)?;
+            let f = f.clone();
+            Some(Box::pin(async move {
+                f(Cx::<ServingPhase>::new(inner), handle).await
+            }))
+        });
+        self.b.commit_service(self.decl, self.prepare, serve)
     }
 }
 
@@ -238,10 +283,12 @@ impl<'b, D: Deps> Node<'b, D, Effect<Ambiguity>> {
         R: ?Sized + Send + Sync + 'static,
     {
         let deps = self.deps;
+        let f = Arc::new(f);
         let prepare: ErasedPrepare = Box::new(move |inner, slots| {
             let d = deps.fetch(slots)?;
-            let fut = f(Cx::<Acquire>::new(inner), d);
+            let f = f.clone();
             Some(Box::pin(async move {
+                let fut = f(Cx::<Acquire>::new(inner), d);
                 let _held = fut.await?;
                 Ok(())
             }))
@@ -250,6 +297,7 @@ impl<'b, D: Deps> Node<'b, D, Effect<Ambiguity>> {
             b: self.b,
             decl: self.decl,
             prepare,
+            recovery: None,
             _t: PhantomData,
         }
     }
@@ -259,9 +307,10 @@ impl<'b, D: Deps> Node<'b, D, Effect<Ambiguity>> {
 /// record at shutdown. Not a [`Key`].
 #[must_use = "an effect joins the plan only when `.compensate(..)` or `.persistent()` is called"]
 pub struct NeedsCompensate<'b, R: ?Sized> {
-    b: &'b mut Build,
-    decl: NodeDecl,
+    pub(crate) b: &'b mut Build,
+    pub(crate) decl: NodeDecl,
     prepare: ErasedPrepare,
+    pub(crate) recovery: Option<ErasedRelease>,
     _t: PhantomData<fn() -> Arc<R>>,
 }
 
@@ -275,9 +324,17 @@ impl<'b, R: ?Sized + Send + Sync + 'static> NeedsCompensate<'b, R> {
         let me = self.decl.key;
         let mut decl = self.decl;
         decl.attrs.release = ReleaseStyle::Compensate;
+        let recovery = self.recovery;
+        let f = Arc::new(f);
         let release: ErasedRelease = Box::new(move |inner, slots| {
+            if inner.is_recovery() {
+                return recovery.as_ref()?(inner, slots);
+            }
             let arc = slots.get::<R>(me)?;
-            Some(Box::pin(f(Cx::<Release>::new(inner), arc)))
+            let f = f.clone();
+            Some(Box::pin(
+                async move { f(Cx::<Release>::new(inner), arc).await },
+            ))
         });
         self.b.commit(decl, Some(self.prepare), Some(release), None)
     }
@@ -293,6 +350,6 @@ impl<'b, R: ?Sized + Send + Sync + 'static> NeedsCompensate<'b, R> {
     pub fn persistent(self) -> Key<R> {
         let mut decl = self.decl;
         decl.attrs.release = ReleaseStyle::Persistent;
-        self.b.commit(decl, Some(self.prepare), None, None)
+        self.b.commit(decl, Some(self.prepare), self.recovery, None)
     }
 }

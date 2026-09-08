@@ -89,8 +89,9 @@ fn a_plan_is_built_once_and_started_with_two_requests() {
 `hold_value` is for a value you already own. If the acquire *is* an
 external effect (open a socket, take a lock), put that effect inside
 `cx.hold(...)` so the engine records the obligation in the same poll
-that sees the effect complete. [Cleanup](Cleanup.md) is the page that
-exists so you do not reopen that window.
+that sees its future return success. An interrupted external operation can
+still have an unknown remote outcome; [Cleanup](Cleanup.md) covers the
+separate recovery path as well as the acquisition window.
 
 A fault still runs the release graph — [Errors](Errors.md) quotes that
 test. A plan that stays up is `Mode::Resident`; see [Running](Running.md).

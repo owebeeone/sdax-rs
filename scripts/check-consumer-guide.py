@@ -155,11 +155,9 @@ def check_git_source(temporary, path_manifest):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-clean", action="store_true", help="Retain temporary consumer directory")
-    args = parser.parse_args()
-    # TemporaryDirectory handles Git's read-only packfiles on Windows while
-    # still propagating cleanup errors; --no-clean deliberately retains them.
-    temporary = None if args.no_clean else tempfile.TemporaryDirectory(prefix="sdax-guide-consumer-")
-    consumer = Path(temporary.name if temporary else tempfile.mkdtemp(prefix="sdax-guide-consumer-"))
+    parser.parse_args()
+    # Retention is the default; --no-clean remains accepted for existing callers.
+    consumer = Path(tempfile.mkdtemp(prefix="sdax-guide-consumer-"))
     try:
         (consumer / "tests").mkdir()
         shutil.copyfile(GUIDE_SRC, consumer / "tests/simple_hold.rs")
@@ -171,10 +169,7 @@ def main():
                  lambda output: "error[E0599]" in output and "start_paused" in output)
         check_git_source(consumer, manifest)
     finally:
-        if args.no_clean:
-            print(f"consumer directory retained at {consumer}")
-        else:
-            temporary.cleanup()
+        print(f"consumer directory retained at {consumer}")
 
 
 if __name__ == "__main__":

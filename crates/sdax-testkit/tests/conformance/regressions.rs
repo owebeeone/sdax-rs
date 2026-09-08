@@ -11,7 +11,9 @@
 use crate::corpus::*;
 use crate::Drv as ScriptedDriver;
 use sdax::*;
-use sdax_testkit::eol::{is_abandoned, is_cleanup_end, is_cleanup_start, is_interrupted};
+use sdax_testkit::eol::{
+    is_abandoned, is_cleanup_end, is_cleanup_start, is_episode_start, is_interrupted,
+};
 
 fn unit_res<D: Deps>(p: &mut PlanBuilder, name: &str, deps: D) -> Key<Unit> {
     p.resource(name)
@@ -128,33 +130,46 @@ fn mc_a_node_waiting_for_its_next_attempt_keeps_its_faults() {
 
 /// MC case seed 16408307695250133523.
 ///
-/// A service's serve fault was emitted to the trace and then dropped when a
-/// restart followed. If the restart never reaches `Ready`, nothing ever
-/// records it.
+/// A recovered serving fault must not become a report fault. Recovery runs a
+/// second episode against the handle initialization already published; a
+/// cancellation-time serving error is instead a stop cleanup failure.
 #[test]
-fn mc_a_serve_fault_survives_a_restart_that_never_comes_up() {
+fn mc_a_recovered_serve_fault_does_not_reinitialize_or_pollute_the_report() {
     let mut p = Plan::builder("Restart");
     p.service("S")
         .idempotent()
-        .restart(Restart::on_error(Backoff::fixed(secs(0))))
+        .restart(Restart::on_error(Backoff::fixed(secs(0))).max(1))
         .stop_within(secs(1))
-        .start(|_cx, ()| async move { Ok(Serving::new(Unit, async { Ok(()) })) });
+        .initialize(|_cx, ()| async move { Ok(Unit) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     let plan = p
         .build(Policy::Isolate, Shutdown::within(secs(10)), Mode::Resident)
         .expect("valid");
     let script = Script::new()
-        .body("S", vec![Body::ok(At::plus(0.0)), Body::pending()])
+        .body("S", vec![Body::ok(At::plus(0.0))])
         .serve("S", vec![Serve::Err(At::plus(1.0), "serve".into())])
         .at(2.0, Request::Cancel);
     let d = ScriptedDriver::run(&plan, &script).expect("runs");
     d.check();
-    assert_eq!(d.eol().fail("S"), Some(1.0), "the serve episode failed");
+    let t = d.eol();
+    assert_eq!(t.attempts("S"), 1, "initialization stays published");
+    assert_eq!(t.count(is_episode_start, "S"), 2);
+    assert_eq!(t.at(is_episode_start, "S"), Some(0.0));
+    assert_eq!(t.last_at(is_episode_start, "S"), Some(1.0));
     assert!(
-        d.report
+        !d.report
             .faults
             .iter()
             .any(|f| f.node.to_string() == "S" && f.phase == Phase::Serve),
-        "and the report says so: {}",
+        "the recovered first episode remains history: {}",
+        d.report
+    );
+    assert!(
+        d.report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.node.to_string() == "S" && f.phase == Phase::Stop),
+        "the cancellation-time second episode error is a stop cleanup failure: {}",
         d.report
     );
 }
@@ -175,9 +190,9 @@ fn child(name: &str, mode: Mode) -> Plan<Unit> {
 /// trace claimed a release for something that had not finished (INV-15).
 #[test]
 fn mc_an_interrupted_component_ends_its_own_attempt() {
-    let inner = child("Child", Mode::Finite);
+    let inner = child("Child", Mode::Resident);
     let mut p = Plan::builder("Outer");
-    p.component("C", &inner);
+    p.component("C", &inner, ());
     let plan = p
         .build(Policy::FailFast, Shutdown::within(secs(9)), Mode::Resident)
         .expect("valid");
@@ -208,7 +223,7 @@ fn mc_an_interrupted_component_ends_its_own_attempt() {
 fn mc_a_ready_components_inner_scope_settles_with_its_parent() {
     let inner = child("Child", Mode::Resident);
     let mut p = Plan::builder("Outer");
-    p.component("C", &inner);
+    p.component("C", &inner, ());
     let plan = p
         .build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite)
         .expect("valid");
@@ -240,10 +255,10 @@ fn mc_a_skipped_component_does_not_hold_the_release_gate_shut() {
     let k = unit_res(&mut c, "Inner", imported);
     let inner = c
         .export(k)
-        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Finite)
+        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Resident)
         .expect("valid child");
     let gate = outer.step("Gate").run(|_cx, ()| async move { Ok(()) });
-    outer.component("C", &inner).raw();
+    outer.component("C", &inner, ()).raw();
     outer
         .step("After")
         .needs(gate)
@@ -286,9 +301,9 @@ fn mc_record_order_counts_only_the_nodes_the_view_shows() {
     let k = unit_res(&mut c, "Inner", imported);
     let inner = c
         .export(k)
-        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Finite)
+        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Resident)
         .expect("valid child");
-    outer.component("C", &inner).raw();
+    outer.component("C", &inner, ()).raw();
     let plan = outer
         .build(Policy::Isolate, Shutdown::within(secs(9)), Mode::Finite)
         .expect("valid");
@@ -341,10 +356,10 @@ fn mc_a_failed_component_stops_admitting_inside() {
     let _ = y;
     let inner = c
         .export(x)
-        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Finite)
+        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Resident)
         .expect("valid child");
     let mut outer = Plan::builder("Outer");
-    outer.component("C", &inner);
+    outer.component("C", &inner, ());
     let plan = outer
         .build(Policy::FailFast, Shutdown::within(secs(9)), Mode::Resident)
         .expect("valid");
@@ -376,7 +391,7 @@ fn mc_the_budget_ends_the_dependents_before_it_opens_an_inner_release() {
         .build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Resident)
         .expect("valid child");
     let mut outer = Plan::builder("Outer");
-    let comp = outer.component("C", &inner);
+    let comp = outer.component("C", &inner, ());
     let pool = outer.pool("cpu", 1);
     outer
         .blocking_step("B")
@@ -418,7 +433,7 @@ fn mc_the_budget_does_not_open_an_inner_release_before_a_dependent_component_end
         .export(hk)
         .build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Resident)
         .expect("valid held child");
-    let c2 = outer.component("C2", &held);
+    let c2 = outer.component("C2", &held, ());
 
     let mut user = Plan::builder("User");
     let imported = user.import(c2);
@@ -426,7 +441,7 @@ fn mc_the_budget_does_not_open_an_inner_release_before_a_dependent_component_end
     let user = user
         .build(Policy::Isolate, Shutdown::within(secs(2)), Mode::Resident)
         .expect("valid user child");
-    outer.component("C4", &user).raw();
+    outer.component("C4", &user, ()).raw();
 
     let plan = outer
         .build(Policy::FailFast, Shutdown::within(secs(2)), Mode::Resident)
@@ -467,7 +482,8 @@ fn mc_a_component_whose_inner_scope_settles_by_itself_ends_its_own_attempt() {
     let s = c
         .service("S")
         .terminal()
-        .start(|_cx, ()| async move { Ok(Serving::new((), async { Ok(()) })) });
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     // `R` never returns, so the inner run never reaches steady state and `C`
     // never becomes `Ready`; the terminal service ending settles the inner
     // scope under it.
@@ -479,7 +495,7 @@ fn mc_a_component_whose_inner_scope_settles_by_itself_ends_its_own_attempt() {
         .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Resident)
         .expect("valid child");
     let mut outer = Plan::builder("Outer");
-    outer.component("C", &inner).raw();
+    outer.component("C", &inner, ()).raw();
     let plan = outer
         .build(Policy::Isolate, Shutdown::within(secs(9)), Mode::Resident)
         .expect("valid");
@@ -519,11 +535,11 @@ fn mc_a_waiter_a_nested_admit_already_started_is_not_started_twice() {
     c.import(e);
     c.join("J", ());
     let inner = c
-        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Finite)
+        .build(Policy::Isolate, Shutdown::within(secs(4)), Mode::Resident)
         .expect("valid child");
     // `C` and `R` become need-ready together and queue in declaration order;
     // `C` is granted first, and `R` must be started exactly once.
-    outer.component("C", &inner).raw();
+    outer.component("C", &inner, ()).raw();
     let r = unit_res(&mut outer, "R", e);
     let _ = r;
     let plan = outer

@@ -113,7 +113,7 @@ fn the_static_checker_holds_for_nested_and_dynamic_shapes() {
         .expect("valid");
 
     let mut p = Plan::builder("Process");
-    let netk = p.component("Net", &net);
+    let netk = p.component("Net", &net, ());
     p.effect("Registration")
         .needs(netk)
         .on_ambiguous(Ambiguity::Report)

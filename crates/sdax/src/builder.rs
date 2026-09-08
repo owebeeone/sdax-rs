@@ -7,14 +7,14 @@
 
 use crate::cx::Release;
 use crate::host::bodies::{
-    Bodies, ErasedBlocking, ErasedImport, ErasedPrepare, ErasedRelease, ReadyValue,
+    Bodies, ErasedBlocking, ErasedImport, ErasedPrepare, ErasedRelease, ErasedServe, ReadyValue,
 };
 use crate::key::{Deps, Key, RawKey, Slots};
 use crate::plan::{
     next_plan_id, Attrs, Kind, NodeDecl, Plan, PlanIr, Pool, PoolDecl, Template, SEMANTICS,
 };
 use crate::policy::{CancelMode, Mode, Policy, Restart, Retry, Shutdown};
-use crate::validate::{validate, Invalid};
+use crate::validate::{validate_build, Invalid};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,15 +40,18 @@ pub struct NoAmbiguity;
 
 /// The untyped state a builder accumulates.
 pub(crate) struct Build {
+    /// Reserved chains that have not reached a terminal. Build-time only.
+    pub(crate) unfinished: Vec<RawKey>,
     pub(crate) id: u64,
     pub(crate) name: String,
     pub(crate) nodes: Vec<NodeDecl>,
     pub(crate) pools: Vec<PoolDecl>,
     pub(crate) prepare: Vec<Option<ErasedPrepare>>,
     pub(crate) release: Vec<Option<ErasedRelease>>,
+    pub(crate) serve: Vec<Option<ErasedServe>>,
     pub(crate) blocking: Vec<Option<ErasedBlocking>>,
     /// One entry per import node: the plan the value comes from, and the copy.
-    pub(crate) imports: Vec<(u64, ErasedImport)>,
+    pub(crate) imports: Vec<(RawKey, ErasedImport)>,
     pub(crate) ready_values: Vec<(RawKey, ReadyValue)>,
     /// The bodies of every component plan used, in declaration order.
     pub(crate) children: Vec<Arc<Bodies>>,
@@ -60,12 +63,14 @@ pub(crate) struct Build {
 impl Build {
     fn new(name: &str) -> Self {
         Build {
+            unfinished: Vec::new(),
             id: next_plan_id(),
             name: name.to_string(),
             nodes: Vec::new(),
             pools: Vec::new(),
             prepare: Vec::new(),
             release: Vec::new(),
+            serve: Vec::new(),
             blocking: Vec::new(),
             imports: Vec::new(),
             ready_values: Vec::new(),
@@ -104,15 +109,36 @@ impl Build {
         blocking: Option<ErasedBlocking>,
     ) -> Key<T> {
         let raw = decl.key;
-        self.nodes.push(decl);
-        self.prepare.push(prepare);
-        self.release.push(release);
-        self.blocking.push(blocking);
+        if let Some(position) = self.unfinished.iter().position(|key| *key == raw) {
+            self.unfinished.remove(position);
+            let index = raw.idx as usize;
+            self.nodes[index] = decl;
+            self.prepare[index] = prepare;
+            self.release[index] = release;
+            self.blocking[index] = blocking;
+        } else {
+            self.nodes.push(decl);
+            self.prepare.push(prepare);
+            self.release.push(release);
+            self.serve.push(None);
+            self.blocking.push(blocking);
+        }
         Key::from_raw(raw)
+    }
+
+    pub(crate) fn commit_service<T: ?Sized>(
+        &mut self,
+        decl: NodeDecl,
+        prepare: ErasedPrepare,
+        serve: ErasedServe,
+    ) -> Key<T> {
+        let key = self.commit(decl, Some(prepare), None, None);
+        self.serve[key.raw().idx as usize] = Some(serve);
+        key
     }
 }
 
-/// Builds one plan. Obtained from [`Plan::builder`] or [`Plan::template`].
+/// Builds one reusable definition. Obtained from [`Plan::builder`] or [`Plan::with_input`].
 pub struct PlanBuilder<Out = (), In = ()> {
     pub(crate) b: Build,
     pub(crate) _t: PhantomData<fn() -> (Out, In)>,
@@ -121,10 +147,7 @@ pub struct PlanBuilder<Out = (), In = ()> {
 impl Plan<(), ()> {
     /// Start a root plan or a component plan.
     pub fn builder(name: &str) -> PlanBuilder<(), ()> {
-        PlanBuilder {
-            b: Build::new(name),
-            _t: PhantomData,
-        }
+        Plan::with_input::<()>(name)
     }
 }
 
@@ -146,18 +169,16 @@ impl Plan {
         let decl = b.decl("input", Kind::Input);
         let key: Key<In> = b.commit(decl, None, None, None);
         b.input = Some(key.raw());
+        let me = key.raw();
+        b.imports.push((
+            me,
+            Box::new(move |src, from, to| {
+                if let Some(value) = from.get::<In>(src) {
+                    to.set(me, value);
+                }
+            }),
+        ));
         PlanBuilder { b, _t: PhantomData }
-    }
-
-    /// Start a template: a plan instantiated at run time by `cx.spawn` with a
-    /// per-instance input.
-    ///
-    /// The same declaration as [`Plan::with_input`], under the name the
-    /// template case is written with. Registering the built plan with
-    /// [`PlanBuilder::template`] is what makes it a template; the plan value
-    /// itself can also be started as a root.
-    pub fn template<In: Send + Sync + 'static>(name: &str) -> PlanBuilder<(), In> {
-        Plan::with_input::<In>(name)
     }
 }
 
@@ -171,9 +192,8 @@ impl<Out, In> PlanBuilder<Out, In> {
     /// (`start(rt, input)`) and the value one instance is spawned with
     /// (`cx.spawn(&template, input)`) are the same node.
     ///
-    /// Panics if this plan declares no input. A [`Plan::builder`] plan does
-    /// not, and its `In = ()` says so; [`Plan::with_input`] and
-    /// [`Plan::template`] are what declare one.
+    /// Every builder declares an input, including the ordinary unit input
+    /// of [`Plan::builder`].
     pub fn input(&self) -> Key<In> {
         Key::from_raw(self.b.input.expect("this plan declares no input"))
     }
@@ -192,12 +212,29 @@ impl<Out, In> PlanBuilder<Out, In> {
         // the ancestor's value has to arrive in this plan's import slot. The
         // copy is recorded where `T` is still known; everywhere else the value
         // is an erased `Arc<T>` that cannot be cloned without it.
-        let copy: ErasedImport = Box::new(move |from: &Slots, to: &mut Slots| {
+        let copy: ErasedImport = Box::new(move |src, from: &Slots, to: &mut Slots| {
             if let Some(a) = from.get::<T>(src) {
                 to.set::<T>(me, a);
             }
         });
-        self.b.imports.push((src.plan, copy));
+        self.b.imports.push((me, copy));
+        self.b.commit(decl, None, None, None)
+    }
+
+    /// Declare a typed formal import, bound with [`Plan::bind`] at each use.
+    /// The port is a dependency key within this definition. A mounted child
+    /// with any unbound ports is rejected by the parent's `build`.
+    pub fn port<T: ?Sized + Send + Sync + 'static>(&mut self, name: &str) -> Key<T> {
+        let decl = self.b.decl(name, Kind::Import);
+        let me = decl.key;
+        self.b.imports.push((
+            me,
+            Box::new(move |src, from, to| {
+                if let Some(value) = from.get::<T>(src) {
+                    to.set(me, value);
+                }
+            }),
+        ));
         self.b.commit(decl, None, None, None)
     }
 
@@ -221,7 +258,7 @@ impl<Out, In> PlanBuilder<Out, In> {
         self.node(name, Kind::BlockingStep)
     }
 
-    /// A long-lived node whose readiness is the return of its `start` body.
+    /// A long-lived node with one initializer and a restartable serving factory.
     pub fn service(&mut self, name: &str) -> Node<'_, (), Service> {
         self.node(name, Kind::Service)
     }
@@ -234,6 +271,12 @@ impl<Out, In> PlanBuilder<Out, In> {
 
     fn node<K>(&mut self, name: &str, kind: Kind) -> Node<'_, (), K> {
         let decl = self.b.decl(name, kind);
+        self.b.unfinished.push(decl.key);
+        self.b.nodes.push(decl.clone());
+        self.b.prepare.push(None);
+        self.b.release.push(None);
+        self.b.serve.push(None);
+        self.b.blocking.push(None);
         Node {
             b: &mut self.b,
             decl,
@@ -250,13 +293,25 @@ impl<Out, In> PlanBuilder<Out, In> {
         self.b.commit(decl, None, None, None)
     }
 
-    /// Use a plan as one node of this plan, instantiated once per run.
-    pub fn component<O: Send + Sync + 'static>(&mut self, name: &str, plan: &Plan<O>) -> Key<O> {
+    /// Mount a reusable definition as one independent child scope per run.
+    /// Supply a parent `Key<I>` or explicit `()` for a unit-input child.
+    /// Key bindings retain the parent's lifetime through child cleanup.
+    /// Bind additional formal imports with [`Plan::bind`] before mounting.
+    pub fn component<O: Send + Sync + 'static, I: Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+        plan: &Plan<O, I>,
+        input: impl crate::plan::InputBinding<I>,
+    ) -> Key<O> {
         let mut decl = self.b.decl(name, Kind::Component);
-        decl.needs = plan.ir.imports();
-        decl.child = Some(plan.ir.clone());
+        let mut child = crate::plan::mount_ir(&plan.ir);
+        if let Some(key) = child.input {
+            child.nodes[key.idx as usize].source = input.source();
+        }
+        decl.needs = child.imports();
+        decl.child = Some(Arc::new(child.clone()));
         decl.attrs.release = crate::plan::ReleaseStyle::Inner;
-        let value = match plan.ir.export {
+        let value = match child.export {
             None => ReadyValue::Unit,
             Some(source) => ReadyValue::Export {
                 source,
@@ -275,8 +330,9 @@ impl<Out, In> PlanBuilder<Out, In> {
     /// Register a template so bodies can instantiate it.
     pub fn template<I>(&mut self, name: &str, plan: &Plan<(), I>) -> Template<I> {
         let mut decl = self.b.decl(name, Kind::Template);
-        decl.needs = plan.ir.imports();
-        decl.child = Some(plan.ir.clone());
+        let child = crate::plan::mount_ir(&plan.ir);
+        decl.needs = child.imports();
+        decl.child = Some(Arc::new(child));
         decl.attrs.release = crate::plan::ReleaseStyle::Instances;
         // A template's plan is a child plan like a component's: its nodes have
         // their own key space and their own bodies, which this plan's
@@ -342,8 +398,10 @@ impl<Out, In> PlanBuilder<Out, In> {
         mode: Mode,
     ) -> Result<Plan<Out, In>, Invalid> {
         let id = self.b.id;
+        let unfinished = self.b.unfinished;
         let ir = PlanIr {
             id,
+            origin: id,
             name: self.b.name,
             semantics: SEMANTICS,
             nodes: self.b.nodes,
@@ -355,31 +413,31 @@ impl<Out, In> PlanBuilder<Out, In> {
             input: self.b.input,
             foreign_spawns: self.b.foreign_spawns,
         };
-        let checks = validate(&ir);
+        let checks = validate_build(&ir, &unfinished);
         if !checks.is_empty() {
             return Err(Invalid { checks });
         }
-        Ok(Plan {
-            ir: Arc::new(ir),
-            bodies: Arc::new(Bodies {
+        Ok(Plan::from_parts(
+            ir,
+            Arc::new(Bodies {
                 plan: id,
                 prepare: self.b.prepare,
                 release: self.b.release,
+                serve: self.b.serve,
                 blocking: self.b.blocking,
                 imports: self.b.imports,
                 ready_values: self.b.ready_values,
                 children: self.b.children,
             }),
-            _t: PhantomData,
-        })
+        ))
     }
 }
 
 /// A node under construction: `D` is what it needs, `K` is its kind.
 ///
-/// The node joins the plan only when its terminal method runs, which is what
-/// makes "a resource with no release" and "an effect with no ambiguity policy"
-/// compile errors rather than findings.
+/// Beginning a chain reserves a declaration; its terminal completes that entry
+/// and returns a key. Type state prevents using an incomplete chain as a key.
+/// Discarding it leaves a structured finding that prevents plan build.
 pub struct Node<'b, D: Deps, K> {
     pub(crate) b: &'b mut Build,
     pub(crate) decl: NodeDecl,

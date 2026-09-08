@@ -36,10 +36,17 @@ pub(super) fn is_body_end(k: &TraceKind) -> bool {
     )
 }
 
+pub(super) fn is_attempt_start(k: &TraceKind) -> bool {
+    matches!(k, TraceKind::Start(phase) if *phase != Phase::Serve)
+}
+
 pub(super) fn is_cleanup_start(k: &TraceKind) -> bool {
     matches!(
         k,
-        TraceKind::ReleaseStart | TraceKind::CompensateStart | TraceKind::StopRequested
+        TraceKind::ReleaseStart
+            | TraceKind::CompensateStart
+            | TraceKind::RecoveryStart
+            | TraceKind::StopRequested
     )
 }
 
@@ -48,6 +55,8 @@ pub(super) fn is_cleanup_end(k: &TraceKind) -> bool {
         k,
         TraceKind::ReleaseOk
             | TraceKind::ReleaseFail(_)
+            | TraceKind::RecoveryOk
+            | TraceKind::RecoveryFail(_)
             | TraceKind::CompensateOk
             | TraceKind::CompensateFail(_)
             | TraceKind::Stopped
@@ -108,10 +117,7 @@ impl<'a> Ctx<'a> {
             .filter(|(i, _)| *i < r)
             .map(|(_, e)| e)
             .collect();
-        let Some(last_start) = evs
-            .iter()
-            .rposition(|e| matches!(e.kind, TraceKind::Start(_)))
-        else {
+        let Some(last_start) = evs.iter().rposition(|e| is_attempt_start(&e.kind)) else {
             return true;
         };
         let after: Vec<&TraceEvent> = evs[last_start..].to_vec();
@@ -134,8 +140,7 @@ impl<'a> Ctx<'a> {
                 // nothing to undo, and the view says so too.
                 let ambiguous_compensated =
                     after.iter().any(|e| matches!(e.kind, TraceKind::Ambiguous))
-                        && n.attr("ambiguous") == Some("compensate")
-                        && !Self::persistent(n);
+                        && n.attr("ambiguous") == Some("recover");
                 if (held && Self::owes_when_held(n)) || ambiguous_compensated {
                     after.iter().any(|e| is_cleanup_end(&e.kind))
                 } else {
@@ -213,7 +218,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
             .map(|(_, e)| *e)
             .collect();
         match &e.kind {
-            TraceKind::Start(_) => {
+            TraceKind::Start(phase) if *phase != Phase::Serve => {
                 // INV-1: every need is Ready now, and nothing else ordered it.
                 for need in &n.needs {
                     let nocc = occ_of_target(path, &occ, need);
@@ -234,17 +239,26 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                         }
                         continue;
                     }
-                    let last = c.of(need, &nocc).into_iter().rfind(|(j, _)| *j < i);
-                    let ready_now = match last {
-                        Some((_, le)) => match le.kind {
-                            TraceKind::Ready => true,
-                            TraceKind::Stopped => !c
-                                .of(need, &nocc)
-                                .iter()
-                                .any(|(j, x)| *j < i && matches!(x.kind, TraceKind::StopRequested)),
-                            _ => false,
-                        },
-                        None => false,
+                    let need_events = c.of(need, &nocc);
+                    let ready_now = if c.node(need).map(|m| m.kind) == Some(Kind::Service) {
+                        // Service readiness is the initializer's successful
+                        // publication and stays latched while serving
+                        // recovers. A serve fault does not retract the Arc
+                        // already handed to dependents.
+                        need_events
+                            .iter()
+                            .any(|(j, x)| *j < i && matches!(x.kind, TraceKind::Ready))
+                    } else {
+                        match need_events.into_iter().rfind(|(j, _)| *j < i) {
+                            Some((_, le)) => match le.kind {
+                                TraceKind::Ready => true,
+                                TraceKind::Stopped => !c.of(need, &nocc).iter().any(|(j, x)| {
+                                    *j < i && matches!(x.kind, TraceKind::StopRequested)
+                                }),
+                                _ => false,
+                            },
+                            None => false,
+                        }
                     };
                     if !ready_now {
                         out.push(violation(
@@ -272,7 +286,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 let prev: Vec<&TraceEvent> = before
                     .iter()
                     .copied()
-                    .filter(|x| matches!(x.kind, TraceKind::Start(_)))
+                    .filter(|x| is_attempt_start(&x.kind))
                     .collect();
                 let expected = prev.len() as u32 + 1;
                 if k != expected {
@@ -311,7 +325,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 if n.kind != Kind::Join {
                     let started = before
                         .iter()
-                        .any(|x| attempt(x) == k && matches!(x.kind, TraceKind::Start(_)));
+                        .any(|x| attempt(x) == k && is_attempt_start(&x.kind));
                     let ended_already = before.iter().any(|x| {
                         attempt(x) == k
                             && is_body_end(&x.kind)
@@ -325,9 +339,9 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     }
                 }
             }
-            TraceKind::ReleaseStart | TraceKind::CompensateStart => {
+            TraceKind::ReleaseStart | TraceKind::CompensateStart | TraceKind::RecoveryStart => {
                 // INV-4 and INV-18: a release body runs only for a held value.
-                if Ctx::persistent(n) {
+                if Ctx::persistent(n) && !matches!(e.kind, TraceKind::RecoveryStart) {
                     out.push(violation(
                         "INV-18",
                         format!("persistent effect {me} ran a compensation"),
@@ -337,11 +351,14 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                     let held = before
                         .iter()
                         .any(|x| attempt(x) == k && matches!(x.kind, TraceKind::Held));
-                    let ambiguous_ok = n.attr("ambiguous") == Some("compensate")
+                    let ambiguous_ok = matches!(e.kind, TraceKind::RecoveryStart)
+                        && n.attr("ambiguous") == Some("recover")
                         && before
                             .iter()
                             .any(|x| attempt(x) == k && matches!(x.kind, TraceKind::Ambiguous));
-                    if !held && !ambiguous_ok {
+                    if (matches!(e.kind, TraceKind::RecoveryStart) && (held || !ambiguous_ok))
+                        || (!matches!(e.kind, TraceKind::RecoveryStart) && !held)
+                    {
                         out.push(violation(
                             "INV-4",
                             format!("{me} attempt {k} ran a release body without a Held"),
@@ -386,7 +403,7 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
         }
         // INV-11, the other direction: an ambiguous effect is neither retried
         // nor compensated unless declared so.
-        if matches!(e.kind, TraceKind::Start(_))
+        if is_attempt_start(&e.kind)
             && n.attr("ambiguous") != Some("retry")
             && before
                 .iter()
@@ -397,8 +414,11 @@ pub fn check_trace_prefix(trace: &Trace, view: &PlanView) -> Vec<Violation> {
                 format!("{me} was retried after an ambiguous attempt"),
             ));
         }
-        if matches!(e.kind, TraceKind::CompensateStart)
-            && n.attr("ambiguous") != Some("compensate")
+        if matches!(
+            e.kind,
+            TraceKind::CompensateStart | TraceKind::RecoveryStart
+        ) && (!matches!(e.kind, TraceKind::RecoveryStart)
+            || n.attr("ambiguous") != Some("recover"))
             && before
                 .iter()
                 .any(|x| attempt(x) == k && matches!(x.kind, TraceKind::Ambiguous))

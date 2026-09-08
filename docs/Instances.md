@@ -1,9 +1,8 @@
 # Instances
 
 A **template** is a nested plan you instantiate at run time with
-`cx.spawn(&template, input)`. Write the child with `Plan::template::<In>`
-— the same constructor as `Plan::with_input` — register it on the
-parent with `.template(name, &plan)`, and declare which service may
+`cx.spawn(&template, input)`. Write the child with `Plan::with_input::<In>`,
+register it on the parent with `.template(name, &plan)`, and declare which service may
 spawn it with `.spawns(&template)`. The built plan can also be started
 as a root with `start(rt, input)`.
 
@@ -11,7 +10,7 @@ Two facts that surprise people:
 
 1. Every key an instance **imports** is released only after that
    instance has ended. The parent's resource outlives the child.
-2. A start body that awaits `Child::ready()` makes the parent's
+2. An initializer that awaits `Child::ready()` makes the parent's
    readiness include that instance. Dependents of the service then
    wait for the child too.
 
@@ -32,9 +31,11 @@ readiness deadlock, and `build` rejects it (`V-SPAWN-SELF-IMPORT`).
 Import a resource the service needs instead.
 
 `Mode::Finite` is rejected on a plan that declares a template. The
-parent below is `Resident`. The child is `Finite`: one resource that
-imports the parent's endpoint, then it ends. The parent's release
-asserts the child already released — the imported key outlived the
+parent below is `Resident`. The child declaration uses `Finite` for its
+own lifecycle shape, but a dynamically spawned instance remains steady
+after it becomes ready regardless of that mode. It ends when its parent
+calls `child.stop()` or when the parent scope shuts down. The parent's
+release asserts the child already released — the imported key outlived the
 instance.
 
 ```rust,guide:spawn_child
@@ -66,7 +67,7 @@ fn a_service_spawns_a_child_that_releases_before_the_import() {
             async move { Ok(()) }
         });
 
-    let mut t = Plan::template::<u8>("Link");
+    let mut t = Plan::with_input::<u8>("Link");
     let imported = t.import(endpoint);
     let cr = child_released.clone();
     t.resource("Sock")
@@ -89,11 +90,12 @@ fn a_service_spawns_a_child_that_releases_before_the_import() {
         .needs(endpoint)
         .spawns(&link)
         .stop_within(Duration::from_secs(1))
-        .start(move |cx, _e: Arc<Endpoint>| async move {
+        .initialize(move |cx, _e: Arc<Endpoint>| async move {
             let ch = cx.spawn(&link, 1u8)?;
             ch.ready().await?;
-            Ok(Serving::new((), async { Ok(()) }))
-        });
+            Ok(())
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let plan = p
         .build(
             Policy::FailFast,

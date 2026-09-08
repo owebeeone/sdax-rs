@@ -103,10 +103,10 @@ impl Machine {
     }
 
     pub(super) fn needs_ready(&self, n: usize) -> bool {
-        self.t.nodes[n]
-            .needs
-            .iter()
-            .all(|&d| matches!(self.slots[d].st, St::Ready | St::Finished))
+        self.t.nodes[n].needs.iter().all(|&d| {
+            (self.t.nodes[d].kind == Kind::Service && self.slots[d].initialized)
+                || matches!(self.slots[d].st, St::Ready | St::Finished)
+        })
     }
 
     fn grants_available(&self, n: usize) -> bool {
@@ -190,7 +190,10 @@ impl Machine {
         let kind = self.t.nodes[n].kind;
         let slot = &mut self.slots[n];
         slot.queued = None;
-        slot.attempt += 1;
+        let recovery = kind == Kind::Service && slot.initialized;
+        if !recovery {
+            slot.attempt += 1;
+        }
         slot.held = false;
         slot.cancelling = false;
         slot.signalled = false;
@@ -200,6 +203,15 @@ impl Machine {
         slot.st = St::Running;
         let attempt = slot.attempt;
         let key = self.t.nodes[n].key;
+        if recovery {
+            let episode = slot.restarts + 1;
+            slot.st = St::Ready;
+            slot.episode = episode;
+            slot.faults.clear();
+            self.emit(n, TraceKind::Start(Phase::Serve));
+            self.fx.push(Effect::Serve { node: key, episode });
+            return;
+        }
         match kind {
             Kind::Join => {
                 self.release_grants(n);
@@ -252,15 +264,12 @@ impl Machine {
     /// through `Child::ready` (INV-17), never the scope's steady state.
     fn unsettled(&self, scope: usize) -> bool {
         self.t.scopes[scope].nodes.iter().any(|&n| {
-            matches!(
-                self.slots[n].st,
-                St::Pending
-                    | St::Waiting
-                    | St::Running
-                    | St::Publishing
-                    | St::Backoff
-                    | St::RetryRelease
-            )
+            let recovering = self.t.nodes[n].kind == Kind::Service && self.slots[n].initialized;
+            matches!(self.slots[n].st, St::Pending | St::Waiting | St::Backoff) && !recovering
+                || matches!(
+                    self.slots[n].st,
+                    St::Running | St::Publishing | St::RetryRelease
+                )
         })
     }
 
@@ -325,9 +334,16 @@ impl Machine {
         let scope = self.t.nodes[n].scope;
         self.admit(scope);
         self.check_steady(scope);
-        // The grants this node held are free, and a lock reached through an
-        // import is not this scope's alone.
-        self.admit_all();
+        // The local admit above already reached a fixpoint. Only a second
+        // scope can have another waiter for a grant reached through an import.
+        // Preserve the global sweep in that case, including dynamic scopes.
+        if self.scopes.len() > 1 {
+            self.admit_all();
+        }
         self.try_cleanup(scope);
     }
 }
+
+#[cfg(test)]
+#[path = "admit_trace_tests.rs"]
+mod trace_tests;

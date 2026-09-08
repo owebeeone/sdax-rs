@@ -146,6 +146,13 @@ pub enum Effect {
         /// Which attempt.
         attempt: u32,
     },
+    /// Start one serving episode against the already-published service handle.
+    Serve {
+        /// Which service.
+        node: RawKey,
+        /// The serving episode, counting from 1.
+        episode: u32,
+    },
     /// Abort a node's task. The host must still join it.
     Abort(RawKey),
     /// Raise the node's stop signal without aborting it.
@@ -154,8 +161,13 @@ pub enum Effect {
     Release(RawKey),
     /// Run an effect's compensation.
     Compensate(RawKey),
+    /// Recover an unknown effect without a success receipt.
+    Recover(RawKey),
     /// Signal a service, wait up to its budget, then abort.
     StopService(RawKey),
+    /// Refresh the deadline visible to an already-running shielded cleanup.
+    /// This changes context metadata only; it does not signal or abort.
+    RefreshDeadline(RawKey),
     /// Set a timer on the engine's clock.
     Timer {
         /// Its identity, echoed back by [`Event::Timer`].
@@ -196,4 +208,11 @@ pub struct Rejected {
     pub event: String,
     /// Why it was refused.
     pub reason: &'static str,
+}
+
+pub(crate) use table::Table;
+pub(crate) fn compile_layout(
+    ir: &crate::plan::PlanIr,
+) -> Result<std::sync::Arc<Table>, EngineError> {
+    Table::build(ir).map(std::sync::Arc::new)
 }

@@ -25,7 +25,7 @@ if [ ! -f "$RLIB" ]; then
 fi
 
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+# Retain compiler witnesses unless the owner requests cleanup.
 python3 - "$WORK" <<'PY'
 import pathlib, re, sys
 work = pathlib.Path(sys.argv[1])

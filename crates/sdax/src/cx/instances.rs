@@ -158,8 +158,8 @@ impl Child {
 
     /// Await this instance's readiness (F1).
     ///
-    /// A start body that spawns N instances and awaits each `ready()` before
-    /// returning `Serving` makes the scope's readiness include the instances,
+    /// An initializer that spawns N instances and awaits each `ready()` before
+    /// returning its handle makes the scope's readiness include the instances,
     /// which is what makes "a node that depends on all instances being ready"
     /// expressible. The template must not `import` the spawning service's own
     /// key: that would be a readiness deadlock, and

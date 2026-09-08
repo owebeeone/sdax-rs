@@ -168,10 +168,10 @@ fn pick_attrs(
         a.terminal = g.chance(0.1);
     }
     if kind == Kind::Effect {
-        a.ambiguity = *g.pick(&[Ambiguity::Report, Ambiguity::Compensate, Ambiguity::Retry]);
+        a.ambiguity = *g.pick(&[Ambiguity::Report, Ambiguity::Recover, Ambiguity::Retry]);
         a.persistent = g.chance(0.25);
         // `V-PERSIST-AMBIG`: a persistent effect has nothing to compensate.
-        if a.persistent && a.ambiguity == Ambiguity::Compensate {
+        if a.persistent && a.ambiguity == Ambiguity::Recover {
             a.ambiguity = *g.pick(&[Ambiguity::Report, Ambiguity::Retry]);
         }
         if a.ambiguity != Ambiguity::Report || a.retry.is_some() {
@@ -236,7 +236,7 @@ pub(crate) fn fill<In>(
             );
             match child {
                 Ok(plan) => {
-                    let k = p.component(&name, &plan);
+                    let k = p.component(&name, &plan, ());
                     keys.units.push((k, false));
                     lines.push(format!(
                         "{name}: component of {} nodes",
@@ -467,19 +467,19 @@ fn child_plan(
         nest,
         &[],
     );
-    let export = match keys
+    let (export, live_export) = match keys
         .units
         .iter()
         .rev()
         .find(|(k, _)| k.raw().plan == p.id())
     {
-        Some((k, _)) => *k,
+        Some((k, live)) => (*k, *live),
         None => {
             let k = p
                 .step(&format!("{name}/Out"))
                 .run(|_cx, ()| async move { Ok(Unit) });
             lines.push(format!("{name}/Out: step"));
-            k
+            (k, false)
         }
     };
     let mode = if has_service {
@@ -487,6 +487,8 @@ fn child_plan(
     } else {
         *g.pick(&[Mode::Finite, Mode::Resident])
     };
+    // Keep the random draw stable, but retain exported resource lifetimes.
+    let mode = if live_export { Mode::Resident } else { mode };
     p.export(export).build(shape.policy, shape.shutdown, mode)
 }
 /// A random plan, valid unless a mutation says otherwise.

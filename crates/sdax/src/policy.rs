@@ -84,8 +84,8 @@ impl std::fmt::Display for Mode {
 pub enum Ambiguity {
     /// List it under `ambiguous` and do nothing else.
     Report,
-    /// Run the compensation anyway. Requires `.idempotent()`.
-    Compensate,
+    /// Reconcile using the typed identity and explicit recovery handler. Requires `.idempotent()`.
+    Recover,
     /// Perform it again. Requires `.idempotent()`.
     Retry,
 }
@@ -94,7 +94,7 @@ impl std::fmt::Display for Ambiguity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Ambiguity::Report => "report",
-            Ambiguity::Compensate => "compensate",
+            Ambiguity::Recover => "recover",
             Ambiguity::Retry => "retry",
         })
     }

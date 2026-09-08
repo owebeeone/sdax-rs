@@ -32,7 +32,7 @@ waves, no levels.
 
 1. Resource/effect body returns `Held<T>` — only `cx.hold` /
    `cx.hold_value` mint one.
-2. A service is ready when `start` returns `Serving`.
+2. A service is ready when `initialize` returns its handle.
 3. `build(policy, shutdown, mode)` and effect `on_ambiguous` have no
    defaults.
 
@@ -43,15 +43,17 @@ Plan<Out = (), In = ()>
 ```
 
 - `Out` — `.export(key)`, else `()`.
-- `In` — per-run input. `Plan::builder`: `In = ()`. `Plan::with_input`
-  / `Plan::template`: one `In` per start or spawn.
+- `In` — typed input supplied at start, mount or spawn. `Plan::builder`
+  is exactly the `Plan::with_input::<()>` unit-input definition.
 
 ```rust
 Plan::builder("Name") -> PlanBuilder<(), ()>
 Plan::with_input::<In>("Name") -> PlanBuilder<(), In>  // per-run input
-Plan::template::<In>("Name") -> PlanBuilder<(), In>    // same constructor
-input() -> Key<In>                 // panics if the plan declares none
-import(parent: Key<T>) -> Key<T>   // ancestor key; parent released after child ends
+input() -> Key<In>                 // present on every builder
+port::<T>(name) -> Key<T>          // typed formal import
+plan.bind(port: Key<T>, parent: Key<T>) -> Result<Plan<Out, In>, Invalid>
+import(parent: Key<T>) -> Key<T>   // concrete ancestor binding
+component(name, &Plan<O, I>, input: Key<I>) -> Key<O> // () also accepted for I=()
 export(key: Key<T>) -> PlanBuilder<T, In>
 pool(name, limit) -> Pool
 spawns(service: Key<H>, template: &Template<I>)  // late form
@@ -67,8 +69,9 @@ foreign key → `V-FOREIGN-KEY`. Exists only after the terminal method
 
 ## Kinds
 
-A node joins only at its terminal. Missing required piece = compile
-error, not a finding.
+A node joins only at its terminal. Type state prevents using an unfinished
+chain as a key; if such a chain is dropped, `build` reports the missing
+terminal as a finding.
 
 | Kind | Construct | Terminal | `cx` | Receives | Returns | Dependents |
 |---|---|---|---|---|---|---|
@@ -76,15 +79,15 @@ error, not a finding.
 | step | `.step(name)` | `.run(f)` | `Run` | `D::Out` | `T` | `Arc<T>` |
 | try-step | `.try_step(name)` | `.run(f)` | `Run` | `D::Out` | `T` (failure is a value) | `Arc<Result<T, Error>>` |
 | blocking step | `.blocking_step(name).on(pool)` | `.run(f)` sync | `Run` | `D::Out` | `T` | `Arc<T>` |
-| service | `.service(name)` | `.start(f)` | `Start` | `D::Out` | `Serving<H>` | `Arc<H>` |
+| service | `.service(name)` | `.initialize(f).serve(g)` | `Start` / `ServingPhase` | `D::Out` / `Arc<H>` | `H` / `()` | `Arc<H>` |
 | effect | `.effect(name).on_ambiguous(a)` | `.perform(f).compensate(g)` or `.persistent()` | `Acquire` / `Release` | `D::Out` / `Arc<R>` | `Held<R>` / `()` | `Arc<R>` |
 | join | `.join(name, deps)` | the call | — | — | — | `Arc<()>` |
-| component | `.component(name, &plan)` | the call | — | — | — | `Arc<O>` |
+| component | `.component(name, &plan, ())` | the call | — | — | — | `Arc<O>` |
 | template | `.template(name, &plan)` | the call | — | — | — | `Template<I>`; node never ready |
 
 Bodies return `Result<…, Error>` except as shown. `release::by_drop()`
-is RAII (`inspect` prints `release: drop`). `Serving::new(handle,
-serve)` — serve future armed only if the node then becomes ready.
+is RAII (`inspect` prints `release: drop`). `initialize` returns the stable
+handle once; `serve` receives an `Arc` of that handle for every episode.
 `.on(pool)` before blocking `run`. `.on_ambiguous(a)` before `perform`.
 
 ## Attributes (any order)
@@ -96,7 +99,7 @@ serve)` — serve future armed only if the node then becomes ready.
 | `.retry(Retry)` | prepare | `Retry::attempts(n)` = **total** attempts |
 | `.idempotent()` | node | re-execution is safe |
 | `.exclusive(res)` / `.shared(res)` | node | lock a resource already in `needs` |
-| `.limit(pool)` | node | not the blocking step's `.on` |
+| `.limit(pool)` | non-blocking node | concurrency cap; blocking nodes use `.on(pool)` |
 | `.cooperative(grace)` | node | signal `cx.stop()`, poll, then abort |
 | `.stop_within(d)` | service | bound stop |
 | `.restart(Restart)` | service | re-run serve on `Err` |
@@ -108,27 +111,13 @@ serve)` — serve future armed only if the node then becomes ready.
 Default cancel is `Drop`. `cooperative` on a blocking step →
 `V-BLOCKING-CANCEL`.
 
-`Ambiguity` (required): `Report` | `Compensate` (needs
-`.idempotent()`) | `Retry` (needs `.idempotent()`). `Compensate` +
-`persistent` → `V-PERSIST-AMBIG`.
-
-## Shorthand
-
-Same declaration as the chain. Attributes → use the chain.
-
-```rust
-p.resource_with(name, deps, acquire, release) -> Key<T>
-p.step_with(name, deps, run) -> Key<T>
-p.try_step_with(name, deps, run) -> Key<Result<T, Error>>
-p.blocking_step_with(name, deps, pool, run) -> Key<T>
-p.service_with(name, deps, start) -> Key<H>   // no stop_within
-p.effect_with(name, deps, on_ambiguous, perform, compensate) -> Key<R>
-p.effect_persistent_with(name, deps, on_ambiguous, perform) -> Key<R>
-```
+`Ambiguity` (required): `Report` | `Recover` | `Retry`. `Recover` needs
+`.idempotent()`, `.identified_by(key)`, and `.recover_unknown(handler)`;
+`Retry` needs `.idempotent()`.
 
 ## `Cx`
 
-`Cx<P>`: `Acquire`, `Run`, `Start`, `Release`. Wrong-phase ops do not
+`Cx<P>`: `Acquire`, `Run`, `Start`, `ServingPhase`, `Release`. Wrong-phase ops do not
 exist.
 
 Every phase: `stop()`, `is_stopping()`, `until_stop(f)` (`None` if
@@ -137,18 +126,22 @@ stop wins), `sleep(d)`, `timeout(d, f)`, `now()`, `deadline()`,
 
 `Cx<Acquire>` only (`acquire` / `perform`):
 
-- `hold(effect)` — register in the poll that sees the effect complete.
-- `hold_value(v)` — register a value already owned. Effect-then-`hold_value`
-  is invisible to the engine.
+- `hold(|| future)` — consumes the single-use acquisition authority, invokes
+  the factory once, and registers its `Ok` value in that observing poll.
+  This context cannot be cloned. Save `let shared = cx.shared()` before
+  consuming it if later work needs clock/cancellation operations; the shared
+  context has no acquisition authority.
+- `hold_value(v)` — consumes that authority to register a value already owned.
+  Effect-then-`hold_value` is invisible to the engine.
 
 `Held<T>`: no public ctor; `Deref` to `T`.
-`Child`: `id()`, `stop()`, `ready()`. Awaiting `ready()` from `start`
+`Child`: `id()`, `stop()`, `ready()`. Awaiting `ready()` from `initialize`
 includes the instance in parent readiness. Not a `needs` edge; no
 output to parent.
 `SpawnError`: `ForeignTemplate`, `UndeclaredTemplate`,
 `ScopeStopping`, `NotRunning`.
 
-Acquire in a resource, not in service `start`. No `tokio::spawn` —
+Acquire in a resource, not in service `initialize`. No `tokio::spawn` —
 use `cx.spawn`.
 
 ## Policy
@@ -170,6 +163,8 @@ template (`V-MODE`). `Resident` — stay until `shutdown()`,
 
 | `Rule` | Id | Cause |
 |---|---|---|
+| `IncompleteDeclaration` | `V-INCOMPLETE-DECLARATION` | a declaration chain was left unfinished |
+| `LiveExport` | `V-LIVE-EXPORT` | a finite plan exports a resource or service handle |
 | `Empty` | `V-EMPTY` | no runnable nodes (input / import do not count) |
 | `ForeignKey` | `V-FOREIGN-KEY` | key/pool of another plan |
 | `DupName` | `V-DUP-NAME` | two nodes, one name, one scope |
@@ -178,7 +173,7 @@ template (`V-MODE`). `Resident` — stay until `shutdown()`,
 | `SpawnSelfImport` | `V-SPAWN-SELF-IMPORT` | template imports the spawning service |
 | `SpawnKind` | `V-SPAWN-KIND` | `spawns` on a non-service |
 | `LockNeeds` | `V-LOCK-NEEDS` | lock a resource not in `needs` |
-| `IdempotentRequired` | `V-IDEMPOTENT-REQUIRED` | retry/compensate-on-ambiguous without `.idempotent()` |
+| `IdempotentRequired` | `V-IDEMPOTENT-REQUIRED` | retry, recovery, or retrying an effect without `.idempotent()` |
 | `PoolStarve` | `V-POOL-STARVE` | resident holder can starve the pool |
 | `UnusedPool` | `V-UNUSED-POOL` | unused pool |
 | `ServiceUnbounded` | `V-SERVICE-UNBOUNDED` | `unbounded()` + service, no `stop_within` |
@@ -186,18 +181,19 @@ template (`V-MODE`). `Resident` — stay until `shutdown()`,
 | `BudgetOrder` | `V-BUDGET-ORDER` | inner budget > outer |
 | `Mode` | `V-MODE` | `Finite` + service or template |
 | `BlockingCancel` | `V-BLOCKING-CANCEL` | `cooperative` on a blocking step |
-| `PersistAmbig` | `V-PERSIST-AMBIG` | `Compensate` on a persistent effect |
+| `BlockingLimit` | `V-BLOCKING-LIMIT` | both `.limit` and `.on` on a blocking step |
+| `RecoveryMissing` | `V-RECOVERY-MISSING` | recovery lacks its required typed identity or handler |
 
 ## Inspect / simulate
 
-Pure. `plan.inspect() -> PlanView`: `name`, `semantics` (`sdax/1`),
+Pure. `plan.inspect() -> PlanView`: `name`, `semantics` (`sdax/2`),
 `mode`, `policy`, `shutdown`, `nodes`, `edges`, `pools`.
 `node(path)`, `layers()` (not barriers), `release_order().before(a,b)`,
 `why(node)`, `effects()`, `Display`, `diff`.
 
 `plan.simulate(&Script) -> Result<Trace, ScriptError>`. Unspecified
-bodies succeed at tick 0. A plan that declares a per-run input is
-refused here — use
+bodies succeed at tick 0. It works for a unit-input plan, including
+`Plan::builder`. A plan with a non-unit per-run input uses
 `plan.simulate_with_input(input, &script)`. The value is not read
 (no body runs); supplying it is what lets the plan run at all.
 `Script::new().prepare("N", Body::ok(At::tick(0.0)))`.
@@ -217,7 +213,7 @@ fn try_start_with(&self, rt, input, RunOptions) -> Result<…>
 
 On `Plan<Out, In>`. `Plan::builder` → `start(rt, ())`.
 `Plan::with_input::<In>` → `start(rt, value)`. The same plan value
-built with `Plan::template::<In>` is startable as a root with that
+built with `Plan::with_input::<In>` is startable as a root with that
 input; `cx.spawn(&template, input)` is the instance path.
 `RunOptions`: `bodies`, `record`, `schedule`, `observe_states`.
 `try_start` refusal (`L-IMPORTS`) → `EngineError`; `start` →
@@ -307,12 +303,13 @@ Report<Out> {
 `is_clean()` = empty lists and `Ok`.
 `into_result() -> Result<Option<Arc<Out>>, Report<Out>>`.
 `Fault`: `node`, `order`, `phase`, `kind`.
-`FaultKind`: `Error`, `Panic`, `Timeout`, `NeverReady`, `DoubleHold`.
-`Phase`: `Prepare`, `Run`, `Serve`, `ReleaseBody`, `Compensate`, `Stop`.
+`FaultKind`: `Error`, `Panic`, `Timeout`, `DoubleHold`.
+`Phase`: `Prepare`, `Run`, `Serve`, `ReleaseBody`, `Compensate`, `Recover`,
+`Stop`.
 
 ## Templates
 
-1. `Plan::template::<In>("Name")` (same as `with_input`) + `.input()` / `.import(k)` + `build`.
+1. `Plan::with_input::<In>("Name")` + `.input()` / `.import(k)` + `build`.
 2. `let t = parent.template("Name", &child)`.
 3. `.service(..).spawns(&t)`.
 4. `cx.spawn(&t, input)?; child.ready().await?;`

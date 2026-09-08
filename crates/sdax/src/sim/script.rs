@@ -26,10 +26,10 @@ impl At {
     }
 }
 
-/// How a prepare, run or start body ends.
+/// How a prepare, run or initialization body ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ending {
-    /// Returns `Ok` (a service: returns `Serving`).
+    /// Returns `Ok` (a service: publishes its handle).
     Ok(At),
     /// Returns `Err` with this message.
     Fail(At, String),
@@ -39,7 +39,7 @@ pub enum Ending {
     Pending,
 }
 
-/// One attempt of a prepare, run or start body.
+/// One attempt of a prepare, run or initialization body.
 ///
 /// For a resource or an effect, `held` is when `hold` registers; an `ok`
 /// with no explicit `held` registers in the completing poll, as `hold` does.
@@ -137,7 +137,7 @@ impl Default for Cleanup {
 
 /// What a body does about a template it declared (F1).
 ///
-/// A scripted `cx.spawn`: the start body asks for an instance at `at`,
+/// A scripted `cx.spawn`: the initializer asks for an instance at `at`,
 /// optionally awaits its readiness before returning (INV-17), and the serve
 /// future asks it to stop at `stop`. Every attempt of the body runs its
 /// directives again, exactly as a real body would.
@@ -225,7 +225,7 @@ impl Script {
         Script::default()
     }
 
-    /// The outcome of a node's prepare, run or start body, attempt by
+    /// The outcome of a node's prepare, run or initialization body, attempt by
     /// attempt; the last entry repeats for later attempts. A later call for
     /// the same node replaces the earlier one.
     pub fn body(mut self, node: &str, attempts: impl IntoIterator<Item = Body>) -> Script {

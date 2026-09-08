@@ -1,0 +1,14 @@
+{
+  "command": [
+    "C:\\Users\\gianni\\.cargo\\bin\\cargo.exe",
+    "build",
+    "--manifest-path",
+    "C:\\Users\\gianni\\git\\sdax-performance-resume-20260908-202645\\current\\performance-harness\\Cargo.toml",
+    "--release",
+    "--locked",
+    "--offline"
+  ],
+  "cwd": "C:\\Users\\gianni\\git\\sdax-performance-resume-20260908-202645\\current",
+  "elapsed_ns": 14536637400,
+  "exit_code": 0
+}

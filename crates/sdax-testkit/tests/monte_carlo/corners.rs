@@ -212,7 +212,7 @@ pub(crate) fn corners(d: &Driven, view: &PlanView, cov: &mut Coverage) {
         if evs.iter().any(|k| matches!(k, TraceKind::Ambiguous)) {
             match n.attr("ambiguous") {
                 Some("report") => cov.hit("ambiguity Report on an interrupted effect"),
-                Some("compensate") => cov.hit("ambiguity Compensate on an interrupted effect"),
+                Some("recover") => cov.hit("ambiguity Compensate on an interrupted effect"),
                 Some("retry") => cov.hit("ambiguity Retry on an interrupted effect"),
                 _ => {}
             }

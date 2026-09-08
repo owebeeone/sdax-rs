@@ -14,8 +14,9 @@
 //!    [`Cx::hold`] and [`Cx::hold_value`] can mint. `hold` registers the value
 //!    in the same poll that observes the effect completing, so there is no await
 //!    point between "the effect happened" and "the engine owns the cleanup".
-//! 2. A service is ready when its `start` body *returns* a [`Serving`]. "Ready
-//!    because it was spawned" has no spelling.
+//! 2. A service is ready when its `initialize` body returns its handle. The
+//!    restartable `serve` body receives that stable handle. "Ready because it
+//!    was spawned" has no spelling.
 //! 3. Policy that is necessary intent — the fail policy, the shutdown budget,
 //!    the run mode, and what to do about an effect whose outcome is unknown — is
 //!    a required argument or a required typestate step, never a default.
@@ -86,8 +87,8 @@
 //! that; it is the seam's stated residue, not a promise.
 //!
 //! A service's own acquisitions belong in a resource node rather than in its
-//! `start` body: a value a start body creates has no ledger entry and no async
-//! release.
+//! `initialize` body: a value an initializer creates has no ledger entry and
+//! no async release.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -102,7 +103,6 @@ mod key;
 mod plan;
 mod policy;
 mod report;
-mod shorthand;
 mod sim;
 mod terminals;
 mod validate;
@@ -114,22 +114,22 @@ pub use builder::{
 };
 pub use contracts::Error;
 pub use cx::{
-    Acquire, Child, Cx, Held, Hold, Release, Run, Serving, SpawnError, Start, Stop, Timeout,
+    Acquire, Child, Cx, Held, Hold, Release, Run, ServingPhase, SpawnError, Start, Stop, Timeout,
 };
 pub use host::engine::EngineError;
 pub use key::{Deps, Key};
-pub use plan::{Kind, Plan, Pool, ReleaseStyle, Template};
+pub use plan::{InputBinding, Kind, Plan, Pool, ReleaseStyle, Template};
 pub use policy::{Ambiguity, Backoff, CancelMode, Mode, Policy, Restart, Retry, Shutdown};
 pub use report::{
     Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
     TraceEvent, TraceKind,
 };
 pub use sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve, SpawnSpec};
-pub use terminals::{NeedsCompensate, NeedsRelease};
+pub use terminals::{NeedsCompensate, NeedsRelease, NeedsServe};
 pub use validate::{Finding, Invalid, Rule};
 pub use view::{
-    AttrChange, Edge, Effects, NodePath, NodeView, PlanDiff, PlanView, PoolView, Reason,
-    ReleaseOrder, Why,
+    AttrChange, DataNode, DataflowView, Edge, Effects, NodePath, NodeView, PlanDiff, PlanView,
+    PoolView, Reason, ReleaseOrder, Why,
 };
 
 /// Everything an author needs to write, validate, inspect and read back a
@@ -147,7 +147,8 @@ pub mod prelude {
     };
     pub use crate::contracts::Error;
     pub use crate::cx::{
-        Acquire, Child, Cx, Held, Hold, Release, Run, Serving, SpawnError, Start, Stop, Timeout,
+        Acquire, Child, Cx, Held, Hold, Release, Run, ServingPhase, SpawnError, Start, Stop,
+        Timeout,
     };
     pub use crate::host::engine::EngineError;
     pub use crate::key::{Deps, Key};
@@ -155,19 +156,25 @@ pub mod prelude {
     pub use crate::policy::{
         Ambiguity, Backoff, CancelMode, Mode, Policy, Restart, Retry, Shutdown,
     };
+    pub use crate::recovery::{Recovery, UnresolvedRecovery};
     pub use crate::report::{
         Fault, FaultKind, FaultLabel, NodeRecord, Outcome, Phase, RecordOrder, Report, Trace,
         TraceEvent, TraceKind,
     };
     pub use crate::sim::{At, Body, Cleanup, Ending, Request, Schedule, Script, Serve, SpawnSpec};
-    pub use crate::terminals::{NeedsCompensate, NeedsRelease};
+    pub use crate::terminals::{NeedsCompensate, NeedsRelease, NeedsServe};
     pub use crate::validate::{Finding, Invalid, Rule};
     pub use crate::view::{
-        AttrChange, Edge, Effects, NodePath, NodeView, PlanDiff, PlanView, PoolView, Reason,
-        ReleaseOrder, Why,
+        AttrChange, DataNode, DataflowView, Edge, Effects, NodePath, NodeView, PlanDiff, PlanView,
+        PoolView, Reason, ReleaseOrder, Why,
     };
     pub use std::time::Duration;
 }
 
 #[cfg(test)]
 mod tests;
+
+mod recovery;
+pub use recovery::{
+    Identified, IdentifiedCompensate, IdentifiedEffect, Recovery, UnresolvedRecovery,
+};

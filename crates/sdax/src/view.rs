@@ -12,10 +12,12 @@ use crate::plan::{Kind, NodeDecl, Plan, PlanIr, ReleaseStyle};
 use crate::policy::{Ambiguity, Mode, Policy, Shutdown};
 use std::time::Duration;
 
+mod dataflow;
 mod diff;
 mod model;
 mod render;
 
+pub use dataflow::{DataNode, DataflowView};
 pub use diff::{AttrChange, PlanDiff};
 pub use model::{Edge, Effects, NodePath, NodeView, PoolView, Reason, Why};
 
@@ -353,7 +355,14 @@ fn flatten(ir: &PlanIr, prefix: &NodePath, out: &mut PlanView, res: &mut Resolve
                 res.record(key, target);
             }
             if let Some(input) = child.input {
-                res.record(input, Resolution::Path(path.clone()));
+                if child.nodes[input.idx as usize].source.is_none() {
+                    let target = if n.kind == Kind::Template {
+                        Resolution::Path(path.clone())
+                    } else {
+                        Resolution::SuppliedInput
+                    };
+                    res.record(input, target);
+                }
             }
             flatten(child, &path, out, res);
         }
@@ -450,7 +459,7 @@ fn resolved_attrs(ir: &PlanIr, n: &NodeDecl, locks: &Locks) -> Vec<(&'static str
 fn ambiguity_label(a: Ambiguity) -> &'static str {
     match a {
         Ambiguity::Report => "report",
-        Ambiguity::Compensate => "compensate",
+        Ambiguity::Recover => "recover",
         Ambiguity::Retry => "retry",
     }
 }

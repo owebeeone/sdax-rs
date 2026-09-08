@@ -1,0 +1,15 @@
+fixture verification: graphs ok
+fixture verification: startup failure ok
+fixture verification: cleanup failure ok
+fixture verification: cancellation ok
+fixture verification: repeated typed components ok
+fixture verification: unknown recovery ok
+fixture verification: stable service recovery ok
+fixture verification: sequential dynamic churn ok
+fixture verification: ok
+
+thread 'main' (45368417) panicked at src/main.rs:452:5:
+assertion `left == right` failed
+  left: 97
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

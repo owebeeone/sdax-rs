@@ -64,14 +64,13 @@ fn res_and_service(m: Arc<Marks>) -> Plan {
     p.service("W")
         .needs(r)
         .stop_within(secs(2))
-        .start(move |cx, _t: Arc<Unit>| {
+        .initialize(|_cx, _t: Arc<Unit>| async move { Ok(()) })
+        .serve(move |cx, _handle| {
             let m = m2.clone();
             async move {
-                Ok(Serving::new((), async move {
-                    cx.stop().await;
-                    m.stopped.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }))
+                cx.stop().await;
+                m.stopped.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
         });
     p.build(Policy::FailFast, Shutdown::within(secs(5)), Mode::Resident)

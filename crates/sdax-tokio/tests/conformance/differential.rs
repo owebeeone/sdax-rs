@@ -168,7 +168,7 @@ fn r01_the_adapter_and_the_machine_agree_on_cleanup_and_components() {
         &i15(
             Mode::Finite,
             Some(std::time::Duration::from_secs(2)),
-            Ambiguity::Compensate,
+            Ambiguity::Recover,
         ),
         &Script::new().prepare("Registration", Body::pending()),
     );

@@ -1,0 +1,133 @@
+ M AGENTS.md
+ M README.md
+ M crates/sdax-testkit/src/eol.rs
+ M crates/sdax-testkit/src/invariants/report.rs
+ M crates/sdax-testkit/src/invariants/trace.rs
+ M crates/sdax-testkit/src/mc/gen.rs
+ M crates/sdax-testkit/src/mc/keys.rs
+ M crates/sdax-testkit/src/mc/templates.rs
+ M crates/sdax-testkit/src/scripted.rs
+ M crates/sdax-testkit/tests/conformance/corpus.rs
+ M crates/sdax-testkit/tests/conformance/instances.rs
+ M crates/sdax-testkit/tests/conformance/regressions.rs
+ M crates/sdax-testkit/tests/conformance/retry.rs
+ M crates/sdax-testkit/tests/conformance/review.rs
+ M crates/sdax-testkit/tests/monte_carlo/corners.rs
+ M crates/sdax-testkit/tests/testkit.rs
+ M crates/sdax-tokio/src/body.rs
+ M crates/sdax-tokio/src/driver.rs
+ M crates/sdax-tokio/tests/conformance/differential.rs
+ M crates/sdax-tokio/tests/driver.rs
+ M crates/sdax-tokio/tests/fixer_input_admission.rs
+ M crates/sdax-tokio/tests/fixer_publication_driver.rs
+ M crates/sdax-tokio/tests/fixer_values.rs
+ M crates/sdax-tokio/tests/fixer_values_edges.rs
+ M crates/sdax-tokio/tests/guide.rs
+ M crates/sdax-tokio/tests/guide/resident_service.rs
+ M crates/sdax-tokio/tests/guide/spawn_child.rs
+ M crates/sdax-tokio/tests/review_edges.rs
+ M crates/sdax-tokio/tests/review_observer.rs
+ M crates/sdax-tokio/tests/root_input.rs
+ M crates/sdax-tokio/tests/spike.rs
+ M crates/sdax/src/builder.rs
+ M crates/sdax/src/compile_fail.rs
+ M crates/sdax/src/cx.rs
+ M crates/sdax/src/cx/instances.rs
+ M crates/sdax/src/host.rs
+ M crates/sdax/src/host/bodies.rs
+ M crates/sdax/src/host/engine.rs
+ M crates/sdax/src/host/engine/admit.rs
+ M crates/sdax/src/host/engine/cleanup.rs
+ M crates/sdax/src/host/engine/faults.rs
+ M crates/sdax/src/host/engine/instances.rs
+ M crates/sdax/src/host/engine/machine.rs
+ M crates/sdax/src/host/engine/settle.rs
+ M crates/sdax/src/host/engine/state.rs
+ M crates/sdax/src/host/engine/table.rs
+ M crates/sdax/src/key.rs
+ M crates/sdax/src/lib.rs
+ M crates/sdax/src/plan.rs
+ M crates/sdax/src/policy.rs
+ M crates/sdax/src/report.rs
+ D crates/sdax/src/shorthand.rs
+ M crates/sdax/src/sim/effects.rs
+ M crates/sdax/src/sim/instances.rs
+ M crates/sdax/src/sim/script.rs
+ M crates/sdax/src/sim/simulator.rs
+ M crates/sdax/src/terminals.rs
+ M crates/sdax/src/tests/builder.rs
+ M crates/sdax/src/tests/corpus.rs
+ M crates/sdax/src/tests/instances.rs
+ M crates/sdax/src/tests/machine.rs
+ M crates/sdax/src/tests/mod.rs
+ M crates/sdax/src/tests/planner_validate.rs
+ M crates/sdax/src/tests/planner_view.rs
+ M crates/sdax/src/tests/seam.rs
+ D crates/sdax/src/tests/shorthand.rs
+ M crates/sdax/src/validate.rs
+ M crates/sdax/src/validate/budgets.rs
+ M crates/sdax/src/validate/rules.rs
+ M crates/sdax/src/view.rs
+ M crates/sdax/tests/fixer_input_view.rs
+ M crates/sdax/tests/fixer_publication.rs
+ M crates/sdax/tests/fixer_ready_bridge.rs
+ M crates/sdax/tests/surface.rs
+ M crates/sdax/tests/unbounded_shutdown.rs
+ M crates/sdax/tests/witness.rs
+ M docs/Authoring.md
+ M docs/Cleanup.md
+ M docs/Concepts.md
+ M docs/Errors.md
+ M docs/Instances.md
+ M docs/QuickStart.md
+ M docs/README.md
+ M docs/Reference.md
+ M docs/Running.md
+?? crates/sdax-tokio/tests/deadlines.rs
+?? crates/sdax-tokio/tests/factory_panics.rs
+?? crates/sdax-tokio/tests/guide/components.rs
+?? crates/sdax-tokio/tests/guide/readme_cleanup.rs
+?? crates/sdax-tokio/tests/guide/unknown_recovery.rs
+?? crates/sdax-tokio/tests/improvement_components.rs
+?? crates/sdax-tokio/tests/improvement_integration.rs
+?? crates/sdax-tokio/tests/raii_release_order.rs
+?? crates/sdax-tokio/tests/safety_factories.rs
+?? crates/sdax-tokio/tests/safety_recovery.rs
+?? crates/sdax-tokio/tests/service_recovery.rs
+?? crates/sdax/src/cx/acquisition.rs
+?? crates/sdax/src/host/bodies/
+?? crates/sdax/src/host/engine/admit_trace_tests.rs
+?? crates/sdax/src/host/engine/table_index_tests.rs
+?? crates/sdax/src/plan/
+?? crates/sdax/src/recovery.rs
+?? crates/sdax/src/view/dataflow.rs
+?? crates/sdax/tests/blocking_pool.rs
+?? crates/sdax/tests/dataflow_mounts.rs
+?? crates/sdax/tests/dataflow_view.rs
+?? crates/sdax/tests/export_scope.rs
+?? crates/sdax/tests/finite_output.rs
+?? crates/sdax/tests/incomplete_declarations.rs
+?? crates/sdax/tests/report_diagnostics.rs
+?? dev-docs/ImprovementComponents-TDD.md
+?? dev-docs/ImprovementEngineIndex-TDD.md
+?? dev-docs/ImprovementIntegration-TDD.md
+?? dev-docs/ImprovementPerformance.md
+?? dev-docs/ImprovementRaii-TDD.md
+?? dev-docs/ImprovementSafety-TDD.md
+?? dev-docs/ImprovementServices-TDD.md
+?? dev-docs/SdaxContract-v2.md
+?? dev-docs/SdaxImprovementImplementation-2026-09-08.md
+?? dev-docs/SdaxImprovementPlan-2026-09-08.md
+?? dev-docs/performance-baseline-fixtures.tar.gz
+?? docs/AI-Authoring.md
+?? performance-harness/
+?? performance-results/
+?? scripts/performance-fixture-revision.py
+?? scripts/performance-source-revision.py
+?? scripts/resident-process-probe.py
+?? scripts/run-performance-baseline.ps1
+?? scripts/run-performance-baseline.sh
+?? scripts/run-performance-current.ps1
+?? scripts/run-performance-current.sh
+?? scripts/summarize-performance.py
+?? scripts/time-command.py

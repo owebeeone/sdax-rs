@@ -49,7 +49,7 @@ fn join_and_chained_join_supply_actual_unit() {
 #[test]
 fn component_exported_by_root_is_actual_99() {
     let mut p = Plan::builder("root");
-    let component = p.component("child", &ninety_nine());
+    let component = p.component("child", &ninety_nine(), ());
     let report = run(
         &p.export(component)
             .build(Policy::FailFast, shutdown(), Mode::Finite)
@@ -62,7 +62,7 @@ fn component_exported_by_root_is_actual_99() {
 #[test]
 fn parent_consumes_actual_component_value() {
     let mut p = Plan::builder("root");
-    let component = p.component("child", &ninety_nine());
+    let component = p.component("child", &ninety_nine(), ());
     let value = p
         .step("consumer")
         .needs(component)
@@ -89,7 +89,7 @@ fn input_component_plan() -> Plan<u32, u32> {
         .export(value)
         .build(Policy::FailFast, shutdown(), Mode::Finite)
         .unwrap();
-    let component = root.component("child", &child);
+    let component = root.component("child", &child, ());
     root.export(component)
         .build(Policy::FailFast, shutdown(), Mode::Finite)
         .unwrap()
@@ -114,7 +114,7 @@ fn no_export_and_explicit_unit_export_both_supply_unit() {
         }
         .unwrap();
         let mut root = Plan::builder("root");
-        let component = root.component("child", &child);
+        let component = root.component("child", &child, ());
         let value = root
             .step("consumer")
             .needs(component)
@@ -133,13 +133,13 @@ fn no_export_and_explicit_unit_export_both_supply_unit() {
 #[test]
 fn nested_components_publish_through_every_boundary() {
     let mut middle = Plan::builder("middle");
-    let inner = middle.component("inner", &ninety_nine());
+    let inner = middle.component("inner", &ninety_nine(), ());
     let middle = middle
         .export(inner)
         .build(Policy::FailFast, shutdown(), Mode::Finite)
         .unwrap();
     let mut root = Plan::builder("root");
-    let outer = root.component("outer", &middle);
+    let outer = root.component("outer", &middle, ());
     let report = run(
         &root
             .export(outer)

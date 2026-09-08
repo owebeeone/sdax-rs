@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "build",
+    "--manifest-path",
+    "performance-harness/Cargo.toml",
+    "--release",
+    "--locked",
+    "--offline"
+  ],
+  "cwd": "/home/gianni/git/sdax-improvements-perf-20260908",
+  "elapsed_ns": 34060446,
+  "exit_code": 0
+}

@@ -68,7 +68,7 @@ fn p03_the_view_of_i33_is_the_declaration_and_nothing_else() {
     let text = v.to_string();
     for line in [
         "plan Startup",
-        "engine-semantics sdax/1",
+        "engine-semantics sdax/2",
         "mode: finite",
         "policy: fail-fast",
         "shutdown: within 10s",
@@ -144,8 +144,8 @@ fn spawns_is_shown_only_on_a_service() {
         .find(|n| n.kind == Kind::Template)
         .expect("template")
         .key;
-    assert_eq!(ir.nodes[0].kind, Kind::Resource, "node 0 is the endpoint");
-    ir.nodes[0].spawns.push(tpl_key);
+    assert_eq!(ir.nodes[1].kind, Kind::Resource, "node 0 is the endpoint");
+    ir.nodes[1].spawns.push(tpl_key);
     let v = crate::view::PlanView::of(&ir);
     assert!(
         v.node("Endpoint").expect("Endpoint").spawns.is_empty(),

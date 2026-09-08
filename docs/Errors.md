@@ -60,6 +60,8 @@ fn build_refuses_and_the_finding_names_the_node() {
 
 | Rule | Id | What it means | Usual fix |
 |---|---|---|---|
+| `IncompleteDeclaration` | `V-INCOMPLETE-DECLARATION` | a resource, effect, or service chain did not reach its terminal | complete the chain before `build` |
+| `LiveExport` | `V-LIVE-EXPORT` | a finite plan exports a resource or service handle | export completed step data instead |
 | `Empty` | `V-EMPTY` | no nodes to run (an input or an import does not count) | add a node |
 | `ForeignKey` | `V-FOREIGN-KEY` | a key or pool of another plan | `import` an ancestor's key, or keep the key in this plan |
 | `DupName` | `V-DUP-NAME` | two nodes of one scope share a name | rename one |
@@ -68,7 +70,7 @@ fn build_refuses_and_the_finding_names_the_node() {
 | `SpawnSelfImport` | `V-SPAWN-SELF-IMPORT` | a template a service spawns imports that service | import a resource the service needs, not the service |
 | `SpawnKind` | `V-SPAWN-KIND` | `spawns` on a node that is not a service | only services spawn |
 | `LockNeeds` | `V-LOCK-NEEDS` | `exclusive` / `shared` names a resource the node does not need | `.needs` that resource first |
-| `IdempotentRequired` | `V-IDEMPOTENT-REQUIRED` | retry or evidence-free compensation without `idempotent` | `.idempotent()` |
+| `IdempotentRequired` | `V-IDEMPOTENT-REQUIRED` | retry, unknown-outcome recovery, or retrying an effect without `idempotent` | `.idempotent()` |
 | `PoolStarve` | `V-POOL-STARVE` | a resident holder can starve the pool | do not hold a pool slot in a service |
 | `UnusedPool` | `V-UNUSED-POOL` | a pool nobody uses | remove it, or `.on` / `.limit` it |
 | `ServiceUnbounded` | `V-SERVICE-UNBOUNDED` | `Shutdown::unbounded()` and a service with no `stop_within` | bound the shutdown, or bound the stop |
@@ -76,7 +78,8 @@ fn build_refuses_and_the_finding_names_the_node() {
 | `BudgetOrder` | `V-BUDGET-ORDER` | a stop or child budget larger than the one that contains it | shrink the inner bound |
 | `Mode` | `V-MODE` | `Mode::Finite` on a plan with a service or a template | `Mode::Resident` |
 | `BlockingCancel` | `V-BLOCKING-CANCEL` | `cooperative` on a blocking step | omit it — a thread is signalled and never aborted |
-| `PersistAmbig` | `V-PERSIST-AMBIG` | `on_ambiguous(Compensate)` on a `persistent` effect | `Report` or `Retry`, or compensate instead of persisting |
+| `BlockingLimit` | `V-BLOCKING-LIMIT` | both `.limit` and `.on` on a blocking step | remove `.limit`; set the concurrency cap with `.on(pool)` |
+| `RecoveryMissing` | `V-RECOVERY-MISSING` | an effect requests recovery without an identity and handler | add `.identified_by(key)` and `.recover_unknown(handler)` |
 
 ## After a run → `Report`
 

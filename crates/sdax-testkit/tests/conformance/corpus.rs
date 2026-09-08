@@ -103,10 +103,6 @@ pub fn i04() -> Plan<u32> {
         .expect("valid")
 }
 
-fn serving() -> Serving<()> {
-    Serving::new((), async { Ok(()) })
-}
-
 /// I-05 — endpoint, accept loop (service), published address (effect).
 pub fn i05() -> Plan {
     let mut p = Plan::builder("Mesh enable");
@@ -115,7 +111,8 @@ pub fn i05() -> Plan {
         .service("AcceptLoop")
         .needs(endpoint)
         .stop_within(secs(2))
-        .start(|_cx, _e: Arc<Unit>| async move { Ok(serving()) });
+        .initialize(|_cx, _e: Arc<Unit>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.effect("PublishAddr")
         .needs(accept)
         .on_ambiguous(Ambiguity::Report)
@@ -136,11 +133,14 @@ pub fn i07(restart: bool) -> Plan {
             .idempotent()
             .restart(Restart::on_error(Backoff::fixed(secs(1))));
     }
-    let exporter = exporter.start(|_cx, ()| async move { Ok(serving()) });
+    let exporter = exporter
+        .initialize(|_cx, ()| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.service("Api")
         .needs((migrate, exporter))
         .stop_within(secs(1))
-        .start(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(serving()) });
+        .initialize(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
         .expect("valid")
 }
@@ -196,7 +196,9 @@ pub fn i15(mode: Mode, within: Option<Duration>, ambiguity: Ambiguity) -> Plan {
         eff = eff.idempotent();
     }
     eff.on_ambiguous(ambiguity)
-        .perform(|cx, _t: Arc<Unit>| async move { Ok(cx.hold_value(Receipt)) })
+        .identified_by(transport)
+        .perform(|cx, (_t, _id)| async move { Ok(cx.hold_value(Receipt)) })
+        .recover_unknown(|_, _| async { Ok(Recovery::Resolved) })
         .compensate(|_cx, _r| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), mode)
         .expect("valid")
@@ -218,7 +220,8 @@ pub fn i18() -> Plan {
     p.service("Worker")
         .needs(db)
         .stop_within(secs(3))
-        .start(|_cx, _d: Arc<Unit>| async move { Ok(serving()) });
+        .initialize(|_cx, _d: Arc<Unit>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
         .expect("valid")
 }
@@ -302,7 +305,8 @@ pub fn i27(readers: bool) -> Plan {
     p.service("App")
         .needs((miga, migb))
         .stop_within(secs(1))
-        .start(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(serving()) });
+        .initialize(|_cx, _d: (Arc<()>, Arc<()>)| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
         .expect("valid")
 }
@@ -327,7 +331,8 @@ pub fn i29(extra: usize) -> Plan {
     p.service("Serve")
         .needs(verify)
         .stop_within(secs(1))
-        .start(|_cx, _v: Arc<()>| async move { Ok(serving()) });
+        .initialize(|_cx, _v: Arc<()>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
         .expect("valid")
 }
@@ -347,7 +352,7 @@ pub fn i32() -> Plan {
         .build(Policy::FailFast, Shutdown::within(secs(5)), Mode::Finite)
         .expect("valid");
     let mut p = Plan::builder("Process");
-    let net_key = p.component("Net", &net);
+    let net_key = p.component("Net", &net, ());
     p.effect("Registration")
         .needs(net_key)
         .on_ambiguous(Ambiguity::Report)
@@ -367,7 +372,8 @@ pub fn i40() -> Plan {
         .idempotent()
         .restart(Restart::on_error(Backoff::exponential(secs(1), 2, secs(8))))
         .stop_within(secs(2))
-        .start(|_cx, _l: Arc<Unit>| async move { Ok(serving()) });
+        .initialize(|_cx, _l: Arc<Unit>| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
         .expect("valid")
 }
@@ -382,9 +388,8 @@ pub fn i41() -> Plan {
     p.service("Discovery")
         .needs((storage, signer, transport, clock))
         .stop_within(secs(1))
-        .start(
-            |_cx, _d: (Arc<Unit>, Arc<Unit>, Arc<Unit>, Arc<Unit>)| async move { Ok(serving()) },
-        );
+        .initialize(|_cx, _d: (Arc<Unit>, Arc<Unit>, Arc<Unit>, Arc<Unit>)| async move { Ok(()) })
+        .serve(|_cx, _handle| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
         .expect("valid")
 }
@@ -407,10 +412,12 @@ pub fn cooperative_effect() -> Plan {
     let net = res(&mut p, "Net");
     p.effect("Registration")
         .needs(net)
-        .on_ambiguous(Ambiguity::Compensate)
+        .on_ambiguous(Ambiguity::Recover)
         .idempotent()
         .cooperative(secs(1))
-        .perform(|cx, _n: Arc<Unit>| async move { Ok(cx.hold_value(Receipt)) })
+        .identified_by(net)
+        .perform(|cx, (_n, _id)| async move { Ok(cx.hold_value(Receipt)) })
+        .recover_unknown(|_, _| async { Ok(Recovery::Resolved) })
         .compensate(|_cx, _r| async move { Ok(()) });
     p.build(Policy::FailFast, shutdown10(), Mode::Resident)
         .expect("valid")

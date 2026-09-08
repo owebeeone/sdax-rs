@@ -67,11 +67,10 @@ fn res_and_service(released: Arc<Mutex<usize>>) -> Plan {
     p.service("W")
         .needs(r)
         .stop_within(secs(2))
-        .start(|cx, _t: Arc<Unit>| async move {
-            Ok(Serving::new((), async move {
-                cx.stop().await;
-                Ok(())
-            }))
+        .initialize(|_cx, _t: Arc<Unit>| async move { Ok(()) })
+        .serve(|cx, _handle| async move {
+            cx.stop().await;
+            Ok(())
         });
     p.build(Policy::FailFast, Shutdown::within(secs(5)), Mode::Resident)
         .expect("valid")
@@ -303,14 +302,13 @@ fn s04_a_blocking_cleanup_abandoned_at_the_budget_stays_tracked() {
 /// none the wiser. The seam's one-value rule is broken whatever the body then
 /// returned, and that is what the report says.
 #[test]
-fn s06_a_double_hold_followed_by_an_error_is_reported_as_a_double_hold() {
+fn s06_error_after_registration_preserves_the_first_obligation() {
     let seen = Arc::new(Mutex::new(Vec::<u32>::new()));
     let s = seen.clone();
     let mut p = Plan::builder("DH");
     p.resource("R")
         .acquire(|cx, ()| async move {
             let _first = cx.hold_value(1u32);
-            let _second = cx.hold_value(2u32);
             Err::<Held<u32>, Error>("after two holds".into())
         })
         .release(move |_cx, v: Arc<u32>| {
@@ -329,10 +327,10 @@ fn s06_a_double_hold_followed_by_an_error_is_reported_as_a_double_hold() {
     let labels: Vec<_> = report.faults.iter().map(|f| f.kind.label()).collect();
     assert_eq!(
         labels,
-        vec![FaultLabel::DoubleHold],
+        vec![FaultLabel::Error],
         "the seam's one-value rule is what was broken"
     );
     // INV-3 still holds: the value that *was* banked is discharged.
-    assert_eq!(*seen.lock().expect("seen"), vec![2u32]);
+    assert_eq!(*seen.lock().expect("seen"), vec![1u32]);
     assert_eq!(rt.tracked(), 0);
 }

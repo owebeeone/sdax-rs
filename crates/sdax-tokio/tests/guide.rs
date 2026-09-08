@@ -15,17 +15,23 @@
 
 #[path = "guide/blocking_pipeline.rs"]
 mod blocking_pipeline;
+#[path = "guide/components.rs"]
+mod components;
 #[path = "guide/current_thread_start.rs"]
 mod current_thread_start;
 #[path = "guide/fail_and_release.rs"]
 mod fail_and_release;
 #[path = "guide/inspect_plan.rs"]
 mod inspect_plan;
+#[path = "guide/readme_cleanup.rs"]
+mod readme_cleanup;
 #[path = "guide/resident_service.rs"]
 mod resident_service;
 #[path = "guide/simple_hold.rs"]
 mod simple_hold;
 #[path = "guide/spawn_child.rs"]
 mod spawn_child;
+#[path = "guide/unknown_recovery.rs"]
+mod unknown_recovery;
 #[path = "guide/validate_reject.rs"]
 mod validate_reject;

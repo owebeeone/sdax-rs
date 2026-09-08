@@ -55,7 +55,7 @@ fn hold_registers_in_the_completing_poll_and_not_before() {
     let cx = cx_for_test(TestClock::new());
     let inner = cx.inner();
     let mut fut: Pin<Box<dyn std::future::Future<Output = Result<Held<u8>, Error>> + Send>> =
-        Box::pin(cx.hold(pending_once(Ok::<u8, std::io::Error>(9))));
+        Box::pin(cx.hold(|| pending_once(Ok::<u8, std::io::Error>(9))));
 
     assert!(matches!(poll_once(fut.as_mut()), Poll::Pending));
     assert_eq!(
@@ -87,7 +87,7 @@ fn a_failed_effect_registers_nothing() {
     let cx = cx_for_test(TestClock::new());
     let inner = cx.inner();
     let err =
-        block_on(cx.hold(pending_once(Err::<u8, _>(std::io::Error::other("no"))))).unwrap_err();
+        block_on(cx.hold(|| pending_once(Err::<u8, _>(std::io::Error::other("no"))))).unwrap_err();
     assert_eq!(err.to_string(), "no");
     assert_eq!(inner.hold_count(), 0);
     assert!(inner.take_held().is_none());
@@ -190,11 +190,10 @@ fn attempt_is_readable_and_starts_at_one() {
 }
 
 #[test]
-fn serving_is_a_return_value_and_carries_the_serve_future() {
-    let serving = Serving::new("addr", async { Ok(()) });
-    let (handle, serve) = serving.into_parts();
-    assert_eq!(handle, "addr");
-    assert!(block_on(serve).is_ok());
+fn serving_phase_reports_the_current_episode() {
+    let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, TestClock::new()).with_episode(3);
+    let cx: Cx<ServingPhase> = Cx::new(inner);
+    assert_eq!(cx.episode(), 3);
 }
 
 #[test]
@@ -206,4 +205,35 @@ fn spawn_without_an_attached_run_is_refused_rather_than_panicking() {
         .spawn_raw(RawKey { plan: 1, idx: 4 }, Box::new(()))
         .unwrap_err();
     assert_eq!(err, SpawnError::NotRunning);
+}
+
+#[test]
+fn safety_second_registration_preserves_first_obligation() {
+    let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, TestClock::new());
+    let first: Cx<Acquire> = Cx::new(inner.clone());
+    let second: Cx<Acquire> = Cx::new(inner.clone());
+    let _held = first.hold_value(7u8);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| second.hold_value(9u8)));
+    assert_eq!(
+        **inner.take_held().unwrap().downcast::<Arc<u8>>().unwrap(),
+        7
+    );
+}
+
+#[test]
+fn safety_rejected_factory_never_runs_even_while_first_is_reserved() {
+    let inner = CxInner::new(RawKey { plan: 1, idx: 0 }, TestClock::new());
+    let first = inner
+        .acquire()
+        .hold(std::future::pending::<Result<u8, Error>>);
+    let called = std::sync::atomic::AtomicBool::new(false);
+    let rejected = inner.acquire().hold(|| {
+        called.store(true, Ordering::SeqCst);
+        async { Ok::<u8, Error>(9) }
+    });
+    assert!(!called.load(Ordering::SeqCst));
+    assert!(block_on(rejected).is_err());
+    assert_eq!(inner.hold_count(), 0);
+    drop(first);
+    assert!(block_on(inner.acquire().hold(|| async { Ok::<u8, Error>(3) })).is_err());
 }

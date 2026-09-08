@@ -17,6 +17,7 @@ use sdax::host::ChildControl;
 use sdax::host::{BoxFuture, InstanceId, RawKey, Scope, StopSignal};
 use sdax::{Child, Error, Outcome, SpawnError, Stop};
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 /// An instance that ended before it was ready.
@@ -59,7 +60,12 @@ impl Latch {
 /// The instances this run created, as a `Child` drives them.
 struct Children {
     tx: Tx,
-    latches: Mutex<Vec<(InstanceId, Arc<Latch>)>>,
+    latches: Mutex<BTreeMap<InstanceId, ChildLatch>>,
+}
+
+struct ChildLatch {
+    latch: Arc<Latch>,
+    answered: bool,
 }
 
 impl Children {
@@ -67,9 +73,8 @@ impl Children {
         self.latches
             .lock()
             .expect("children poisoned")
-            .iter()
-            .find(|(i, _)| *i == id)
-            .map(|(_, l)| l.clone())
+            .get(&id)
+            .map(|entry| entry.latch.clone())
     }
 }
 
@@ -113,7 +118,7 @@ impl RunScope {
             inputs: Mutex::new(Vec::new()),
             children: Arc::new(Children {
                 tx,
-                latches: Mutex::new(Vec::new()),
+                latches: Mutex::new(BTreeMap::new()),
             }),
         })
     }
@@ -136,16 +141,26 @@ impl RunScope {
     /// Answer every `Child::ready()` the machine's instance states decide:
     /// steady is `Ok`.
     pub(crate) fn resolve(&self, instances: &[(InstanceId, RunState)]) {
-        let latches: Vec<(InstanceId, Arc<Latch>)> = self
-            .children
-            .latches
-            .lock()
-            .expect("children poisoned")
-            .clone();
-        for (id, latch) in latches {
-            if let Some((_, RunState::Steady)) = instances.iter().find(|(i, _)| *i == id) {
-                latch.set(Ok(()));
+        // Wake outside the children lock: a waker can immediately re-enter
+        // the child control interface. Retain only newly answered latches.
+        let ready = {
+            let mut latches = self.children.latches.lock().expect("children poisoned");
+            let mut ready = Vec::new();
+            for (id, state) in instances {
+                if *state != RunState::Steady {
+                    continue;
+                }
+                if let Some(entry) = latches.get_mut(id) {
+                    if !entry.answered {
+                        entry.answered = true;
+                        ready.push(entry.latch.clone());
+                    }
+                }
             }
+            ready
+        };
+        for latch in ready {
+            latch.set(Ok(()));
         }
     }
 
@@ -154,8 +169,7 @@ impl RunScope {
     pub(crate) fn ended(&self, id: InstanceId, outcome: Outcome) {
         let latch = {
             let mut l = self.children.latches.lock().expect("children poisoned");
-            let p = l.iter().position(|(i, _)| *i == id);
-            p.map(|p| l.remove(p).1)
+            l.remove(&id).map(|entry| entry.latch)
         };
         if let Some(l) = latch {
             l.set(Err(outcome));
@@ -183,7 +197,13 @@ impl Scope for RunScope {
             .latches
             .lock()
             .expect("children poisoned")
-            .push((id, Latch::new()));
+            .insert(
+                id,
+                ChildLatch {
+                    latch: Latch::new(),
+                    answered: false,
+                },
+            );
         self.inputs
             .lock()
             .expect("scope poisoned")
@@ -199,3 +219,7 @@ impl Scope for RunScope {
         Ok(Child::new(id, self.children.clone()))
     }
 }
+
+#[cfg(test)]
+#[path = "scope_tests.rs"]
+mod tests;

@@ -26,7 +26,7 @@ fn a_service_spawns_a_child_that_releases_before_the_import() {
             async move { Ok(()) }
         });
 
-    let mut t = Plan::template::<u8>("Link");
+    let mut t = Plan::with_input::<u8>("Link");
     let imported = t.import(endpoint);
     let cr = child_released.clone();
     t.resource("Sock")
@@ -49,11 +49,12 @@ fn a_service_spawns_a_child_that_releases_before_the_import() {
         .needs(endpoint)
         .spawns(&link)
         .stop_within(Duration::from_secs(1))
-        .start(move |cx, _e: Arc<Endpoint>| async move {
+        .initialize(move |cx, _e: Arc<Endpoint>| async move {
             let ch = cx.spawn(&link, 1u8)?;
             ch.ready().await?;
-            Ok(Serving::new((), async { Ok(()) }))
-        });
+            Ok(())
+        })
+        .serve(|_cx, _handle| async { Ok(()) });
     let plan = p
         .build(
             Policy::FailFast,

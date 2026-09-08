@@ -66,7 +66,7 @@
 //! use sdax::*;
 //! let mut p = Plan::builder("I-20");
 //! let _s = p.step("P1").run(|cx, ()| async move {
-//!     let _h = cx.hold(async { Ok::<u8, std::io::Error>(5) }).await;
+//!     let _h = cx.hold(|| async { Ok::<u8, std::io::Error>(5) }).await;
 //!     Ok(())
 //! });
 //! ```
@@ -124,7 +124,8 @@
 //! let _ = p
 //!     .service("Reporter")
 //!     .needs(session)
-//!     .start(|_cx, _s: Arc<Session>| async move { Ok(Serving::new((), async { Ok(()) })) });
+//!     .initialize(|_cx, _s: Arc<Session>| async move { Ok(()) })
+//!     .serve(|cx, _handle| async move { cx.stop().await; Ok(()) });
 //! ```
 //!
 //! ## W-09 — an effect with no ambiguity policy (`X4`)
@@ -166,21 +167,22 @@
 //! let _ = p.build(Policy::FailFast, Shutdown::within(std::time::Duration::from_secs(10)));
 //! ```
 //!
-//! ## W-12 — a template used where a component is required (`E-R3`)
+//! ## W-12 — unit cannot bind a non-unit component input
 //!
-//! A template is `Plan<Out, In>` with `In != ()`; a component is `Plan<Out>`.
+//! The same typed definition supports mounting and spawning, but the binding
+//! must match its input type.
 //!
 //! ```compile_fail
-//! // expect: E0308
+//! // expect: E0277
 //! use sdax::*;
 //! struct Link;
-//! let mut t = Plan::template::<Link>("Link");
+//! let mut t = Plan::with_input::<Link>("Link");
 //! t.step("Inner").run(|_cx, ()| async { Ok(()) });
 //! let child = t
 //!     .build(Policy::Isolate, Shutdown::within(std::time::Duration::from_secs(1)), Mode::Finite)
 //!     .unwrap();
 //! let mut p = Plan::builder("Mesh");
-//! let _net = p.component("Net", &child);
+//! let _net = p.component("Net", &child, ());
 //! ```
 //!
 //! ## W-13 — a `!Send` body
@@ -220,17 +222,17 @@
 //!     .perform(|cx, ()| async move { Ok(cx.hold_value(Receipt)) });
 //! ```
 //!
-//! ## W-17 — forging readiness (`X7`)
+//! ## W-17 — serving without initialization (`X7`)
 //!
-//! `Serving` has no public fields, so "ready because I said so" cannot be
-//! written; only `Serving::new` with a serve future produces one.
+//! `serve` exists only after `initialize`, so a serving factory cannot publish
+//! readiness or invent the handle dependents receive.
 //!
 //! ```compile_fail
-//! // expect: E0451
+//! // expect: E0599
 //! use sdax::*;
-//! fn forge() -> Serving<()> {
-//!     Serving { handle: (), serve: Box::pin(async { Ok(()) }) }
-//! }
+//! let mut p = Plan::builder("service");
+//! p.service("worker")
+//!     .serve(|cx, _handle| async move { cx.stop().await; Ok(()) });
 //! ```
 //!
 //! ## S-01 — a host type named at the crate root
@@ -245,4 +247,90 @@
 //! // expect: E0432
 //! use sdax::CxInner;
 //! let _ = CxInner::new;
+//! ```
+//!
+//! ## W-ACQUIRE-ONCE — acquisition authority is consumed, E0382
+//!
+//! ```compile_fail
+//! // expect: E0382
+//! use sdax::*;
+//! let mut p = Plan::builder("Once");
+//! p.resource("R").acquire(|cx, ()| async move {
+//!     let _first = cx.hold_value(1u8);
+//!     Ok(cx.hold_value(2u8))
+//! }).release(release::by_drop());
+//! ```
+//!
+//! ## W-ACQUIRE-CLONE — acquisition authority is not cloneable, E0599
+//!
+//! ```compile_fail
+//! // expect: E0599
+//! use sdax::*;
+//! let mut p = Plan::builder("Once");
+//! p.resource("R").acquire(|cx, ()| async move {
+//!     let second = cx.clone();
+//!     Ok(second.hold_value(2u8))
+//! }).release(release::by_drop());
+//! ```
+//!
+//! ## W-SHARED-NO-ACQUIRE — shared context cannot acquire, E0599
+//!
+//! ```compile_fail
+//! // expect: E0599
+//! use sdax::*;
+//! let mut p = Plan::builder("Once");
+//! p.resource("R").acquire(|cx, ()| async move {
+//!     let shared = cx.shared();
+//!     let _second = shared.hold_value(2u8);
+//!     Ok(cx.hold_value(1u8))
+//! }).release(release::by_drop());
+//! ```
+//!
+//! ## W-SHARED-NO-INNER — ordinary contexts cannot expose raw authority, E0599
+//!
+//! ```compile_fail
+//! // expect: E0599
+//! use sdax::*;
+//! let mut p = Plan::builder("Once");
+//! p.step("S").run(|cx, ()| async move {
+//!     let _raw = cx.inner();
+//!     Ok(())
+//! });
+//! ```
+//!
+//! ## Typed static input bindings reject the wrong input type
+//!
+//! ```compile_fail
+//! // expect: E0277
+//! use sdax::*;
+//! let mut child = Plan::with_input::<u32>("child");
+//! child.join("ready", ());
+//! let child = child.build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite).unwrap();
+//! let mut parent = Plan::with_input::<String>("parent");
+//! parent.component("child", &child, parent.input());
+//! ```
+//!
+//! ## A static mount must explicitly bind its input
+//!
+//! ```compile_fail
+//! // expect: E0061
+//! use sdax::*;
+//! let mut child = Plan::builder("child");
+//! child.join("ready", ());
+//! let child = child.build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite).unwrap();
+//! let mut parent = Plan::builder("parent");
+//! parent.component("child", &child);
+//! ```
+//!
+//! ## Formal imports preserve their value type when bound
+//!
+//! ```compile_fail
+//! // expect: E0308
+//! use sdax::*;
+//! let mut child = Plan::builder("child");
+//! let rate = child.port::<u32>("rate");
+//! child.join("ready", rate);
+//! let child = child.build(Policy::FailFast, Shutdown::unbounded(), Mode::Finite).unwrap();
+//! let parent = Plan::with_input::<String>("parent");
+//! child.bind(rate, parent.input()).unwrap();
 //! ```
