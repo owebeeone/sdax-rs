@@ -1,0 +1,99 @@
+    Checking pin-project-lite v0.2.17
+    Checking futures-task v0.3.34
+    Checking slab v0.4.12
+    Checking futures-core v0.3.34
+    Checking tokio v1.53.1
+    Checking bytes v1.12.1
+    Checking futures-sink v0.3.34
+    Checking sdax v0.1.0 (/home/gianni/sdax-performance-lifecycle-20260909-0358-red/crates/sdax)
+    Checking futures-util v0.3.34
+    Checking tokio-util v0.7.19
+    Checking sdax-tokio v0.1.0 (/home/gianni/sdax-performance-lifecycle-20260909-0358-red/crates/sdax-tokio)
+    Checking sdax-performance-harness v0.0.0 (/home/gianni/sdax-performance-lifecycle-20260909-0358-red/performance-harness)
+error: this can be `std::io::Error::other(_)`
+   --> src/fixtures.rs:108:25
+    |
+108 |                         std::io::Error::new(std::io::ErrorKind::Other, "fixture release failure")
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#io_other_error
+    = note: `-D clippy::io-other-error` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::io_other_error)]`
+help: use `std::io::Error::other`
+    |
+108 -                         std::io::Error::new(std::io::ErrorKind::Other, "fixture release failure")
+108 +                         std::io::Error::other("fixture release failure")
+    |
+
+error: this can be `std::io::Error::other(_)`
+   --> src/fixtures.rs:145:17
+    |
+145 |                 std::io::Error::new(std::io::ErrorKind::Other, "fixture startup failure").into(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+145 -                 std::io::Error::new(std::io::ErrorKind::Other, "fixture startup failure").into(),
+145 +                 std::io::Error::other("fixture startup failure").into(),
+    |
+
+error: this can be `std::io::Error::other(_)`
+   --> src/fixtures.rs:180:21
+    |
+180 |                   Err(std::io::Error::new(
+    |  _____________________^
+181 | |                     std::io::ErrorKind::Other,
+182 | |                     "fixture downstream release failure",
+183 | |                 )
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+180 ~                 Err(std::io::Error::other(
+181 ~                     "fixture downstream release failure",
+    |
+
+error: this can be `std::io::Error::other(_)`
+   --> src/fixtures.rs:379:21
+    |
+379 |                 Err(std::io::Error::new(std::io::ErrorKind::Other, "first attempt").into())
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+379 -                 Err(std::io::Error::new(std::io::ErrorKind::Other, "first attempt").into())
+379 +                 Err(std::io::Error::other("first attempt").into())
+    |
+
+error: this can be `std::io::Error::other(_)`
+   --> src/fixtures.rs:420:25
+    |
+420 |                         std::io::Error::new(std::io::ErrorKind::Other, "fixture recovery failure")
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+420 -                         std::io::Error::new(std::io::ErrorKind::Other, "fixture recovery failure")
+420 +                         std::io::Error::other("fixture recovery failure")
+    |
+
+error: this can be `std::io::Error::other(_)`
+   --> src/fixtures.rs:463:25
+    |
+463 |                         std::io::Error::new(std::io::ErrorKind::Other, "fixture serving failure")
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+463 -                         std::io::Error::new(std::io::ErrorKind::Other, "fixture serving failure")
+463 +                         std::io::Error::other("fixture serving failure")
+    |
+
+error: could not compile `sdax-performance-harness` (bin "sdax-performance-harness" test) due to 6 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `sdax-performance-harness` (bin "sdax-performance-harness") due to 6 previous errors
