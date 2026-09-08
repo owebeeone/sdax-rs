@@ -12,6 +12,8 @@ pub struct Sample {
     pub nanos: u128,
     pub allocations: u64,
     pub allocated_bytes: u64,
+    pub peak_live_bytes: u64,
+    pub retained_bytes: i64,
     pub checksum: u64,
 }
 
@@ -28,11 +30,19 @@ pub fn allocated<T>(f: impl FnOnce() -> (T, u64)) -> (u64, u64, u64) {
     (allocations, bytes, black_box(checksum))
 }
 
+pub fn profiled<T>(f: impl FnOnce() -> (T, u64)) -> (alloc::Profile, u64) {
+    let ((value, checksum), profile) = alloc::profile(f);
+    black_box(value);
+    (profile, black_box(checksum))
+}
+
 pub fn write_csv(samples: &[Sample]) {
-    println!("phase,workload,nodes,edges,sample,nanos,allocations,allocated_bytes,checksum");
+    println!(
+        "phase,workload,nodes,edges,sample,nanos,allocations,allocated_bytes,peak_live_bytes,retained_bytes,checksum"
+    );
     for s in samples {
         println!(
-            "{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{}",
             s.phase,
             s.workload,
             s.nodes,
@@ -41,6 +51,8 @@ pub fn write_csv(samples: &[Sample]) {
             s.nanos,
             s.allocations,
             s.allocated_bytes,
+            s.peak_live_bytes,
+            s.retained_bytes,
             s.checksum
         );
     }

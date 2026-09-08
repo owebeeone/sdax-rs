@@ -1,6 +1,6 @@
 use sdax::host::Observer;
 use sdax::{
-    Ambiguity, Backoff, Error, Mode, Outcome, Plan, Policy, Recovery, Report, Restart, Retry,
+    Ambiguity, Backoff, Error, Mode, Outcome, Plan, PlanBuilder, Policy, Recovery, Report, Restart, Retry,
     Shutdown, TraceEvent,
 };
 use sdax_tokio::{PlanStart, TokioRuntime};
@@ -58,7 +58,7 @@ impl GraphSpec {
     }
 }
 
-pub fn graph(spec: &GraphSpec, yielding: bool) -> Plan<u64, u64> {
+pub fn graph_declaration(spec: &GraphSpec, yielding: bool) -> PlanBuilder<u64, u64> {
     let mut p = Plan::with_input::<u64>(spec.label());
     let input = p.input();
     let mut keys: Vec<sdax::Key<u64>> = Vec::with_capacity(spec.names.len());
@@ -83,6 +83,10 @@ pub fn graph(spec: &GraphSpec, yielding: bool) -> Plan<u64, u64> {
         keys.push(key);
     }
     p.export(*keys.last().expect("non-empty graph"))
+}
+
+pub fn graph(spec: &GraphSpec, yielding: bool) -> Plan<u64, u64> {
+    graph_declaration(spec, yielding)
         .build(Policy::FailFast, Shutdown::within(BUDGET), Mode::Finite)
         .expect("graph fixture")
 }

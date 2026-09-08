@@ -34,12 +34,15 @@ def main() -> int:
         "nodes",
         "edges",
         "samples",
+        "p05_ns",
         "median_ns",
         "p95_ns",
         "min_ns",
         "max_ns",
         "allocations",
         "allocated_bytes",
+        "peak_live_bytes",
+        "retained_bytes",
     ]
     with open(sys.argv[2], "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -49,6 +52,8 @@ def main() -> int:
             nanos = [int(row["nanos"]) for row in rows if int(row["nanos"]) > 0]
             allocations = [int(row["allocations"]) for row in rows]
             allocated_bytes = [int(row["allocated_bytes"]) for row in rows]
+            peak_live_bytes = [int(row.get("peak_live_bytes", 0)) for row in rows]
+            retained_bytes = [int(row.get("retained_bytes", 0)) for row in rows]
             writer.writerow(
                 {
                     "phase": key[0],
@@ -56,12 +61,15 @@ def main() -> int:
                     "nodes": key[2],
                     "edges": key[3],
                     "samples": len(nanos),
+                    "p05_ns": percentile(nanos, 0.05) if nanos else "",
                     "median_ns": int(statistics.median(nanos)) if nanos else "",
                     "p95_ns": percentile(nanos, 0.95) if nanos else "",
                     "min_ns": min(nanos) if nanos else "",
                     "max_ns": max(nanos) if nanos else "",
                     "allocations": max(allocations),
                     "allocated_bytes": max(allocated_bytes),
+                    "peak_live_bytes": max(peak_live_bytes),
+                    "retained_bytes": max(retained_bytes),
                 }
             )
     return 0

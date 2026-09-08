@@ -1,0 +1,14 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+     Running `performance-harness/target/release/sdax-performance-harness lifecycle-bench --samples 0 --warmup 8 --order tokio-first`
+fixture verification: handwritten Tokio lifecycle comparator ok
+fixture verification: graphs ok
+fixture verification: normal resource release ok
+fixture verification: startup failure ok
+fixture verification: cleanup failure ok
+fixture verification: cancellation ok
+fixture verification: repeated typed components ok
+fixture verification: repeated resource components cleanup ok
+fixture verification: unknown recovery ok
+fixture verification: stable service recovery ok
+fixture verification: sequential dynamic churn ok
+fixture verification: ok

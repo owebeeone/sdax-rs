@@ -1,3 +1,6 @@
+mod lifecycle;
+mod lifecycle_plans;
+mod lifecycle_bench;
 mod alloc;
 mod fixtures;
 mod measure;
@@ -38,11 +41,23 @@ fn main() {
             };
             measure::write_csv(&bench(cfg));
         }
+        Some("lifecycle-bench") => {
+            verify();
+            let cfg = Config {
+                samples: value(&args, "--samples", 40),
+                warmup: value(&args, "--warmup", 8),
+                build_samples: 0,
+            };
+            let tokio_first = args.windows(2).any(|pair| {
+                pair[0] == "--order" && pair[1] == "tokio-first"
+            });
+            measure::write_csv(&lifecycle_bench::bench(cfg.samples, cfg.warmup, tokio_first));
+        }
         Some("allocation-probe") => allocation_probe(),
         Some("resident-probe") => resident_probe(value(&args, "--seconds", 10)),
         _ => {
             eprintln!(
-                "usage: sdax-performance-harness verify | bench [--samples N] [--warmup N] [--build-samples N] | allocation-probe | resident-probe [--seconds N]"
+                "usage: sdax-performance-harness verify | bench [--samples N] [--warmup N] [--build-samples N] | lifecycle-bench [--samples N] [--warmup N] [--order sdax-first|tokio-first] | allocation-probe | resident-probe [--seconds N]"
             );
             std::process::exit(2);
         }
@@ -107,6 +122,7 @@ fn verify() {
     let rt = adapter(&executor, None);
 
     tokio_lifecycle::verify(&executor);
+    lifecycle_bench::verify();
     eprintln!("fixture verification: handwritten Tokio lifecycle comparator ok");
 
     for shape in [Shape::Chain, Shape::Wide, Shape::Sparse] {
@@ -410,6 +426,15 @@ fn benchmark_graph(cfg: Config, shape: Shape, nodes: usize, yielding: bool, out:
         || graph(&spec, yielding),
         out,
     );
+    benchmark_plan_build_phases(
+        cfg,
+        &label,
+        nodes,
+        spec.edges(),
+        &spec,
+        yielding,
+        out,
+    );
     let plan = graph(&spec, yielding);
     benchmark_finite_execution(cfg, &label, nodes, spec.edges(), &plan, None, out);
     benchmark_state_setup(cfg, &label, nodes, spec.edges(), &plan, out);
@@ -545,7 +570,7 @@ fn consume_run(
     ((), checksum)
 }
 
-fn drain_tracked(executor: &tokio::runtime::Runtime, rt: &Arc<TokioRuntime>) {
+pub(crate) fn drain_tracked(executor: &tokio::runtime::Runtime, rt: &Arc<TokioRuntime>) {
     executor.block_on(async {
         for _ in 0..10_000 {
             if rt.tracked() == 0 {
@@ -1280,7 +1305,7 @@ fn handwritten_hash(nodes: usize, input: u64) -> u64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push(
+pub(crate) fn push(
     out: &mut Vec<Sample>,
     phase: &'static str,
     workload: &str,
@@ -1301,6 +1326,104 @@ fn push(
         nanos,
         allocations,
         allocated_bytes,
+        peak_live_bytes: 0,
+        retained_bytes: 0,
         checksum,
     });
+}
+
+fn benchmark_plan_build_phases(
+    cfg: Config,
+    label: &str,
+    nodes: usize,
+    edges: usize,
+    spec: &GraphSpec,
+    yielding: bool,
+    out: &mut Vec<Sample>,
+) {
+    for sample in 0..cfg.build_samples {
+        let (nanos, checksum) = timed(|| {
+            let declaration = graph_declaration(spec, yielding);
+            (declaration, nodes as u64)
+        });
+        push(
+            out,
+            "plan_declaration",
+            label,
+            nodes,
+            edges,
+            sample,
+            nanos,
+            0,
+            0,
+            checksum,
+        );
+
+        let declaration = graph_declaration(spec, yielding);
+        let (nanos, checksum) = timed(|| {
+            let plan = declaration
+                .build(
+                    sdax::Policy::FailFast,
+                    sdax::Shutdown::within(std::time::Duration::from_secs(30)),
+                    sdax::Mode::Finite,
+                )
+                .expect("graph validation diagnostic");
+            let checksum = plan.name().len() as u64;
+            (plan, checksum)
+        });
+        push(
+            out,
+            "plan_validation_freeze",
+            label,
+            nodes,
+            edges,
+            sample,
+            nanos,
+            0,
+            0,
+            checksum,
+        );
+    }
+
+    let (allocations, bytes, checksum) = allocated(|| {
+        let declaration = graph_declaration(spec, yielding);
+        (declaration, nodes as u64)
+    });
+    push(
+        out,
+        "plan_declaration_alloc",
+        label,
+        nodes,
+        edges,
+        0,
+        0,
+        allocations,
+        bytes,
+        checksum,
+    );
+
+    let declaration = graph_declaration(spec, yielding);
+    let (allocations, bytes, checksum) = allocated(|| {
+        let plan = declaration
+            .build(
+                sdax::Policy::FailFast,
+                sdax::Shutdown::within(std::time::Duration::from_secs(30)),
+                sdax::Mode::Finite,
+            )
+            .expect("graph validation allocation diagnostic");
+        let checksum = plan.name().len() as u64;
+        (plan, checksum)
+    });
+    push(
+        out,
+        "plan_validation_freeze_alloc",
+        label,
+        nodes,
+        edges,
+        0,
+        0,
+        allocations,
+        bytes,
+        checksum,
+    );
 }
