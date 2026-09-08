@@ -15,7 +15,7 @@ spec.loader.exec_module(consumer)
 class ConsumerSourceTests(unittest.TestCase):
     def test_git_substitution_preserves_recipe_and_pins_both_packages(self):
         path_manifest = consumer.build_local_manifest()
-        repo = Path("/tmp/local git fixture")
+        repo = Path(tempfile.gettempdir()) / "local git fixture"
         manifest = consumer.build_git_manifest(path_manifest, repo, "a" * 40)
         parsed = tomllib.loads(manifest)
         expected = tomllib.loads(path_manifest)
@@ -31,8 +31,36 @@ class ConsumerSourceTests(unittest.TestCase):
             doc.write_text(consumer.QUICKSTART.read_text().replace(
                 'tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time", "test-util"] }', ""))
             with patch.object(consumer, "QUICKSTART", doc):
-                manifest = consumer.build_git_manifest(consumer.build_local_manifest(), Path("/tmp/repo"), "b" * 40)
+                manifest = consumer.build_git_manifest(consumer.build_local_manifest(), Path(temporary) / "repo", "b" * 40)
             self.assertNotIn("tokio", tomllib.loads(manifest).get("dev-dependencies", {}))
+
+    def test_cleanup_removes_readonly_git_objects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "consumer"
+            root.mkdir()
+
+            def git_fixture(directory, manifest):
+                packed = directory / "cargo-home/git/objects/pack/fixture.idx"
+                packed.parent.mkdir(parents=True)
+                packed.write_bytes(b"read-only Git object")
+                packed.chmod(0o400)
+
+            with patch("sys.argv", ["check-consumer-guide.py"]), \
+                 patch.object(consumer.tempfile, "mkdtemp", return_value=str(root)), \
+                 patch.object(consumer, "run_case"), \
+                 patch.object(consumer, "check_git_source", side_effect=git_fixture):
+                consumer.main()
+            self.assertFalse(root.exists(), "consumer check must clean its entire temporary directory")
+
+    def test_no_clean_retains_the_consumer_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "consumer"
+            root.mkdir()
+            with patch("sys.argv", ["check-consumer-guide.py", "--no-clean"]), \
+                 patch.object(consumer.tempfile, "mkdtemp", return_value=str(root)), \
+                 patch.object(consumer, "run_case"), patch.object(consumer, "check_git_source"):
+                consumer.main()
+            self.assertTrue((root / "tests/simple_hold.rs").is_file())
 
 
 if __name__ == "__main__":
