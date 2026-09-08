@@ -20,6 +20,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 
 mod observer;
+#[cfg(test)]
+mod retention_tests;
 
 /// A body error the driver itself raises.
 #[derive(Debug)]
@@ -64,6 +66,9 @@ pub(crate) struct Driver<R: Runtime> {
     tx: Tx,
     rx: UnboundedReceiver<Msg>,
     live: HashMap<RawKey, Live<R::Task>>,
+    /// Number of distinct run keys for which a body context was created.
+    /// This remains cumulative after ended instance contexts are retired.
+    contexts: usize,
     kinds: HashMap<RawKey, Kind>,
     /// The declaration a run key was made from, and the instance it belongs
     /// to: what a `BodySource` is addressed by. An instance's nodes join it
@@ -115,6 +120,7 @@ impl<R: Runtime> Driver<R> {
             tx,
             rx,
             live: HashMap::new(),
+            contexts: 0,
             kinds,
             origins,
             paths,
@@ -235,7 +241,9 @@ impl<R: Runtime> Driver<R> {
                 None
             }
         };
-        self.live.insert(node, Live { epoch, cx, handle });
+        if self.live.insert(node, Live { epoch, cx, handle }).is_none() {
+            self.contexts += 1;
+        }
     }
 
     fn step(&mut self, ev: Event) {
@@ -253,12 +261,11 @@ impl<R: Runtime> Driver<R> {
             let effects = self.machine.step(ack);
             self.perform_batch(described, effects);
         }
-        self.ctl
-            .publish(&self.machine, &self.paths, self.live.len());
+        self.ctl.publish(&self.machine, &self.paths, self.contexts);
         // All host publication obligations settle before bodies can observe
         // readiness through the gate or child latches.
         self.scope.publish(self.machine.spawn_table());
-        self.scope.resolve(&self.machine.instances());
+        self.scope.resolve(self.machine.active_instance_states());
     }
 
     fn perform_batch(&mut self, event: String, fx: Vec<Effect>) {
@@ -327,9 +334,16 @@ impl<R: Runtime> Driver<R> {
                 }
             }
             Effect::Emit(ev) => {
-                // An instance that has ended has no bodies left, so its slot
-                // tables go with it (INV-13: they were per instance).
+                // An ended instance no longer needs its per-instance slot
+                // tables (INV-13). Late abandoned work is filtered below.
                 if let TraceKind::InstanceEnded(id, outcome) = ev.kind {
+                    // The scope ended with no remaining managed obligation.
+                    // A budget may leave caller-owned work finishing later;
+                    // removing active entries makes its message fail the
+                    // existing epoch/live guard before storage or the
+                    // machine. Origins, kinds, paths and machine rows remain
+                    // as history.
+                    self.retire_instance(id);
                     self.scope.ended(id, outcome);
                     self.src.close_instance(id);
                 }
@@ -403,7 +417,9 @@ impl<R: Runtime> Driver<R> {
                 None
             }
         };
-        self.live.insert(node, Live { epoch, cx, handle });
+        if self.live.insert(node, Live { epoch, cx, handle }).is_none() {
+            self.contexts += 1;
+        }
     }
 
     fn spawn_cleanup(&mut self, node: RawKey, recovery: bool) {
@@ -454,7 +470,18 @@ impl<R: Runtime> Driver<R> {
                 None
             }
         };
-        self.live.insert(node, Live { epoch, cx, handle });
+        if self.live.insert(node, Live { epoch, cx, handle }).is_none() {
+            self.contexts += 1;
+        }
+    }
+
+    /// Retire active contexts for one ended dynamic instance. A later body
+    /// message is stale; absence makes the existing epoch check drop it
+    /// before `settled` can store a held value or call `Machine::step`.
+    fn retire_instance(&mut self, id: InstanceId) {
+        let origins = &self.origins;
+        self.live
+            .retain(|key, _| origins.get(key).and_then(|(_, instance)| *instance) != Some(id));
     }
 
     /// T5: abort, then join in a task of the engine's own, so the node counts

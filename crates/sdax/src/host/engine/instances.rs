@@ -129,6 +129,16 @@ impl Machine {
             .collect()
     }
 
+    /// Borrow the states of instances that have not ended, without allocating
+    /// a historical snapshot. Ended identities remain available through
+    /// [`Self::instances`]; this iterator still scans the retained history.
+    pub fn active_instance_states(&self) -> impl Iterator<Item = (InstanceId, RunState)> + '_ {
+        self.instances
+            .iter()
+            .filter(|instance| !instance.ended)
+            .map(|instance| (instance.id, self.scopes[instance.scope].st))
+    }
+
     /// All nodes of one instance, including component descendants, in table
     /// order: run key, declaration key, path and kind. Separately spawned
     /// nested instances belong to their own identity and are excluded.

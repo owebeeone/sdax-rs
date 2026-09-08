@@ -140,17 +140,17 @@ impl RunScope {
 
     /// Answer every `Child::ready()` the machine's instance states decide:
     /// steady is `Ok`.
-    pub(crate) fn resolve(&self, instances: &[(InstanceId, RunState)]) {
+    pub(crate) fn resolve(&self, instances: impl IntoIterator<Item = (InstanceId, RunState)>) {
         // Wake outside the children lock: a waker can immediately re-enter
         // the child control interface. Retain only newly answered latches.
         let ready = {
             let mut latches = self.children.latches.lock().expect("children poisoned");
             let mut ready = Vec::new();
             for (id, state) in instances {
-                if *state != RunState::Steady {
+                if state != RunState::Steady {
                     continue;
                 }
-                if let Some(entry) = latches.get_mut(id) {
+                if let Some(entry) = latches.get_mut(&id) {
                     if !entry.answered {
                         entry.answered = true;
                         ready.push(entry.latch.clone());

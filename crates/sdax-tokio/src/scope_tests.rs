@@ -41,18 +41,18 @@ fn readiness_handles_out_of_order_ids_and_wakes_once_outside_registry_lock() {
     let mut second = scope.children.ready(InstanceId(2));
     assert!(first.as_mut().poll(&mut cx).is_pending());
     assert!(second.as_mut().poll(&mut cx).is_pending());
-    scope.resolve(&[
+    scope.resolve([
         (InstanceId(2), RunState::Steady),
         (InstanceId(90), RunState::Admitting),
     ]);
     assert!(matches!(second.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
     assert!(first.as_mut().poll(&mut cx).is_pending());
-    scope.resolve(&[
+    scope.resolve([
         (InstanceId(2), RunState::Steady),
         (InstanceId(999), RunState::Steady),
     ]);
     assert_eq!(wake.wakes.load(Ordering::Relaxed), 1);
-    scope.resolve(&[(InstanceId(90), RunState::Steady)]);
+    scope.resolve([(InstanceId(90), RunState::Steady)]);
     scope.ended(InstanceId(90), Outcome::Failed);
     assert!(matches!(first.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
     assert_eq!(wake.wakes.load(Ordering::Relaxed), 2);

@@ -58,11 +58,10 @@ pub struct Snapshot {
     pub at: Time,
     /// The root scope's run state.
     pub run: RunState,
-    /// How many nodes the driver has built a body context for. It never
-    /// decreases — an entry stays after the node settles, so that a late
-    /// message can still be matched to its attempt by epoch — so this is
-    /// "nodes that have ever had a body" and not a count of live tasks. What is
-    /// still running is [`TokioRuntime::tracked`](crate::TokioRuntime::tracked).
+    /// How many distinct run keys the driver has built a body context for.
+    /// This cumulative count does not decrease when an ended dynamic
+    /// instance's active context is retired. What is still running is
+    /// [`TokioRuntime::tracked`](crate::TokioRuntime::tracked).
     pub contexts: usize,
     /// Every node's state — empty unless [`RunOptions::observe_states`] asked
     /// for it, because it costs one read per node per step.
