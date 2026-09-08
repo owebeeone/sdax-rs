@@ -1,192 +1,100 @@
 # AI authoring reference
 
-Use one `Plan` builder to describe values that must live together. Every
-declaration ends in a terminal method before `build`. A finite plan exports
-completed data; it does not export a live resource or service whose owner is
-about to clean it up.
+Use one `Plan` builder for values that must live together. Finish every
+declaration with its terminal method before `build`. A finite plan exports
+completed data, not a live resource or service that cleanup is about to end.
 
-Run a plan through `PlanStart` and keep the complete report until a caller has
-made its decision:
+## Types and ownership
 
-```rust
-let report = plan.start(runtime, input).await;
-match report.into_result() {
-    Ok(output) => use_completed_output(output),
-    Err(report) => record(
-        report.outcome,
-        report.faults,
-        report.cleanup_failures,
-        report.incomplete,
-        report.ambiguous,
-    ),
-}
-```
+`Plan<Out, In>` takes one `In` at each root start, static mount, or dynamic
+spawn and may export completed `Out`. Call `p.export(key)` before `build`;
+merely declaring the last step does not select an output.
 
-`into_result` returns `Result<Option<Arc<Out>>, Report<Out>>`. Its error is the
-entire report, including the original body faults, cleanup failures, abandoned
-work, and unresolved external outcomes. Do not replace it with a string or a
-single first fault.
+`Key<T>` is a typed declaration handle. A body that `.needs(key)` receives
+`Arc<T>`. A body that `.needs((a, b))` receives `(Arc<A>, Arc<B>)`, while one
+`Key<(A, B)>` produces `Arc<(A, B)>`. Return plain `T` from steps and service
+initializers. Resource acquisition and effect performance return `Held<T>`.
+Returning `Arc<T>` from an ordinary step deliberately makes its node
+`Key<Arc<T>>`, so dependents receive `Arc<Arc<T>>`.
 
-## Values and ownership
+Both `cx.hold(factory).await` and `cx.hold_value(value)` consume the single-use
+`Cx<Acquire>`. Put an external acquisition inside the lazy `hold` factory.
+`hold_value` is for a value already owned without an external action. Both
+accept an existing `Arc<T>` without nesting it, and expected `Held<T>` can use
+an unsized `T`, such as `dyn Trait + Send + Sync`. Save `let shared =
+cx.shared()` first if later code needs cancellation or clock operations.
 
-A plan has no output until you select one with `p.export(result_key)` before
-`build`. Merely creating the last step does not export its value. For a finite
-function returning `T`, build `Plan<T, Input>` and extract the completed value
-from `report.into_result()?.ok_or("missing output")?`; that value is `Arc<T>`.
-Do not try to recover a value from a `Plan<()>` report by casting it.
+A tuple or struct containing `Arc<Resource>` is ordinary data; it does not
+create a visible cleanup dependency. Pass ordinary request data through the
+plan input. For a parent-owned resource, declare `child.port::<T>(name)`, bind
+it with `child.bind(port, parent_resource_key)`, and make every child resource
+that uses it name the port in `.needs(...)`.
 
-`Key<T>` is a declaration handle, not a live `T`. Dependencies arrive as
-`Arc<T>` automatically. Return `T` from a step or initializer; return
-`Held<T>` from an acquire/perform body. Returning `Arc<T>` deliberately makes
-the node output type `Arc<T>`, so its dependents receive `Arc<Arc<T>>`.
+## Retry, effects, and services
 
-| Expression | Result | Await? |
-|---|---|---|
-| `cx.hold(|| operation_returning_result_of_T())` | future yielding `Result<Held<T>, Error>` | yes |
-| `cx.hold_value(value_of_T)` | `Held<T>` | no; return `Ok(...)` |
-| `.needs(key_of_T)` body argument | `Arc<T>` | no |
-| `.needs((a, b))` body argument | `(Arc<A>, Arc<B>)` | no |
-| `.needs(one_key_of_tuple)` body argument | `Arc<(A, B)>` | no; borrow its fields |
+Declare retry on the node. Two total attempts is
+`.idempotent().retry(Retry::attempts(2))`; do not loop around or clone an
+acquisition context. Each attempt receives fresh authority. `idempotent()` is
+the application's claim that re-execution is safe.
 
-Both hold methods consume `Cx<Acquire>`. Save `let shared = cx.shared()` first
-if later work needs its cancellation or clock operations. Put the external
-acquisition itself inside the lazy `hold` factory, not before it.
+An effect must state `on_ambiguous(Ambiguity::Report | Recover | Retry)`.
+For recovery, put `.needs(...)` before `.identified_by(identity_key)`, then
+call `.perform(...)` and `.recover_unknown(...)`. The perform dependency is
+`(ordinary_dependencies, Arc<Identity>)`; the recovery handler receives only
+`Arc<Identity>`. `Recovery::Resolved` discharges uncertainty. Recovery errors
+can carry and display a domain operation ID; a generic still-unknown record
+does not promise to format an arbitrary identity value.
 
-A tuple or struct containing an `Arc<Resource>` is ordinary data: wrapping a
-resource in a step output does not transfer its cleanup dependency. Bind the
-resource key directly as child input, or declare a formal resource port and
-bind that port to the parent resource key. Every child resource using the
-borrowed resource must name that input/port in `.needs(...)`.
+A service initializer publishes one stable `Arc<H>`; each serving episode
+uses it. `Retry` controls initialization attempts and `Restart` controls serve
+episodes after the first. A serving restart does not rerun a successful
+initializer or its dependents. Use `cx.spawn` for declared templates rather
+than launching untracked tasks.
 
-## Resources and effects
+## Complete resource-bearing composition
 
-An acquire or perform body must create its externally visible value inside the
-single `cx.hold` call. `hold` registers a value in the poll that observes its
-future return `Ok`, so cancellation cannot arrive between acknowledged success
-and the cleanup obligation. It does not prove that an interrupted remote
-operation did not happen; use `on_ambiguous` and recovery for that case. Use
-`cx.hold_value(value)` only for a value already owned without an external action.
+This executable example keeps ordinary mount input separate from a formal
+resource port. It computes `base + rate`, retries acquisition declaratively,
+exports completed output, and verifies cleanup and mount isolation. The helper
+`output_at_string_boundary` retains the complete `Report` until a caller
+specifically requires `String`; textual rendering cannot preserve typed error
+objects or downcasting.
 
-```rust
-let connection = p
-    .resource("connection")
-    .needs(config)
-    .acquire(|cx: Cx<Acquire>, config: Arc<Config>| async move {
-        cx.hold(|| async move { connect(&config).await }).await
-    })
-    .release(|cx: Cx<Release>, connection: Arc<Connection>| async move {
-        close(&connection, cx.deadline()).await
-    });
-```
-
-Declare retries on the node; do not write a loop that tries to reuse or clone
-`Cx<Acquire>`. For two total attempts with fixed backoff, put these attributes
-before `.acquire(...)` (or before `.identified_by(...)` for recovery effects):
-
-```rust
-.idempotent()
-.retry(Retry::attempts(2).backoff(Backoff::fixed(Duration::from_millis(1))))
-```
-
-Each attempt gets fresh acquisition authority after the preceding attempt and
-any registered cleanup settle. `idempotent()` is the application's safety
-claim, not proof that repeating its external operation is safe.
-
-Write one resource per independently acquired value. A release body receives
-the value registered by its matching acquire body. Effects use the same
-acquisition rule and end with either `.compensate(...)` or `.persistent()`.
-
-For recovery effects, write `.needs(...)` and other node attributes before
-`.identified_by(operation_key)`. After identification, the next method is
-`.perform(...)`. Its body argument is `(ordinary_dependencies, Arc<Identity>)`:
-with `.needs(config_key)`, that is `(Arc<Config>, Arc<Identity>)`; without
-ordinary dependencies it is `((), Arc<Identity>)`. The recovery handler receives
-only `Arc<Identity>`, not the ordinary dependency tuple.
-
-For an external operation that can time out after it may have happened, declare
-an identity before the operation and supply reconciliation for the receipt-less
-case. Normal compensation receives a real receipt; `recover_unknown` receives
-the recorded operation identity.
-
-```rust,guide:unknown_recovery
+```rust,guide:components
 use sdax::prelude::*;
 use sdax_tokio::{PlanStart, TokioRuntime};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[test]
-fn recovery_uses_the_recorded_identity_after_an_unknown_outcome() {
-    let recovered = Arc::new(Mutex::new(Vec::new()));
-    let seen = recovered.clone();
-    let mut p = Plan::with_input::<u64>("reserve");
-    let operation = p.input();
-    p.effect("remote reservation")
-        .idempotent()
-        .within(Duration::from_millis(5))
-        .on_ambiguous(Ambiguity::Recover)
-        .identified_by(operation)
-        .perform(|cx, ((), operation)| async move {
-            cx.hold(|| async move {
-                let _ = operation;
-                std::future::pending::<Result<u64, Error>>().await
-            })
-            .await
-        })
-        .recover_unknown(move |_cx, operation| {
-            let seen = seen.clone();
-            async move {
-                seen.lock().expect("record").push(*operation);
-                Ok(Recovery::Resolved)
-            }
-        })
-        .persistent();
-    let plan = p
-        .build(
-            Policy::FailFast,
-            Shutdown::within(Duration::from_millis(20)),
-            Mode::Finite,
-        )
-        .expect("valid plan");
+type Events = Arc<Mutex<Vec<(&'static str, &'static str)>>>;
 
-    let tokio_rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .start_paused(true)
-        .build()
-        .expect("runtime");
-    let rt = Arc::new(TokioRuntime::current_thread_no_background_drain(
-        tokio_rt.handle().clone(),
-    ));
-    let report = tokio_rt.block_on(plan.start(rt, 42));
-
-    assert_eq!(*recovered.lock().expect("record"), [42]);
-    assert!(
-        report.ambiguous.is_empty(),
-        "recovery resolved the uncertainty"
-    );
-    assert!(
-        report.cleanup_failures.is_empty(),
-        "recovery completed cleanly"
-    );
+#[derive(Clone, Copy)]
+enum Fail {
+    Never,
+    Once,
+    Always,
 }
-```
 
-`Recovery::Resolved` discharges the uncertainty. `Recovery::StillUnknown`, an
-error, panic, or expiry leaves the unresolved entry in the report. Recovery is
-for reconciliation, not a promise of exactly-once external execution.
+#[derive(Clone, Copy)]
+struct QuoteInput {
+    mount: &'static str,
+    rate: u32,
+    fail: Fail,
+    cleanup_fails: bool,
+}
 
-## Components
+struct Base(u32);
 
-`Plan::with_input::<T>` gives a reusable definition one typed input. Mount it
-with `parent.component(name, &child, input)`. Each mount has independent run
-state and can bind a different parent key. Define an extra formal import with
-`child.port::<T>(name)`, then bind it for a parent with
-`child.bind(port, parent_key)` before mounting.
+struct Rates {
+    mount: &'static str,
+    amount: u32,
+}
 
-```rust,guide:components
-use sdax::prelude::*;
-use sdax_tokio::{PlanStart, TokioRuntime};
-use std::sync::Arc;
-use std::time::Duration;
+struct Derived {
+    mount: &'static str,
+    amount: u32,
+    cleanup_fails: bool,
+}
 
 fn build<O, I>(p: PlanBuilder<O, I>) -> Plan<O, I> {
     p.build(
@@ -197,95 +105,277 @@ fn build<O, I>(p: PlanBuilder<O, I>) -> Plan<O, I> {
     .expect("valid plan")
 }
 
-#[test]
-fn repeated_component_mounts_bind_independent_inputs() {
-    let mut child = Plan::with_input::<u32>("double");
-    let input = child.input();
-    let doubled = child
-        .step("double")
-        .needs(input)
-        .run(|_, value: Arc<u32>| async move { Ok(*value * 2) });
-    let child = build(child.export(doubled));
+fn quote_component(events: &Events) -> (Plan<u32, QuoteInput>, Key<Base>) {
+    let mut child = Plan::with_input::<QuoteInput>("quote");
+    let input: Key<QuoteInput> = child.input();
+    let base: Key<Base> = child.port::<Base>("base resource");
 
-    let mut parent = Plan::with_input::<u32>("parent");
-    let input = parent.input();
-    let offset = parent
-        .step("offset")
-        .needs(input)
-        .run(|_, value: Arc<u32>| async move { Ok(*value + 10) });
-    let left = parent.component("left", &child, input);
-    let right = parent.component("right", &child, offset);
-    let answer = parent
-        .step("answer")
-        .needs((left, right))
-        .run(|_, values: (Arc<u32>, Arc<u32>)| async move { Ok((*values.0, *values.1)) });
-    let parent = build(parent.export(answer));
+    let attempts = events.clone();
+    let releases = events.clone();
+    let rates: Key<Rates> = child
+        .resource("rates")
+        .needs((input, base))
+        .idempotent()
+        .retry(Retry::attempts(2))
+        .acquire(move |cx, (input, base): (Arc<QuoteInput>, Arc<Base>)| {
+            let attempts = attempts.clone();
+            async move {
+                attempts
+                    .lock()
+                    .expect("events")
+                    .push((input.mount, "rates attempt"));
+                let fails = matches!(input.fail, Fail::Always)
+                    || matches!(input.fail, Fail::Once) && cx.attempt() == 1;
+                if fails {
+                    Err("rates unavailable".into())
+                } else {
+                    Ok(cx.hold_value(Rates {
+                        mount: input.mount,
+                        amount: base.0 + input.rate,
+                    }))
+                }
+            }
+        })
+        .release(move |_cx, rates: Arc<Rates>| {
+            let releases = releases.clone();
+            async move {
+                releases
+                    .lock()
+                    .expect("events")
+                    .push((rates.mount, "rates release"));
+                Ok(())
+            }
+        });
 
+    let releases = events.clone();
+    let derived: Key<Derived> = child
+        .resource("derived")
+        .needs((input, rates))
+        .acquire(
+            |cx, (input, rates): (Arc<QuoteInput>, Arc<Rates>)| async move {
+                Ok(cx.hold_value(Derived {
+                    mount: rates.mount,
+                    amount: rates.amount,
+                    cleanup_fails: input.cleanup_fails,
+                }))
+            },
+        )
+        .release(move |_cx, derived: Arc<Derived>| {
+            let releases = releases.clone();
+            async move {
+                releases
+                    .lock()
+                    .expect("events")
+                    .push((derived.mount, "derived release"));
+                if derived.cleanup_fails {
+                    Err("derived cleanup failed".into())
+                } else {
+                    Ok(())
+                }
+            }
+        });
+    let output = child
+        .step("completed output")
+        .needs(derived)
+        .run(|_cx, value: Arc<Derived>| async move { Ok(value.amount) });
+    (build(child.export(output)), base)
+}
+
+fn parent_with(
+    left: QuoteInput,
+    right: Option<QuoteInput>,
+    events: &Events,
+) -> Plan<(u32, Option<u32>)> {
+    let (child, base_port) = quote_component(events);
+    let mut parent = Plan::builder("pricing");
+    let released = events.clone();
+    let base = parent
+        .resource("base")
+        .acquire(|cx, ()| async move { Ok(cx.hold_value(Base(100))) })
+        .release(move |_cx, _base: Arc<Base>| {
+            let released = released.clone();
+            async move {
+                released
+                    .lock()
+                    .expect("events")
+                    .push(("parent", "base release"));
+                Ok(())
+            }
+        });
+    let bound = child.bind(base_port, base).expect("base binding");
+    let left_input = parent
+        .step("left input")
+        .run(move |_cx, ()| async move { Ok(left) });
+    let left_output = parent.component("left", &bound, left_input);
+    let right_output = right.map(|right| {
+        let input = parent
+            .step("right input")
+            .run(move |_cx, ()| async move { Ok(right) });
+        parent.component("right", &bound, input)
+    });
+    let output = match right_output {
+        Some(right_output) => parent
+            .step("both outputs")
+            .needs((left_output, right_output))
+            .run(
+                |_cx, values: (Arc<u32>, Arc<u32>)| async move { Ok((*values.0, Some(*values.1))) },
+            ),
+        None => parent
+            .step("one output")
+            .needs(left_output)
+            .run(|_cx, value: Arc<u32>| async move { Ok((*value, None)) }),
+    };
+    build(parent.export(output))
+}
+
+fn run(plan: &Plan<(u32, Option<u32>)>) -> Report<(u32, Option<u32>)> {
     let tokio_rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
+        .start_paused(true)
         .build()
         .expect("runtime");
-    let rt = Arc::new(TokioRuntime::current_thread_no_background_drain(
+    let runtime = Arc::new(TokioRuntime::current_thread_no_background_drain(
         tokio_rt.handle().clone(),
     ));
-    let report = tokio_rt.block_on(parent.start(rt, 3));
+    tokio_rt.block_on(plan.start(runtime, ()))
+}
+
+fn output_at_string_boundary(
+    report: Report<(u32, Option<u32>)>,
+) -> Result<(u32, Option<u32>), String> {
+    report
+        .into_result()
+        .map_err(|report| report.to_string())?
+        .as_deref()
+        .copied()
+        .ok_or_else(|| "missing completed output".to_owned())
+}
+
+fn position(events: &[(&str, &str)], event: (&str, &str)) -> usize {
+    events
+        .iter()
+        .position(|seen| *seen == event)
+        .expect("event")
+}
+
+#[test]
+fn resource_port_and_inputs_are_isolated_across_two_mounts() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let plan = parent_with(
+        QuoteInput {
+            mount: "left",
+            rate: 2,
+            fail: Fail::Once,
+            cleanup_fails: false,
+        },
+        Some(QuoteInput {
+            mount: "right",
+            rate: 7,
+            fail: Fail::Never,
+            cleanup_fails: false,
+        }),
+        &events,
+    );
+
+    assert_eq!(output_at_string_boundary(run(&plan)), Ok((102, Some(107))));
+    let events = events.lock().expect("events");
     assert_eq!(
-        report.into_result().expect("clean run").as_deref(),
-        Some(&(6, 26))
+        events
+            .iter()
+            .filter(|event| **event == ("left", "rates attempt"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| **event == ("right", "rates attempt"))
+            .count(),
+        1
+    );
+    for mount in ["left", "right"] {
+        assert!(
+            position(&events, (mount, "derived release"))
+                < position(&events, (mount, "rates release"))
+        );
+        assert!(
+            position(&events, (mount, "rates release"))
+                < position(&events, ("parent", "base release"))
+        );
+    }
+}
+
+#[test]
+fn permanent_failure_attempts_twice_and_releases_the_base() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let plan = parent_with(
+        QuoteInput {
+            mount: "left",
+            rate: 2,
+            fail: Fail::Always,
+            cleanup_fails: false,
+        },
+        None,
+        &events,
+    );
+
+    let report = run(&plan);
+    assert_eq!(report.outcome, Outcome::Failed);
+    assert!(report
+        .faults
+        .iter()
+        .any(|fault| fault.node.leaf() == "rates"));
+    let events = events.lock().expect("events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| **event == ("left", "rates attempt"))
+            .count(),
+        2
+    );
+    assert!(events.contains(&("parent", "base release")));
+}
+
+#[test]
+fn cleanup_failure_is_reported_while_upstream_cleanup_continues() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let plan = parent_with(
+        QuoteInput {
+            mount: "left",
+            rate: 2,
+            fail: Fail::Never,
+            cleanup_fails: true,
+        },
+        None,
+        &events,
+    );
+
+    let report = run(&plan);
+    assert_eq!(report.cleanup_failures.len(), 1);
+    assert_eq!(report.cleanup_failures[0].node.leaf(), "derived");
+    assert!(report.cleanup_failures[0]
+        .kind
+        .to_string()
+        .contains("derived cleanup failed"));
+    let events = events.lock().expect("events");
+    assert!(
+        position(&events, ("left", "derived release"))
+            < position(&events, ("left", "rates release"))
+    );
+    assert!(
+        position(&events, ("left", "rates release"))
+            < position(&events, ("parent", "base release"))
     );
 }
 ```
 
-`Plan::builder(name)` is the unit-input spelling. It still has an explicit
-`input()` key and mounts receive that key or `()`; do not use ambient globals to
-smuggle a component input across a mount boundary.
+The normal test proves each mount has its own input and retry state while both
+borrow the bound parent resource. Dependency reversal orders each mount's
+`derived` release before `rates`, and both before the parent `base`. Permanent
+failure still releases acquired upstream state. A derived cleanup error remains
+in `cleanup_failures` while rates and base cleanup continue.
 
-## Services
-
-A service has two phases. Initialization establishes readiness and publishes a
-stable `Arc<H>` once. Serving owns one episode using that same handle. Put child
-spawning and `child.ready().await` work in initialization; put the former
-long-running service future in `serve`.
-
-```rust
-struct ServiceState;
-
-p.service("accept")
-    .idempotent()
-    .restart(Restart::on_error(Backoff::fixed(Duration::from_secs(1))).max(1))
-    .initialize(|_cx: Cx<Start>, ()| async { Ok(ServiceState) })
-    .serve(|cx: Cx<ServingPhase>, _state: Arc<ServiceState>| async move {
-        if cx.episode() == 1 {
-            Err::<(), Error>("connection lost".into())
-        } else {
-            cx.stop().await;
-            Ok(())
-        }
-    });
-```
-
-`Retry` controls initialization attempts. `Restart` controls serving episodes
-after the first one. A serving restart never runs a successful initializer
-again, changes the published handle, or reruns dependents. Readiness stays
-latched after initialization, so it does not describe current health during
-recovery. Use `cx.episode()` when a serving body needs its one-based episode
-number.
-
-The example's handle is in-memory state. Service-local external acquisitions do
-not gain a resource cleanup obligation. Declare such values as resource
-dependencies, or keep them in the serving future so Rust drops them when the
-episode ends. Use `cx.spawn` for declared dynamic child templates; do not launch
-untracked tasks.
-
-## Body results
-
-All body errors use `sdax::Error`. When type inference needs help, write an
-explicit result such as `Ok::<Handle, Error>(handle)` or
-`Err::<(), Error>(cause.into())`. Body factories may be called again for a
-declared retry or service restart, so capture cloneable configuration and keep
+All body errors use `sdax::Error`. When inference needs help, annotate the
+result, for example `Err::<(), Error>(cause.into())`. Factories may run again
+after declared retry or restart, so capture cloneable configuration and put
 attempt-specific state inside the returned future.
-
-For finite work, use `.step(...).run(...)`. Use `cx.stop().await` in a resident
-service episode that should end cooperatively. Release, compensation, recovery,
-and service shutdown have the declared deadline; pass `cx.deadline()` into APIs
-that support timeouts.
