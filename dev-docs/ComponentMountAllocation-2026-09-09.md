@@ -21,11 +21,25 @@ per mount. These are allocator requests during plan construction, not retained o
 peak memory. No timing benchmark was run because other lanes were active on the
 host.
 
+An earlier exploratory capture included `plan.inspect()` in the counted checksum
+and therefore included allocations for constructing an inspection view: 310 /
+34,043 bytes at 2 mounts, 1,330 / 147,851 at 10, and 12,498 / 1,699,071 at 100.
+Its candidate delta was the same exact per-mount reduction. Those captures remain
+retained in the sibling directories without `-plan-build`; the table above is the
+final isolated plan-construction boundary.
+
 The final baseline and candidate rows and source hashes are retained under
 `performance-results/component-copy-baseline-ce339a5-plan-build/` and
 `performance-results/component-copy-candidate-plan-build/`. Pre-change lifecycle
 logs are retained under `performance-results/component-copy-baseline-ce339a5/`;
 post-change logs are in the candidate directory.
+
+The full library source revisions from `performance-source-revision.py` are
+`ee2fa0f90514e6ae168c3d502a3a0aac2ca692d473a0c335daeb4e155ddb3edd`
+for baseline and
+`3b6229329a8d057979b1d2d580dcfaecc17ef0e6cf3f7f21accbbc87d39e3cee`
+for candidate commit `d20b7c39b1bc6e509f8799dee43f2e364c0d6c8f`. The shared fixture revision is
+`e98a18c1d9bb352fecde2ec57e57e52a3928579b1fceffccea7099f10ed0cec3`.
 
 ## Change and behavior guards
 
@@ -48,8 +62,7 @@ behavior.
 - `cargo test --workspace --locked --offline`: passed.
 - `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`: passed.
 - Workspace and standalone harness formatting plus `git diff --check`: passed.
-- Rust 1.75 build: pending. The installed `1.75.0-aarch64-apple-darwin` entry has
-  no usable manifest, and the `+1.75` offline inventory could not resolve the
-  already-pinned `tokio-util` package while rustup attempted to repair that channel.
+- Rust 1.75 build: pending native validation. The local toolchain entry is unusable;
+  no installation or repair is part of this lane.
 - Lifecycle-equivalent handwritten Tokio comparators and host-reserved timing remain
   open work from the remediation plan.

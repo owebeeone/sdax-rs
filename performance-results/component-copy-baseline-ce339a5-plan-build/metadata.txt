@@ -1,5 +1,7 @@
 measurement_kind=allocation-only baseline
 source_commit=ce339a59eefcd136562b16f4f20035c29ef0c988
+source_revision=ee2fa0f90514e6ae168c3d502a3a0aac2ca692d473a0c335daeb4e155ddb3edd
+fixture_revision=e98a18c1d9bb352fecde2ec57e57e52a3928579b1fceffccea7099f10ed0cec3
 compiler=rustc 1.96.0 (ac68faa20 2026-05-25)
 host=aarch64-apple-darwin
 profile=release(codegen-units=1,lto=thin)
