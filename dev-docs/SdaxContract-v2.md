@@ -55,3 +55,29 @@ The lifecycle inspection view shows ordering, readiness, policy and cleanup. A s
 Behavior changes use failing desired assertions before implementation, on both pure and adapter paths where relevant. Invariant checks are updated for recovery, stable service episodes and independently mounted scopes. Exhaustive schedule exploration is claimed only if actually performed.
 
 Performance reports separate generation, Rust compilation, one-time plan build, engine execution and representative application work. Engine execution includes input binding, run state, scheduling, body dispatch, dynamic instances, cleanup, report production and per-run disposal. No generator or one-time plan-building work is included in the engine tally; no per-run work is hidden as setup.
+
+## Dynamic execution graph retirement
+
+After the host has consumed an entire effects batch and its structural publication
+acknowledgements, it may compact ended dynamic instances. The host first retires
+their body contexts and value-source slots. No outstanding effect may depend on
+the retired execution topology. The Tokio adapter and simulator consider this at
+the batch boundary. Reclamation is batched until retired nodes or instances
+reach half of their respective dynamic execution entries; a quiescent parent
+with no live children retains only its static execution graph.
+
+Compaction preserves each active raw key while remapping dense nodes, scopes,
+dependencies, arbitration state, timers and template/import lookup together.
+Ended identities are never reused. Stop remains idempotent for an ended instance
+while its root run is active; late body messages are discarded by the host before
+storage or dispatch. Direct machine events for retired nodes are rejected, never
+credited to another node. Forgotten timer events remain harmless.
+
+Historical node enumeration and instance enumeration retain insertion order.
+Key-based state, path, kind, declaration origin, instance membership and parent
+identity remain readable. Fault causes use stable keys; report/trace records own
+their paths and ordering. Static path lookup continues to exclude instance copies.
+Completed history is immutable; it retains the deadline visible at retirement.
+Mutable dependency edges, locks, timers, pools and execution slots are not history.
+The execution graph can be reclaimed without bounding total memory: historical
+records, identity tombstones, host metadata and full traces still grow with churn.

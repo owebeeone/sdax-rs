@@ -329,7 +329,7 @@ impl Machine {
         // list is the whole run's and cannot say which instance failed.
         self.scopes[scope].faulted = true;
         match self.t.scopes[scope].policy {
-            Policy::FailFast => self.settle(scope, Cause::Fault(n)),
+            Policy::FailFast => self.settle(scope, Cause::Fault(self.t.nodes[n].key)),
             Policy::Isolate => self.skip_dependents(n, n),
         }
         if let Some(c) = self.t.scopes[scope].component {
@@ -392,10 +392,10 @@ impl Machine {
         // a sibling that became ready afterwards started a body after the run
         // had settled. Its inner graph is torn down by the component's own
         // release, which `open_component` opens when the gate allows.
-        self.settle_or_skip_inner(c, Some(inner));
+        self.settle_or_skip_inner(c, Some(self.t.nodes[inner].key));
         let parent = self.t.nodes[c].scope;
         match self.t.scopes[parent].policy {
-            Policy::FailFast => self.settle(parent, Cause::Fault(c)),
+            Policy::FailFast => self.settle(parent, Cause::Fault(self.t.nodes[c].key)),
             Policy::Isolate => self.skip_dependents(c, inner),
         }
         if let Some(grand) = self.t.scopes[parent].component {
@@ -495,7 +495,7 @@ impl Machine {
         let scope = self.t.nodes[n].scope;
         self.scopes[scope].faulted = true;
         match self.t.scopes[scope].policy {
-            Policy::FailFast => self.settle(scope, Cause::Fault(n)),
+            Policy::FailFast => self.settle(scope, Cause::Fault(self.t.nodes[n].key)),
             Policy::Isolate => self.skip_dependents(n, n),
         }
         if let Some(c) = self.t.scopes[scope].component {

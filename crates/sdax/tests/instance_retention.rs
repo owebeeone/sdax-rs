@@ -77,6 +77,7 @@ fn active_instance_states_exclude_history_without_removing_it() {
     );
     assert_eq!(sim.machine().instances().len(), 2);
     assert_eq!(sim.machine().active_instance_states().count(), 0);
+    assert_eq!(sim.machine().execution_node_count(), 3);
     assert!(sim.ended());
     assert!(sim.rejections().is_empty());
     let report = sim.take_report::<()>().unwrap();

@@ -86,7 +86,7 @@ impl Machine {
     ///
     /// A node with neither an inner scope nor instances is a no-op, so every
     /// ramp can call this without asking what it is holding.
-    pub(super) fn settle_or_skip_inner(&mut self, n: usize, because: Option<usize>) {
+    pub(super) fn settle_or_skip_inner(&mut self, n: usize, because: Option<crate::key::RawKey>) {
         if self.t.nodes[n].kind == crate::plan::Kind::Template {
             self.settle_instances(n, because);
             return;

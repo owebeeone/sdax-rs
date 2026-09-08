@@ -135,3 +135,78 @@ impl sdax::host::Clock for TestClock {
         Box::pin(async {})
     }
 }
+
+#[test]
+fn driver_compacts_only_after_consuming_instance_end_effects() {
+    let mut child = Plan::builder("Child");
+    child
+        .resource("R")
+        .acquire(|cx, ()| async move { Ok(cx.hold_value(())) })
+        .release(|_, _| async { Ok(()) });
+    let child = child
+        .build(
+            Policy::FailFast,
+            Shutdown::within(Duration::from_secs(1)),
+            Mode::Resident,
+        )
+        .unwrap();
+    let mut p = Plan::builder("Root");
+    let template = p.template("Child", &child);
+    p.service("Spawner")
+        .spawns(&template)
+        .initialize(|_, ()| async { Ok(()) })
+        .serve(|_, _| async { Ok(()) });
+    let p = p
+        .build(
+            Policy::FailFast,
+            Shutdown::within(Duration::from_secs(2)),
+            Mode::Resident,
+        )
+        .unwrap();
+    let mut m = Machine::new(&p).unwrap();
+    let base = m.execution_node_count();
+    let spawner = m.key_of("Spawner").unwrap();
+    let template = m.key_of("Child").unwrap();
+    m.begin();
+    m.step(Event::NodeOk(spawner));
+    let id = InstanceId(42);
+    m.step(Event::InstanceSpawned {
+        spawner,
+        template,
+        id,
+    });
+    let key = m.instance_nodes(id)[0].0;
+    m.step(Event::Held(key));
+    m.step(Event::NodeOk(key));
+    m.step(Event::StopInstance(id));
+    let ended_effects = m.step(Event::NodeOk(key));
+    assert!(ended_effects.iter().any(
+        |fx| matches!(fx, Effect::Emit(ev) if matches!(ev.kind, TraceKind::InstanceEnded(..)))
+    ));
+    assert_eq!(
+        m.execution_node_count(),
+        base + 1,
+        "returned effects still have their topology"
+    );
+    let (mut d, _, _runtime) = driver();
+    d.machine = m;
+    d.src = sdax::host::bodies_of::<(), ()>(&p);
+    d.origins.insert(key, (key, Some(id)));
+    let cx = CxInner::new(key, Arc::new(TestClock));
+    let weak = Arc::downgrade(&cx);
+    d.live.insert(
+        key,
+        Live {
+            epoch: 1,
+            cx,
+            handle: None,
+        },
+    );
+    d.after("instance ended".into(), ended_effects);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(d.machine.execution_node_count(), base);
+    assert!(
+        d.machine.origin(key).is_some(),
+        "historical identity remains"
+    );
+}

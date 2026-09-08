@@ -30,8 +30,10 @@ use crate::report::{FaultKind, Outcome, TraceEvent};
 
 mod admit;
 mod cleanup;
+mod compaction;
 mod exits;
 mod faults;
+mod history;
 mod instances;
 mod machine;
 mod publication;
@@ -216,3 +218,7 @@ pub(crate) fn compile_layout(
 ) -> Result<std::sync::Arc<Table>, EngineError> {
     Table::build(ir).map(std::sync::Arc::new)
 }
+
+#[cfg(test)]
+#[path = "engine/compaction_tests.rs"]
+mod compaction_tests;

@@ -279,7 +279,22 @@ impl Simulator {
             Item::Body(node, ev) => {
                 // INV-17: an initializer that awaits `Child::ready()` returns
                 // only once the instances it awaits have answered.
-                if self.hold_for_ready(node, &ev) {
+                let retired = self
+                    .machine
+                    .origin(node)
+                    .and_then(|(_, id)| id)
+                    .map(|id| {
+                        !self
+                            .machine
+                            .active_instance_states()
+                            .any(|(active, _)| active == id)
+                    })
+                    .unwrap_or(false);
+                if retired {
+                    // Match the adapter's retired-context guard: abandoned
+                    // work may report after its instance's lifecycle ended.
+                    ("retired body ignored".to_string(), Vec::new())
+                } else if self.hold_for_ready(node, &ev) {
                     ("awaiting an instance".to_string(), Vec::new())
                 } else {
                     let described = format!("{ev:?}");
@@ -297,6 +312,7 @@ impl Simulator {
             let effects = self.machine.step(ack);
             self.perform_batch(described, effects);
         }
+        self.machine.compact_ended_instances();
         self.release_awaits();
         self.steps.last()
     }

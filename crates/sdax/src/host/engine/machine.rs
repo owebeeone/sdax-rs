@@ -260,7 +260,10 @@ impl Machine {
 
     /// The path behind a key.
     pub fn path_of(&self, key: RawKey) -> Option<&NodePath> {
-        self.t.index_of(key).map(|i| &self.t.nodes[i].path)
+        self.t
+            .index_of(key)
+            .map(|i| &self.t.nodes[i].path)
+            .or_else(|| self.history.nodes.get(&key).map(|n| &n.path))
     }
 
     /// What kind of node this key names.
@@ -268,7 +271,10 @@ impl Machine {
     /// A run driver needs it: a service's readiness starts a serving episode
     /// and a component never gets a body at all.
     pub fn kind_of(&self, key: RawKey) -> Option<Kind> {
-        self.t.index_of(key).map(|i| self.t.nodes[i].kind)
+        self.t
+            .index_of(key)
+            .map(|i| self.t.nodes[i].kind)
+            .or_else(|| self.history.nodes.get(&key).map(|n| n.kind))
     }
 
     /// The absolute deadline the node's current body phase must respect.
@@ -278,6 +284,9 @@ impl Machine {
     /// the active scope budget. A service's serving context has no deadline
     /// until stop begins, then uses its already-armed stop deadline.
     pub fn deadline_for(&self, key: RawKey) -> Option<Time> {
+        if let Some(n) = self.history.nodes.get(&key) {
+            return n.deadline;
+        }
         let i = self.t.index_of(key)?;
         let scope = self.scopes[self.t.nodes[i].scope].deadline;
         let timer = self.slots[i].timer.and_then(|id| {
@@ -300,16 +309,18 @@ impl Machine {
     /// Every node of the run, in flat table order: its key, its path and its
     /// kind. What a driver builds its own index from.
     pub fn nodes(&self) -> Vec<(RawKey, NodePath, Kind)> {
-        self.t
-            .nodes
-            .iter()
-            .map(|n| (n.key, n.path.clone(), n.kind))
+        self.ordered_nodes()
+            .into_iter()
+            .map(|(_, key, path, kind)| (key, path, kind))
             .collect()
     }
 
     /// Where a node is, by key.
     pub fn state(&self, key: RawKey) -> Option<NodeState> {
-        self.t.index_of(key).map(|i| self.node_state(i))
+        self.t
+            .index_of(key)
+            .map(|i| self.node_state(i))
+            .or_else(|| self.history.nodes.get(&key).map(|n| n.state.clone()))
     }
 
     /// Where a node is, by path.
@@ -413,7 +424,7 @@ impl Machine {
             },
             St::Ambiguous => NodeState::Ambiguous,
             St::Skipped => NodeState::Skipped {
-                because: s.because.map(|b| self.t.nodes[b].path.clone()),
+                because: s.because.and_then(|b| self.path_of(b).cloned()),
             },
             St::Releasing => NodeState::Releasing,
             St::Compensating => NodeState::Compensating,

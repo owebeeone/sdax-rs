@@ -336,6 +336,10 @@ fn a_run_seed_reproduces_the_whole_walk() {
 /// `tests/conformance/regressions.rs`; this list pins the seeds.
 const SEEDS_THAT_FOUND_BUGS: &[(u64, &str)] = &[
     (
+        8893298172542843099,
+        "sim: late cancellation after instance graph compaction",
+    ),
+    (
         6299039668138085550,
         "sim: a hold later than the body's own ending",
     ),

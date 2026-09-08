@@ -1,5 +1,8 @@
 # sdax improvement plan
 
+Latest continuation: [dynamic graph compaction](GraphCompactionCheckpoint-2026-09-08.md).
+The earlier measurements and status statements below apply to their named revisions.
+
 Date: 8 September 2026. Baseline: `bdea94200ae743fc94ea76987cfd4f6927e0ff8d`.
 
 Status: implementation executed; available snapshot data has been restored after the agent-caused Windows deletion incident, with documented exceptions and a post-snapshot gap. See [implementation report](SdaxImprovementImplementation-2026-09-08.md) for completed checks, measurements and the failed low-cost-model adoption gate. The numbered sections below preserve the intended acceptance criteria rather than retroactively weakening them. API compatibility with previous private versions is not a constraint. The owner requires runtime performance to be important and plan generation to be excluded from the runtime performance tally.

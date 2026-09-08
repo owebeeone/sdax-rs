@@ -1,10 +1,12 @@
 //! The machine's state: what the contract's § 2 tables say, as data, plus the
 //! bookkeeping T1–T8 need and the helpers that write the trace and the report.
 
+use super::history::History;
 use super::table::Table;
 use super::{Effect, TimerId};
 use crate::contracts::Time;
 use crate::cx::InstanceId;
+use crate::key::RawKey;
 use crate::plan::Kind;
 use crate::plan::ReleaseStyle;
 use crate::policy::Ambiguity;
@@ -211,7 +213,8 @@ pub(super) struct Slot {
     pub granted: bool,
     /// A body was spawned at least once (a component: its inner run began).
     pub started: bool,
-    pub because: Option<usize>,
+    pub ever_spawned: bool,
+    pub because: Option<RawKey>,
     /// Faults of attempts not yet exhausted: moved to the report if the node
     /// never becomes Ready, dropped (they stay in the trace) if it does.
     pub faults: Vec<Fault>,
@@ -241,6 +244,7 @@ impl Slot {
             blocked_by: None,
             granted: false,
             started: false,
+            ever_spawned: false,
             because: None,
             faults: Vec::new(),
             ambiguity: None,
@@ -259,14 +263,14 @@ pub(super) struct Lock {
 /// What ended a scope's admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Cause {
-    Fault(usize),
+    Fault(RawKey),
     Cancel,
     Shutdown,
     Finite,
     Terminal,
     /// The parent scope settled or reached this component in its cleanup;
     /// carries the parent's fault node when a fault did it.
-    Parent(Option<usize>),
+    Parent(Option<RawKey>),
 }
 
 /// Per-scope bookkeeping.
@@ -288,6 +292,8 @@ pub(super) struct ScopeRun {
 pub(super) struct Instance {
     /// Its identity, minted by the host and echoed in every record.
     pub id: InstanceId,
+    pub order: usize,
+    pub execution_nodes: usize,
     /// The template node it is an instance of.
     pub template: usize,
     /// The scope its nodes form.
@@ -321,6 +327,12 @@ pub struct Machine {
     /// the static graph's are (INV-14).
     pub(super) schedule: Vec<String>,
     pub(super) instances: Vec<Instance>,
+    pub(super) history: History,
+    pub(super) next_instance_order: usize,
+    pub(super) compaction_pending: bool,
+    pub(super) static_nodes: usize,
+    pub(super) retired_nodes: usize,
+    pub(super) retired_instances: usize,
     pub(super) now: Time,
     pub(super) timers: Vec<(TimerId, Purpose, Time)>,
     pub(super) next_timer: u64,
@@ -361,6 +373,12 @@ impl Machine {
             rank: vec![u32::MAX; n],
             schedule: Vec::new(),
             instances: Vec::new(),
+            history: History::default(),
+            next_instance_order: 0,
+            compaction_pending: false,
+            static_nodes: n,
+            retired_nodes: 0,
+            retired_instances: 0,
             now: Time::ZERO,
             timers: Vec::new(),
             next_timer: 1,

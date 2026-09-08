@@ -32,6 +32,7 @@ pub(super) struct Node {
     /// This node's identity within the run. Unique: an instance's nodes are
     /// re-keyed, so two instances of one template never share a key.
     pub key: RawKey,
+    pub order: usize,
     /// The key the declaration gave it, which addresses its body.
     pub decl: RawKey,
     /// The instance this node belongs to, if it is not part of the static
@@ -100,6 +101,7 @@ pub(crate) struct Table {
     pub map: Vec<(RawKey, usize)>,
     /// Direct declaration-index lookup within each uniquely keyed run scope.
     index: RunIndex,
+    next_order: usize,
 }
 
 /// Static topology pays this cost once at plan build. Instance scopes are
@@ -168,6 +170,7 @@ impl Table {
             scopes: Vec::new(),
             map: Vec::new(),
             index: RunIndex::default(),
+            next_order: 0,
         };
         let mut added = Vec::new();
         let mut pass = Pass {
@@ -323,6 +326,7 @@ impl Table {
             let mut needs = resolve(&n.needs);
             needs.dedup();
             self.nodes.push(Node {
+                order: self.next_order,
                 key: RawKey {
                     plan: plan_id,
                     idx: n.key.idx,
@@ -347,6 +351,7 @@ impl Table {
                 pool: n.attrs.limit.or(n.attrs.pool).map(|p| p.index() as usize),
                 attrs: n.attrs.clone(),
             });
+            self.next_order += 1;
             self.index.insert(self.nodes[idx].key, idx);
             self.scopes[scope].nodes.push(idx);
             pass.added.push(idx);
@@ -391,3 +396,6 @@ impl Table {
 #[cfg(test)]
 #[path = "table_index_tests.rs"]
 mod index_tests;
+
+#[path = "table_compaction.rs"]
+mod compaction;

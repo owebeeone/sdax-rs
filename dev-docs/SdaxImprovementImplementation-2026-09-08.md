@@ -1,5 +1,8 @@
 # sdax improvement implementation — 8 September 2026
 
+Latest continuation: [dynamic graph compaction](GraphCompactionCheckpoint-2026-09-08.md).
+The earlier measurements and status statements below apply to their named revisions.
+
 Status: core implementation, native portability checks, independent correctness review and bounded authoring evaluation complete. Mac/Pi/Windows runtime comparisons completed; the Windows comparison resumed after recovery from the serious agent-caused deletion incident. This report records executed evidence only.
 
 Baseline: `bdea94200ae743fc94ea76987cfd4f6927e0ff8d`. The revised semantics tag is `sdax/2`. The normative [v2 contract](SdaxContract-v2.md) defines intentional breaking changes; no compatibility facade is retained. The owner requested a local checkpoint commit after validation. Nothing has been pushed or published.

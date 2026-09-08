@@ -46,7 +46,7 @@ impl Machine {
                     let fault = self.fault(n, phase, FaultKind::Error(error));
                     self.faults.push(fault);
                     self.release_grants(n);
-                    self.settle_or_skip_inner(n, Some(n));
+                    self.settle_or_skip_inner(n, Some(self.t.nodes[n].key));
                     // Apply the normal containing-scope policy without a body
                     // event or a component attempt fault in Slot::faults.
                     self.node_failed(n);

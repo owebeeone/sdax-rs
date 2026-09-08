@@ -310,7 +310,7 @@ impl Machine {
                 if matches!(self.slots[d].st, St::Pending | St::Waiting) {
                     self.slots[d].st = St::Skipped;
                     self.slots[d].queued = None;
-                    self.slots[d].because = Some(because);
+                    self.slots[d].because = Some(self.t.nodes[because].key);
                     let path = self.t.nodes[because].path.clone();
                     self.emit(
                         d,
@@ -321,7 +321,7 @@ impl Machine {
                     // A node waiting for its *next* attempt still owns the
                     // faults of the attempts that already failed (INV-9).
                     self.flush_faults(d);
-                    self.settle_or_skip_inner(d, Some(because));
+                    self.settle_or_skip_inner(d, Some(self.t.nodes[because].key));
                     stack.push(d);
                 }
             }

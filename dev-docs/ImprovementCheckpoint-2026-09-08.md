@@ -1,5 +1,8 @@
 # Improvement checkpoint — 8 September 2026
 
+Latest continuation: [dynamic graph compaction](GraphCompactionCheckpoint-2026-09-08.md).
+The earlier measurements and status statements below apply to their named revisions.
+
 This is a validated implementation checkpoint, not a release or a claim that every improvement gate passed. It contains the breaking sdax/2 API and lifecycle fixes, explicit component bindings, immutable layouts, diagnostics, executable documentation, performance harness and the subsequent dynamic-readiness optimization.
 
 Earlier committed source revision: `64ca4858ee2ab919c28df7ff98ebe8c47b11c28124460a483bdea4bc5d24fab2`. All eleven shared Mac checks pass. Native Windows full benchmark fixture verification and both Rust 1.75 library builds pass. Earlier broad portability inventories passed on Pi and Windows before the readiness optimization; they are not represented as reruns of the new revision.

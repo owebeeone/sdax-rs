@@ -61,7 +61,7 @@ impl Machine {
                     self.slots[n].st = St::Skipped;
                     self.slots[n].queued = None;
                     self.slots[n].because = because;
-                    let path = because.map(|b| self.t.nodes[b].path.clone());
+                    let path = because.and_then(|b| self.path_of(b).cloned());
                     self.emit(n, TraceKind::Skipped { because: path });
                     // A node waiting for its *next* attempt (a zero backoff,
                     // or a grant it never got) still owns the faults of the
@@ -104,7 +104,7 @@ impl Machine {
     /// nodes are still `Pending`. Left alone they hold the release gate of
     /// everything they import shut (INV-5) and the run cannot finish, so they
     /// are skipped with the component, all the way down.
-    pub(super) fn skip_scope(&mut self, scope: usize, because: Option<usize>) {
+    pub(super) fn skip_scope(&mut self, scope: usize, because: Option<crate::key::RawKey>) {
         if self.scopes[scope].st != RunState::Planned {
             return;
         }
@@ -115,7 +115,7 @@ impl Machine {
                 self.slots[n].st = St::Skipped;
                 self.slots[n].queued = None;
                 self.slots[n].because = because;
-                let path = because.map(|b| self.t.nodes[b].path.clone());
+                let path = because.and_then(|b| self.path_of(b).cloned());
                 self.emit(n, TraceKind::Skipped { because: path });
             }
             if let Some(inner) = self.t.nodes[n].inner {
@@ -126,7 +126,7 @@ impl Machine {
 
     /// Cancel one in-flight body per its cancel mode. A blocking body cannot
     /// be cancelled (T7) and a component is settled as a scope.
-    fn interrupt(&mut self, n: usize, because: Option<usize>) {
+    fn interrupt(&mut self, n: usize, because: Option<crate::key::RawKey>) {
         if self.slots[n].cancelling {
             return;
         }
@@ -138,7 +138,7 @@ impl Machine {
                 self.emit(
                     n,
                     TraceKind::Skipped {
-                        because: because.map(|b| self.t.nodes[b].path.clone()),
+                        because: because.and_then(|b| self.path_of(b).cloned()),
                     },
                 );
             }

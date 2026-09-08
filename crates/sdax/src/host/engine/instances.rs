@@ -119,54 +119,6 @@ impl Machine {
         }
     }
 
-    // ------------------------------------------------------------ readers
-
-    /// Every instance of this run and where its scope is.
-    pub fn instances(&self) -> Vec<(InstanceId, RunState)> {
-        self.instances
-            .iter()
-            .map(|i| (i.id, self.scopes[i.scope].st))
-            .collect()
-    }
-
-    /// Borrow the states of instances that have not ended, without allocating
-    /// a historical snapshot. Ended identities remain available through
-    /// [`Self::instances`]; this iterator still scans the retained history.
-    pub fn active_instance_states(&self) -> impl Iterator<Item = (InstanceId, RunState)> + '_ {
-        self.instances
-            .iter()
-            .filter(|instance| !instance.ended)
-            .map(|instance| (instance.id, self.scopes[instance.scope].st))
-    }
-
-    /// All nodes of one instance, including component descendants, in table
-    /// order: run key, declaration key, path and kind. Separately spawned
-    /// nested instances belong to their own identity and are excluded.
-    pub fn instance_nodes(&self, id: InstanceId) -> Vec<(RawKey, RawKey, NodePath, Kind)> {
-        self.t
-            .nodes
-            .iter()
-            .filter(|node| node.instance == Some(id))
-            .map(|node| (node.key, node.decl, node.path.clone(), node.kind))
-            .collect()
-    }
-
-    /// The declaration a run key was made from, and the instance it belongs
-    /// to. What a [`BodySource`](crate::host::BodySource) is addressed by.
-    pub fn origin(&self, key: RawKey) -> Option<(RawKey, Option<InstanceId>)> {
-        self.t
-            .index_of(key)
-            .map(|i| (self.t.nodes[i].decl, self.t.nodes[i].instance))
-    }
-
-    /// The instance a spawning body itself belongs to, for a nested template.
-    pub fn instance_parent(&self, id: InstanceId) -> Option<InstanceId> {
-        self.instances
-            .iter()
-            .find(|i| i.id == id)
-            .and_then(|i| i.parent)
-    }
-
     // ------------------------------------------------------------ spawning
 
     /// A body instantiated a template (T1 for a whole scope at once).
@@ -176,7 +128,7 @@ impl Machine {
         template: RawKey,
         id: InstanceId,
     ) -> Result<(), &'static str> {
-        if self.instances.iter().any(|i| i.id == id) {
+        if self.instances.iter().any(|i| i.id == id) || self.history.instances.contains_key(&id) {
             return Err("InstanceSpawned reused an instance id");
         }
         let Some(sp) = self.t.index_of(spawner) else {
@@ -208,18 +160,21 @@ impl Machine {
         let parent = self.t.nodes[sp].instance;
         self.instances.push(Instance {
             id,
+            order: self.next_instance_order,
+            execution_nodes: added.len(),
             template: t,
             scope: inst_scope,
             parent,
             ended: false,
         });
+        self.next_instance_order += 1;
+        self.slots[t].ever_spawned = true;
         self.fx.push(Effect::SpawnInstance {
             template: self.t.nodes[t].decl,
             parent,
             id,
         });
         self.emit(t, TraceKind::InstanceSpawned(id));
-        let _ = added;
         if admitting {
             self.scopes[inst_scope].st = RunState::Admitting;
             self.admit(inst_scope);
@@ -241,6 +196,9 @@ impl Machine {
 
     /// `Child::stop()`: this instance settles, and its own release graph runs.
     pub(super) fn on_stop_instance(&mut self, id: InstanceId) -> Result<(), &'static str> {
+        if self.history.instances.contains_key(&id) {
+            return Ok(());
+        }
         let Some(inst) = self.instances.iter().find(|i| i.id == id) else {
             return Err("StopInstance for an unknown instance");
         };
@@ -289,7 +247,7 @@ impl Machine {
 
     /// Whether this template ever admitted an instance.
     pub(super) fn ever_spawned(&self, n: usize) -> bool {
-        self.instances.iter().any(|i| i.template == n)
+        self.slots[n].ever_spawned
     }
 
     /// A template that has admitted an instance is `Live`, whatever the queue
@@ -318,7 +276,7 @@ impl Machine {
 
     /// Every live instance of `t` stops admitting (T5, and the template's own
     /// obligation).
-    pub(super) fn settle_instances(&mut self, t: usize, because: Option<usize>) {
+    pub(super) fn settle_instances(&mut self, t: usize, because: Option<crate::key::RawKey>) {
         for x in self.live_instances(t) {
             let scope = self.instances[x].scope;
             match self.scopes[scope].st {
@@ -381,6 +339,9 @@ impl Machine {
             return;
         }
         self.instances[x].ended = true;
+        self.compaction_pending = true;
+        self.retired_nodes += self.instances[x].execution_nodes;
+        self.retired_instances += 1;
         let outcome = self.instance_outcome(scope);
         self.emit(t, TraceKind::InstanceEnded(id, outcome));
         self.finish_template(t);

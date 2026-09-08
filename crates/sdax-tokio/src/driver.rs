@@ -261,6 +261,7 @@ impl<R: Runtime> Driver<R> {
             let effects = self.machine.step(ack);
             self.perform_batch(described, effects);
         }
+        self.machine.compact_ended_instances();
         self.ctl.publish(&self.machine, &self.paths, self.contexts);
         // All host publication obligations settle before bodies can observe
         // readiness through the gate or child latches.
