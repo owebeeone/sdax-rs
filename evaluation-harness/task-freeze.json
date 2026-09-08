@@ -1,0 +1,34 @@
+{
+  "frozen_at_utc": "2026-09-08T16:23:20.800835+00:00",
+  "source_baseline": "ce339a59eefcd136562b16f4f20035c29ef0c988",
+  "status": "task/assertion preregistration before control implementation and before inference",
+  "files": {
+    "cases.json": "37473fe466dd3932c0412b460091cb3fceb4704dff43f7204338db9207ab1f24",
+    "support.rs": "f5ef641082063979240106f7a8066a0d6ffb52a9a7c9d025a40c91d51b6b7f9f",
+    "tasks/e1.md": "705bb397c2cd6178113af4729e132cfd07df28acfa6acb04b57b776f7213bf13",
+    "tasks/e2.md": "a3243c30dc96ba8939308d67bfb10cc9d9c66cfdaebea1e227aae8caf511aae0",
+    "tasks/f1.md": "7c7c60c7f4233ec9260e96b67079b02ecc365762b0cd417ed189a9ecab5792f6",
+    "tasks/f2.md": "39c16976fe8216042f8a2a89a225791c02385f4e7963acd76bce9e3c73984f67",
+    "tasks/f3.md": "f0800f7b9119a97ddcecb0000705da00cb75ccbbb2948627a3ec296f90c4c576",
+    "tasks/f4.md": "e30ed6c5a2092f072b6b59b54f65e3961b31ea715ea146ef8eee350c77744c07",
+    "tasks/f5.md": "8953998420e74f57b7459164d1d3806a3dccde51bad72b4ef0922e27c5daf2c3",
+    "tasks/f6.md": "6199b6133c69d19c85508a18472825d9608a24699dbbe8145a58957059d19ad1",
+    "assertions/e1.rs": "5bef8ab152e9c8f43992bf930614391affa3143c808cad17a13e19bb8038dbdb",
+    "assertions/e2.rs": "dd1e148256e440d736be4e11e0c851c7ea3093f8ba944d955c2b9fba33dbbb6c",
+    "assertions/f1.rs": "b3675b4387bbfed64799e07f84f92090c8057ca19d955d10e3dc1dc2827e2cf7",
+    "assertions/f2.rs": "886b8ea4ca83a3afcdd43bf59574b2255d6a72d7bd5c410f4f48a8fdbdfa3907",
+    "assertions/f3.rs": "e325cb6321a04daf49f6133c3c34117e89e3a23e1b1def03ca4412e7aa311780",
+    "assertions/f4.rs": "c3c920e3e0245571965a956fc1494e3cb3ab6cc18c3af74421a7d120de4fe8b2",
+    "assertions/f5.rs": "a510a5a097656f8b89ff02a56d7090b8beb9d92cdd723c703bc24e8de9bfba12",
+    "assertions/f6.rs": "37062d83b0e9e2c60d5f98fef2debbf2f987bb8141aba2f404e4d24b1c12d10b"
+  },
+  "version": 3,
+  "previous_manifest_sha256": "0a5ecbfe4b90a78258b949029e0e02f0ad15eb3d7a95989f9f1a3824b55eed5b",
+  "amendments": [
+    "f4 StillUnknown correctly retains one cleanup failure",
+    "f5 stop during backoff retains serving fault; recovered stop is clean",
+    "f6 count one originating Run fault, not propagated mount prepare wrappers",
+    "add separately named diagnostic tests; rustfmt only otherwise",
+    "v3 adds separate resident diagnostic test for the already-required retained serving fault; no task or criterion removed"
+  ]
+}

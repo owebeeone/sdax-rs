@@ -1,0 +1,25 @@
+{
+  "frozen_at_utc": "2026-09-08T16:15:11.945459+00:00",
+  "source_baseline": "ce339a59eefcd136562b16f4f20035c29ef0c988",
+  "status": "task/assertion preregistration before control implementation and before inference",
+  "files": {
+    "cases.json": "37473fe466dd3932c0412b460091cb3fceb4704dff43f7204338db9207ab1f24",
+    "support.rs": "2d82023ece6701d2588072194554d435897ed93085348847a346a4f83cd2011d",
+    "tasks/e1.md": "705bb397c2cd6178113af4729e132cfd07df28acfa6acb04b57b776f7213bf13",
+    "tasks/e2.md": "a3243c30dc96ba8939308d67bfb10cc9d9c66cfdaebea1e227aae8caf511aae0",
+    "tasks/f1.md": "7c7c60c7f4233ec9260e96b67079b02ecc365762b0cd417ed189a9ecab5792f6",
+    "tasks/f2.md": "39c16976fe8216042f8a2a89a225791c02385f4e7963acd76bce9e3c73984f67",
+    "tasks/f3.md": "f0800f7b9119a97ddcecb0000705da00cb75ccbbb2948627a3ec296f90c4c576",
+    "tasks/f4.md": "e30ed6c5a2092f072b6b59b54f65e3961b31ea715ea146ef8eee350c77744c07",
+    "tasks/f5.md": "8953998420e74f57b7459164d1d3806a3dccde51bad72b4ef0922e27c5daf2c3",
+    "tasks/f6.md": "6199b6133c69d19c85508a18472825d9608a24699dbbe8145a58957059d19ad1",
+    "assertions/e1.rs": "e2d43913f2446ade8ea90828be0af8b3ae36183b27ae5b610c771a427d542242",
+    "assertions/e2.rs": "acd0b675ff900d6f1eb7ea51660d688333ba9cac114055b5fcb9a21b5f5d6f93",
+    "assertions/f1.rs": "bec69115a12a6af09bc4c56a9e4a4fd1ca4ab4a9854d497730c40b2d9fc643e7",
+    "assertions/f2.rs": "5c4af87ddff7ea8982c5b45b354b1a3ec43c21b4c709fd5aff35718208212086",
+    "assertions/f3.rs": "35165712baed6dd4d364000bcaf511ef4a9f599ed750b77ec3c77eeed4997131",
+    "assertions/f4.rs": "d3faafb0c16094b13c7e90b723aa7cdb3c3fd2c783a1aeec3974ed1bc7054577",
+    "assertions/f5.rs": "c8fc6a8885357402ee42bbcac619a75dd8485c4d1487b16128c4b319fef4384a",
+    "assertions/f6.rs": "b029be55bc812b2068aa34a1e180848bf3a49710af2663f5003704811507c471"
+  }
+}

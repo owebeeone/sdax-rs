@@ -1,0 +1,11 @@
+[package]
+name = "sdax-authoring-evaluation"
+version = "0.0.0"
+edition = "2021"
+publish = false
+rust-version = "1.75"
+[workspace]
+[dependencies]
+sdax = { path = "{{SDAX_RS}}/crates/sdax" }
+sdax-tokio = { path = "{{SDAX_RS}}/crates/sdax-tokio" }
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time", "sync", "test-util"] }

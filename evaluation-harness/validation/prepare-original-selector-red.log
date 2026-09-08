@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/validation/prepare-before-amendment.py", line 30, in <module>
+    if __name__=='__main__':main()
+                            ~~~~^^
+  File "/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/validation/prepare-before-amendment.py", line 13, in main
+    assert sum(s.startswith('## Components\n') or s.startswith('## Services\n') for s in sections)==2
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

@@ -1,0 +1,131 @@
+   Compiling sdax-authoring-evaluation v0.0.0 (/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/evidence/controls-ed7b04faa15f4ecd81a4523bcad08f6c/f3-wrong_attempt_budget)
+warning: unused import: `std::time::Duration`
+ --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:5:5
+  |
+5 | use std::time::Duration;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `sdax::prelude::*`
+ --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f3.rs:3:5
+  |
+3 | use sdax::prelude::*;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `sdax_tokio::PlanStart`
+ --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f3.rs:4:5
+  |
+4 | use sdax_tokio::PlanStart;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Duration`
+ --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/assertions/f3.rs:5:5
+  |
+5 | use std::time::Duration;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: struct `Env` is never constructed
+ --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:8:12
+  |
+8 | pub struct Env(Arc<Mutex<State>>);
+  |            ^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `State` is never constructed
+  --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:10:8
+   |
+10 | struct State {
+   |        ^^^^^
+
+warning: struct `Resource` is never constructed
+  --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:15:12
+   |
+15 | pub struct Resource {
+   |            ^^^^^^^^
+
+warning: associated items `failing`, `record`, `events`, `open`, `close`, and `live_count` are never used
+  --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:20:12
+   |
+19 | impl Env {
+   | -------- associated items in this implementation
+20 |     pub fn failing(names: &[&str]) -> Self {
+   |            ^^^^^^^
+...
+25 |     pub fn record(&self, event: impl Into<String>) {
+   |            ^^^^^^
+...
+28 |     pub fn events(&self) -> Vec<String> {
+   |            ^^^^^^
+...
+31 |     pub async fn open(
+   |                  ^^^^
+...
+59 |     pub async fn close(&self, r: &Resource) -> Result<(), Error> {
+   |                  ^^^^^
+...
+78 |     pub fn live_count(&self) -> usize {
+   |            ^^^^^^^^^^
+
+warning: struct `Cause` is never constructed
+  --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:83:12
+   |
+83 | pub struct Cause(pub &'static str, pub Option<Box<Cause>>);
+   |            ^^^^^
+
+warning: function `runtime` is never used
+  --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:96:8
+   |
+96 | pub fn runtime() -> (tokio::runtime::Runtime, Arc<TokioRuntime>) {
+   |        ^^^^^^^
+
+warning: function `finite` is never used
+   --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:107:8
+    |
+107 | pub fn finite(plan: &Plan<u32, u32>, input: u32) -> Report<u32> {
+    |        ^^^^^^
+
+warning: function `count` is never used
+   --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:113:8
+    |
+113 | pub fn count(e: &[String], needle: &str) -> usize {
+    |        ^^^^^
+
+warning: function `before` is never used
+   --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:116:8
+    |
+116 | pub fn before(e: &[String], a: &str, b: &str) {
+    |        ^^^^^^
+
+warning: function `finish` is never used
+ --> src/candidate.rs:6:4
+  |
+6 | fn finish<O, I>(p: PlanBuilder<O, I>) -> Plan<O, I>
+  |    ^^^^^^
+
+warning: function `boundary` is never used
+  --> src/candidate.rs:18:8
+   |
+18 | pub fn boundary(report: Report<u32>) -> Result<u32, String> {
+   |        ^^^^^^^^
+
+warning: function `build` is never used
+  --> src/candidate.rs:25:8
+   |
+25 | pub fn build(env: Env) -> Plan<u32, u32> {
+   |        ^^^^^
+
+warning: struct `Cause` is never constructed
+  --> /Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/support.rs:83:12
+   |
+83 | pub struct Cause(pub &'static str, pub Option<Box<Cause>>);
+   |            ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sdax-authoring-evaluation` (lib) generated 13 warnings (run `cargo fix --lib -p sdax-authoring-evaluation` to apply 1 suggestion)
+warning: `sdax-authoring-evaluation` (lib test) generated 5 warnings (1 duplicate) (run `cargo fix --lib -p sdax-authoring-evaluation --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.77s
+     Running unittests src/lib.rs (evaluation-harness/evidence/target/debug/deps/sdax_authoring_evaluation-7d3a9b63fc9c992b)
+error: test failed, to rerun pass `--lib`

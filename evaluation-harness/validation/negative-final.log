@@ -1,0 +1,12 @@
+{"case": "e1", "variant": "wrong_completed_value", "compiled": true, "exit_code": 101, "seconds": 1.071394250029698, "expected_rejection": true, "as_expected": true}
+{"case": "e2", "variant": "retry_exhausted", "compiled": true, "exit_code": 101, "seconds": 1.214499041903764, "expected_rejection": true, "as_expected": true}
+{"case": "f1", "variant": "shared_wrong_binding", "compiled": true, "exit_code": 101, "seconds": 1.1334454169264063, "expected_rejection": true, "as_expected": true}
+{"case": "f2", "variant": "premature_parent_close", "compiled": true, "exit_code": 101, "seconds": 1.118411000003107, "expected_rejection": true, "as_expected": true}
+{"case": "f2", "variant": "wrong_tuple_projection", "compiled": true, "exit_code": 101, "seconds": 1.0320962079567835, "expected_rejection": true, "as_expected": true}
+{"case": "f3", "variant": "unstable_identity", "compiled": true, "exit_code": 101, "seconds": 1.1107089589349926, "expected_rejection": true, "as_expected": true}
+{"case": "f3", "variant": "wrong_attempt_budget", "compiled": true, "exit_code": 101, "seconds": 1.3530193750048056, "expected_rejection": true, "as_expected": true}
+{"case": "f4", "variant": "erased_uncertainty", "compiled": true, "exit_code": 101, "seconds": 1.1592495830263942, "expected_rejection": true, "as_expected": true}
+{"case": "f4", "variant": "fabricated_compensation_receipt", "compiled": true, "exit_code": 101, "seconds": 1.0161234160186723, "expected_rejection": true, "as_expected": true}
+{"case": "f5", "variant": "insufficient_restart_budget", "compiled": true, "exit_code": 101, "seconds": 1.0744523330358788, "expected_rejection": true, "as_expected": true}
+{"case": "f6", "variant": "first_fault_only", "compiled": true, "exit_code": 101, "seconds": 0.9617168339900672, "expected_rejection": true, "as_expected": true}
+/Users/owebeeone/limbo/sdax-wz-evaluation/sdax-rs/evaluation-harness/evidence/controls-ed7b04faa15f4ecd81a4523bcad08f6c

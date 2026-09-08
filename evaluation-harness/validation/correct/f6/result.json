@@ -1,0 +1,11 @@
+{
+  "attempt": 0,
+  "behavior": "passed",
+  "case": "f6",
+  "compile": "passed",
+  "diagnostic": "passed",
+  "model": "control",
+  "passed": true,
+  "structural_review": "pending",
+  "track": "fresh"
+}
