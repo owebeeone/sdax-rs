@@ -267,15 +267,9 @@ mod tests {
 
         let mut value = run(&executor, Case::Cancellation, &evidence);
         value.active += 1;
-        assert_eq!(
-            check(&value, &expected(Case::Cancellation)),
-            Err("active")
-        );
+        assert_eq!(check(&value, &expected(Case::Cancellation)), Err("active"));
         let mut value = run(&executor, Case::Cancellation, &evidence);
         value.joined -= 1;
-        assert_eq!(
-            check(&value, &expected(Case::Cancellation)),
-            Err("joined")
-        );
+        assert_eq!(check(&value, &expected(Case::Cancellation)), Err("joined"));
     }
 }

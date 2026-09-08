@@ -1,8 +1,8 @@
-mod lifecycle;
-mod lifecycle_plans;
-mod lifecycle_bench;
 mod alloc;
 mod fixtures;
+mod lifecycle;
+mod lifecycle_bench;
+mod lifecycle_plans;
 mod measure;
 mod tokio_lifecycle;
 
@@ -48,10 +48,14 @@ fn main() {
                 warmup: value(&args, "--warmup", 8),
                 build_samples: 0,
             };
-            let tokio_first = args.windows(2).any(|pair| {
-                pair[0] == "--order" && pair[1] == "tokio-first"
-            });
-            measure::write_csv(&lifecycle_bench::bench(cfg.samples, cfg.warmup, tokio_first));
+            let tokio_first = args
+                .windows(2)
+                .any(|pair| pair[0] == "--order" && pair[1] == "tokio-first");
+            measure::write_csv(&lifecycle_bench::bench(
+                cfg.samples,
+                cfg.warmup,
+                tokio_first,
+            ));
         }
         Some("allocation-probe") => allocation_probe(),
         Some("resident-probe") => resident_probe(value(&args, "--seconds", 10)),
@@ -426,15 +430,7 @@ fn benchmark_graph(cfg: Config, shape: Shape, nodes: usize, yielding: bool, out:
         || graph(&spec, yielding),
         out,
     );
-    benchmark_plan_build_phases(
-        cfg,
-        &label,
-        nodes,
-        spec.edges(),
-        &spec,
-        yielding,
-        out,
-    );
+    benchmark_plan_build_phases(cfg, &label, nodes, spec.edges(), &spec, yielding, out);
     let plan = graph(&spec, yielding);
     benchmark_finite_execution(cfg, &label, nodes, spec.edges(), &plan, None, out);
     benchmark_state_setup(cfg, &label, nodes, spec.edges(), &plan, out);

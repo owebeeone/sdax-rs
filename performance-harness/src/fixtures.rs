@@ -1,7 +1,7 @@
 use sdax::host::Observer;
 use sdax::{
-    Ambiguity, Backoff, Error, Mode, Outcome, Plan, PlanBuilder, Policy, Recovery, Report, Restart, Retry,
-    Shutdown, TraceEvent,
+    Ambiguity, Backoff, Error, Mode, Outcome, Plan, PlanBuilder, Policy, Recovery, Report, Restart,
+    Retry, Shutdown, TraceEvent,
 };
 use sdax_tokio::{PlanStart, TokioRuntime};
 use std::future::poll_fn;

@@ -123,10 +123,7 @@ async fn await_lifecycle_cancel(
     .await
 }
 
-fn checked_lifecycle(
-    summary: lifecycle::Summary,
-    expected: &lifecycle::Expected,
-) -> ((), u64) {
+fn checked_lifecycle(summary: lifecycle::Summary, expected: &lifecycle::Expected) -> ((), u64) {
     lifecycle::check(&summary, expected).unwrap();
     let checksum = lifecycle::checksum(&summary);
     drop(summary);
@@ -190,9 +187,8 @@ fn benchmark_tokio_lifecycle(
         checked_lifecycle(tokio_lifecycle::run(executor, case, evidence), expected);
     }
     for sample in 0..cfg.samples {
-        let (nanos, checksum) = timed(|| {
-            checked_lifecycle(tokio_lifecycle::run(executor, case, evidence), expected)
-        });
+        let (nanos, checksum) =
+            timed(|| checked_lifecycle(tokio_lifecycle::run(executor, case, evidence), expected));
         push(
             out,
             "lifecycle_tokio",
@@ -221,7 +217,8 @@ fn benchmark_lifecycle_profiles(
     for sample in 0..5 {
         let (profile, checksum) = profiled(&mut run);
         assert_eq!(
-            profile.retained_bytes, 0,
+            profile.retained_bytes,
+            0,
             "{phase}/{} retained requested bytes",
             case.label()
         );

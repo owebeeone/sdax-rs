@@ -1,7 +1,9 @@
 # Performance measurement results — 2026-09-09
 
-Status: Pi lifecycle and `ce339a5`/candidate captures complete. Windows dynamic
-allocation confirmation remains pending. No overall performance pass is claimed.
+Status: Pi lifecycle and `ce339a5`/candidate captures and Windows dynamic
+allocation confirmation are complete. The isolated component-copy allocation
+objective passed. Timing flags remain order-sensitive, so no overall performance
+pass is claimed.
 
 ## Boundaries and controls
 
@@ -10,11 +12,13 @@ crate-source revision
 `ee2fa0f90514e6ae168c3d502a3a0aac2ca692d473a0c335daeb4e155ddb3edd`.
 The candidate library remains
 `3b6229329a8d057979b1d2d580dcfaecc17ef0e6cf3f7f21accbbc87d39e3cee`.
-Both full captures used fixture revision
+Both Pi full captures and the Windows allocation-only captures used fixture
+revision
 `7341fedb1370a331c151cbaf066d938e8333c04a886e44714c4ed36138e6193a`,
 locked dependencies, rustc 1.96.0 aarch64, the release profile, one
 current-thread Tokio worker and full SDAX tracing. Each direction used 40
-execution samples, eight warmups and 20 build samples.
+execution samples, eight warmups and 20 build samples on Pi. The Windows run is
+described separately below.
 
 All 212 workload groups were present on both sources and all checksum sets
 matched. The baseline supports the current matched workloads because `ce339a5`
@@ -65,12 +69,12 @@ task internal to the adapter.
 
 ## Component-copy allocation result
 
-The original resource-bearing plan-build witness remains the direct proof for
-the library change: candidate traffic decreases by exactly seven allocation
-calls and 1,264 requested bytes per mount at 2/10/100 mounts. The full paired Pi
-capture independently exercises the typed repeated-mount fixture and finds a
-different, type-specific slope: exactly five calls and 841 requested bytes
-removed per mount.
+The original resource-bearing plan-build witness remains the direct measurement
+witness for the library change: candidate traffic decreases by exactly seven
+allocation calls and 1,264 requested bytes per mount at 2/10/100 mounts. The full
+paired Pi capture independently exercises the typed repeated-mount fixture and
+finds a different, type-specific slope: exactly five calls and 841 requested
+bytes removed per mount.
 
 | Typed mounts | Before calls/bytes | Candidate calls/bytes | Change |
 |---:|---:|---:|---:|
@@ -110,6 +114,35 @@ that relationship. These order effects remain visible rather than being averaged
 away. Large graph declaration/validation/end-to-end build rows show no
 direction-consistent gate failure attributable to the component-copy change.
 
+## Windows allocation-only confirmation
+
+The Windows capture used rustc 1.98.1 on `x86_64-pc-windows-msvc`, the release
+profile and locked offline dependencies. The exact baseline, candidate and
+fixture revisions were rechecked before building. Each source ran `bench` with
+zero timing samples, eight warmups and zero build timing samples. The forward
+order was baseline then candidate; the reverse order was candidate then
+baseline. Each run emitted 82 allocation rows, and every row repeated exactly
+when its source ran in the opposite order.
+
+Dynamic live-instance execution allocations were identical across source and
+order:
+
+| Instances | Baseline calls/bytes | Candidate calls/bytes |
+|---:|---:|---:|
+| 1 | 615 / 63,287 | 615 / 63,287 |
+| 10 | 4,382 / 471,069 | 4,382 / 471,069 |
+| 100 | 68,263 / 5,172,799 | 68,263 / 5,172,799 |
+
+The only three differences across all 82 rows were the typed repeated-component
+plan builds. Their 2/10/100 values exactly match the Pi table above, including
+the minus-five-call and minus-841-byte per-mount slope. This confirms that the
+isolated clone removal introduces no dynamic-execution allocation growth on the
+Windows host. The zero peak and retained fields in these general harness rows
+mean **NOT MEASURED**; they are not zero-live-memory results. Only the dedicated
+lifecycle profile measures and interprets measured-thread live bytes. No Windows
+timing data was collected, and results from its rustc 1.98.1 host are not
+compared as ratios with the Pi rustc 1.96.0 host.
+
 ## TDD and verification
 
 The RED compile on Pi retained E0425 for the absent allocation `profile` control
@@ -121,7 +154,15 @@ error, cleanup details, disposal, joins and active tasks.
 - Harness unit tests: 2 passed.
 - Optimized fixture verification: passed every existing fixture and both
   lifecycle implementations.
-- rustfmt 1.96: passed.
+- The measured fixture revision `7341fedb...` was found after capture to predate
+  an explicit standalone-harness formatting check. The claim that formatting had
+  passed at that revision was stale. Formatting only the seven harness source
+  files produces fixture revision
+  `8017d9ad4695a10d53c59e26922bb40115fa49e60c5ccfbf23418f4e64b19164`.
+  On Pi, that exact final revision passed rustfmt 1.96, all 42 Python script tests,
+  both harness unit tests and optimized fixture verification. The measured and
+  committed pre-format source are identical; no measured logic was changed or
+  silently substituted.
 - Clippy 1.96: passed with the harness's existing scoped
   `clippy::io_other_error` allowance; the new raw Tokio spawn retains its local
   ownership rationale and allowance.
@@ -133,6 +174,14 @@ error, cleanup details, disposal, joins and active tasks.
 Raw rows, summaries, host-load boundaries and stderr are retained under
 `performance-results/pi-remediation-paired-20260909/`. Pi build outputs and the
 RED/GREEN working source remain under
-`/home/gianni/sdax-performance-lifecycle-20260909-0358-red`; the paired baseline
-and capture directories are retained beside it. No timings ran on the local or
-Windows hosts during inference.
+`/home/gianni/sdax-performance-lifecycle-20260909-0358-red`; paired source and
+capture directories remain under
+`/home/gianni/sdax-performance-baseline-ce339a5-20260909` and
+`/home/gianni/sdax-performance-pi-paired-20260909`. The final formatting control
+is retained under `/home/gianni/sdax-performance-format-verify-20260909`.
+Windows raw CSV, build logs, source hashes, process snapshots and analysis are
+retained under
+`performance-results/windows-remediation-allocation-20260909/` and remotely at
+`C:/Users/gianni/git/sdax-remediation-alloc-stage-20260909`. No timings ran on
+the local or Windows hosts during inference, and the Windows follow-up collected
+allocations only after inference completed.

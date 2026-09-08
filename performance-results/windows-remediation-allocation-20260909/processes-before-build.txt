@@ -1,0 +1,2 @@
+ollama.exe                   12644 Services                   0     67,924 K
+llama-server.exe             19812 Services                   0  2,532,952 K

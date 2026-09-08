@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Case {
     Normal,
@@ -341,8 +340,14 @@ fn normalize_fault(fault: &sdax::Fault) -> Fault {
 }
 
 pub fn normalize_report(report: &Report<u64>, evidence: &Evidence) -> Summary {
-    assert!(report.incomplete.is_empty(), "lifecycle fixture left incomplete work");
-    assert!(report.ambiguous.is_empty(), "lifecycle fixture left ambiguity");
+    assert!(
+        report.incomplete.is_empty(),
+        "lifecycle fixture left incomplete work"
+    );
+    assert!(
+        report.ambiguous.is_empty(),
+        "lifecycle fixture left ambiguity"
+    );
     let trace = report.trace.as_ref().expect("full lifecycle trace");
     let spawned = trace
         .events
@@ -371,7 +376,11 @@ pub fn normalize_report(report: &Report<u64>, evidence: &Evidence) -> Summary {
         },
         output: report.output.as_deref().copied(),
         faults: report.faults.iter().map(normalize_fault).collect(),
-        cleanup_failures: report.cleanup_failures.iter().map(normalize_fault).collect(),
+        cleanup_failures: report
+            .cleanup_failures
+            .iter()
+            .map(normalize_fault)
+            .collect(),
         events: evidence.events(),
         spawned,
         joined,
