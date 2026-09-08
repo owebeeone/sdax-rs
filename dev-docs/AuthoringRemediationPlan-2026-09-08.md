@@ -1,8 +1,7 @@
 # Authoring remediation and parallel validation plan
 
 Date: 8 September 2026. Baseline: `ce339a59eefcd136562b16f4f20035c29ef0c988`,
-pushed to GitHub `main`. Status: implementation lanes started on 9 September under `~/limbo`; the three
-initial supporting investigations were read-only. No new adoption or performance result is claimed by this plan.
+pushed to GitHub `main`. Status (9 September): all four implementation lanes were integrated and pushed; all eleven shared checks and ten frozen controls passed. The [completed model evaluation](IndependentEvaluationResults-2026-09-09.md) fails the adoption gate: Gemma has no executable passes, and Qwen has one executable pass that fails structural review. Performance measurement results are being finalized; this mission is not complete.
 
 This is the next execution plan under [the improvement plan](SdaxImprovementPlan-2026-09-08.md).
 It preserves that plan's acceptance criteria. The immediately preceding result is
