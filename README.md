@@ -147,7 +147,9 @@ fn cleans_up_after_success_and_failure() {
 
 The [AI authoring reference](https://github.com/owebeeone/sdax-rs/blob/main/docs/AI-Authoring.md)
 collects the exact service, component, acquisition, and unknown-outcome recovery
-forms. For more examples, start with the [quick start](https://github.com/owebeeone/sdax-rs/blob/main/docs/QuickStart.md)
+forms. Use the [starter templates](https://github.com/owebeeone/sdax-rs/blob/main/docs/StarterTemplates.md)
+to adapt complete plans with resource ownership, retries, recovery and resident services.
+For more examples, start with the [quick start](https://github.com/owebeeone/sdax-rs/blob/main/docs/QuickStart.md)
 and the [cleanup guide](https://github.com/owebeeone/sdax-rs/blob/main/docs/Cleanup.md).
 
 From a clone of this repository, run:

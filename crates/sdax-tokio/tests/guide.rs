@@ -35,3 +35,30 @@ mod spawn_child;
 mod unknown_recovery;
 #[path = "guide/validate_reject.rs"]
 mod validate_reject;
+
+#[path = "guide/ai_acquisition.rs"]
+mod ai_acquisition;
+
+#[path = "guide/ai_component.rs"]
+mod ai_component;
+
+#[path = "guide/ai_recovery.rs"]
+mod ai_recovery;
+
+#[path = "guide/ai_service.rs"]
+mod ai_service;
+
+#[path = "guide/starter_composition.rs"]
+mod starter_composition;
+
+#[path = "guide/starter_retry_cleanup.rs"]
+mod starter_retry_cleanup;
+
+#[path = "guide/starter_recovery.rs"]
+mod starter_recovery;
+
+#[path = "guide/starter_service.rs"]
+mod starter_service;
+
+#[path = "guide/starter_support.rs"]
+mod starter_support;
