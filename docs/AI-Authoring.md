@@ -15,16 +15,18 @@ is not exported automatically.
 
 Key<T> is a declaration handle. A body needing it receives Arc<T>.
 .needs((a, b)) supplies (Arc<A>, Arc<B>); one Key<(A, B)> supplies Arc<(A, B)>.
-Steps return plain T. Resource acquisition and effect performance return Held<T>,
-created only by the single-use Cx<Acquire>.
+Step bodies return Result<T, Error>; their keys carry T. Resource acquisition
+and effect performance return Result<Held<T>, Error>, with Held created only by
+the single-use Cx<Acquire>.
 
 Start with use sdax_tokio::PlanStart;, await the report, then use
 report.into_result(). Its success is Option<Arc<Out>>; its error is the full
 typed Report, including faults, cleanup failures, incomplete work, and ambiguous
 operations. Keep that report typed internally. At a boundary requiring String,
 use report.into_result().map_err(|report| report.to_string()); textual rendering
-cannot preserve downcasting. If completed output is required, handle None by
-returning an error rather than panicking.
+cannot preserve downcasting. When output is required, use into_required_output():
+it returns Arc<Out> or RequiredOutputError::Failed / MissingOutput, each retaining
+the original report through report() and into_report().
 
 ## External acquisition, typed input, and completed output
 
@@ -189,8 +191,8 @@ constructing a child for one already-known parent.
 ## Identified unknown recovery
 
 For an effect that may have happened without a receipt, declare a stable identity
-before perform. With ordinary dependencies, write .needs(...) before
-.identified_by(identity_key). The perform body receives
+before perform. Configuration with .needs(...), .within(...), .retry(...) and
+.idempotent() can go before or after .identified_by(identity_key). The perform body receives
 (ordinary_dependencies, Arc<Identity>); recover_unknown receives Arc<Identity>
 alone. Recovery must still end in compensate or persistent.
 

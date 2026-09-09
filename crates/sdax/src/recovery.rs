@@ -84,6 +84,44 @@ impl<'b, D: Deps> Node<'b, D, Effect<Ambiguity>> {
     }
 }
 impl<'b, D: Deps, I: ?Sized + Send + Sync + 'static> IdentifiedEffect<'b, D, I> {
+    /// Replace ordinary dependencies while retaining the operation identity.
+    /// The perform body receives `(dependencies, Arc<Identity>)`; an identity
+    /// also present in `deps` contributes only one ordering edge.
+    pub fn needs<D2: Deps>(self, deps: D2) -> IdentifiedEffect<'b, D2, I> {
+        IdentifiedEffect {
+            node: self.node.needs(Identified {
+                deps,
+                identity: self.identity,
+            }),
+            identity: self.identity,
+        }
+    }
+
+    /// Bound the prepare body, equivalently to configuring before identification.
+    pub fn within(self, duration: std::time::Duration) -> Self {
+        Self {
+            node: self.node.within(duration),
+            identity: self.identity,
+        }
+    }
+
+    /// Re-execute the prepare body on failure, retaining the same operation identity.
+    /// Requires the same safety declarations as retry before identification.
+    pub fn retry(self, retry: crate::Retry) -> Self {
+        Self {
+            node: self.node.retry(retry),
+            identity: self.identity,
+        }
+    }
+
+    /// Assert that re-execution is safe. This assertion is trusted, not verified.
+    pub fn idempotent(self) -> Self {
+        Self {
+            node: self.node.idempotent(),
+            identity: self.identity,
+        }
+    }
+
     /// Perform with single-use acquisition authority and the bound operation identity.
     pub fn perform<F, Fut, R>(self, f: F) -> IdentifiedCompensate<'b, R, I>
     where

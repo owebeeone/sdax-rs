@@ -76,11 +76,9 @@ pub fn build(env: Environment) -> Plan<u32, u32> {
 /// Return completed output or full failure text, including absent output.
 pub fn boundary(report: Report<u32>) -> Result<u32, String> {
     report
-        .into_result()
-        .map_err(|r| r.to_string())?
-        .as_deref()
-        .copied()
-        .ok_or_else(|| "missing completed output".into())
+        .into_required_output()
+        .map(|output| *output)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

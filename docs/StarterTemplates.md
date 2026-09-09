@@ -37,8 +37,8 @@ cargo test -p sdax-tokio --test guide --locked --offline starter_
 4. Keep resource imports visible through ports and bindings. Ordinary input
    carries request data; it is not a substitute for a resource lifetime edge.
 5. Retain the full `Report` internally. These examples convert failures to text
-   only at the `Result<u32, String>` boundary and return an error for missing
-   output. Text cannot retain typed error downcasting.
+   only at the `Result<u32, String>` boundary. They use `into_required_output`
+   to reject missing output. Text cannot retain typed error downcasting.
 
 The in-memory backend records lifecycle events and models failures. Its pending
 request represents an operation without a known result; a real integration must

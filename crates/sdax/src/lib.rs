@@ -103,6 +103,8 @@ mod key;
 mod plan;
 mod policy;
 mod report;
+mod required_output;
+pub use required_output::RequiredOutputError;
 mod sim;
 mod terminals;
 mod validate;
@@ -168,6 +170,7 @@ pub mod prelude {
         AttrChange, DataNode, DataflowView, Edge, Effects, NodePath, NodeView, PlanDiff, PlanView,
         PoolView, Reason, ReleaseOrder, Why,
     };
+    pub use crate::RequiredOutputError;
     pub use std::time::Duration;
 }
 

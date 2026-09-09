@@ -334,3 +334,18 @@
 //! let parent = Plan::with_input::<String>("parent");
 //! child.bind(rate, parent.input()).unwrap();
 //! ```
+
+//!
+//! ## Identified effects still require unknown recovery before a terminal
+//!
+//! ```compile_fail
+//! // expect: E0599
+//! use sdax::prelude::*;
+//! let mut p = Plan::with_input::<u64>("required-recovery");
+//! let id = p.input();
+//! p.effect("operation").on_ambiguous(Ambiguity::Report)
+//!     .identified_by(id).needs(()).idempotent()
+//!     .perform(|cx, ((), id)| async move {
+//!         cx.hold(|| async move { Ok::<_, Error>(*id) }).await
+//!     }).persistent();
+//! ```

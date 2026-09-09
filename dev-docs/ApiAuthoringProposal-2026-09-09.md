@@ -2,7 +2,7 @@
 
 Date: 9 September 2026
 
-Status: proposed; no API changes implemented by this proposal
+Status: proposals 1 and 2 implemented; proposal 3 deferred; proposal 4 exploratory.
 Baseline: sdax-rs `5a62e0bf84c1e8341a3cedc1c727c4a6c0e0a26f`
 
 ## Evidence and scope
@@ -51,6 +51,12 @@ Current implementation: `crates/sdax/src/report.rs`, `Report::into_result`.
 
 ## 3. Bring component mounting and bindings together
 
+Decision, 9 September: defer implementation. A mounting builder would add another
+public construction path while retaining formal ports and their ownership rules.
+The scaffold experiment supports complete starting programs, not this particular
+API. Reconsider after a concrete sketch demonstrates fewer decisions at a call
+site without hiding lifetime edges, followed by a bounded authoring comparison.
+
 **Priority: design prototype after the smaller changes.**
 
 Authors currently coordinate a formal port on the child builder, `Plan::bind` on the finished definition, and `parent.component` with a parent input key. Failures included calling these methods on the wrong object and confusing scalar inputs with input bindings.
@@ -84,4 +90,9 @@ This is tooling/documentation work and should be distinguished from API redesign
 3. Design the mounting builder; defer broader declaration syntax until its tradeoffs are concrete.
 4. Freeze another bounded comparison before evaluating authoring impact. Use fresh task variants for generalization evidence, explicitly specify missing-output behavior, and retain separate compilation, behavior, diagnostics and structural scores.
 
-These are proposals, not measured benefits of changed APIs. No implementation, new evaluation calls or repository restructuring is included in recording this document.
+The original proposal recorded possible changes, not measured API benefits.
+Proposals 1 and 2 were subsequently implemented: `IdentifiedEffect` forwards
+`needs`, `within`, `retry` and `idempotent`; `Report::into_required_output` returns
+an `Arc` or `RequiredOutputError`, retaining the complete report in both failure
+variants. See [implementation evidence](ApiAuthoringImplementation-2026-09-09.md).
+No new authoring evaluation or repository restructuring is claimed.
