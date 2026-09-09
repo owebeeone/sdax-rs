@@ -53,7 +53,7 @@ fn ordinary_input_is_separate_from_a_formal_resource_port() {
     ));
     let report = tokio_rt.block_on(plan.start(runtime, ()));
     assert_eq!(
-        report.into_result().expect("clean run").as_deref(),
-        Some(&13)
+        *report.into_required_output().expect("completed output"),
+        13
     );
 }

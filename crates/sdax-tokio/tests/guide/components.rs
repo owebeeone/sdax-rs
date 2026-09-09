@@ -239,11 +239,9 @@ fn output_at_string_boundary(
     report: Report<(u32, Option<u32>)>,
 ) -> Result<(u32, Option<u32>), String> {
     report
-        .into_result()
-        .map_err(|report| report.to_string())?
-        .as_deref()
-        .copied()
-        .ok_or_else(|| "missing completed output".to_owned())
+        .into_required_output()
+        .map(|output| *output)
+        .map_err(|error| error.to_string())
 }
 
 fn position(events: &[(&str, &str)], event: (&str, &str)) -> usize {

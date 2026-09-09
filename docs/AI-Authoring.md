@@ -19,14 +19,14 @@ Step bodies return Result<T, Error>; their keys carry T. Resource acquisition
 and effect performance return Result<Held<T>, Error>, with Held created only by
 the single-use Cx<Acquire>.
 
-Start with use sdax_tokio::PlanStart;, await the report, then use
-report.into_result(). Its success is Option<Arc<Out>>; its error is the full
-typed Report, including faults, cleanup failures, incomplete work, and ambiguous
-operations. Keep that report typed internally. At a boundary requiring String,
-use report.into_result().map_err(|report| report.to_string()); textual rendering
-cannot preserve downcasting. When output is required, use into_required_output():
-it returns Arc<Out> or RequiredOutputError::Failed / MissingOutput, each retaining
-the original report through report() and into_report().
+Start with use sdax_tokio::PlanStart; and await the report. When output is required,
+use report.into_required_output(): it returns Arc<Out> or
+RequiredOutputError::Failed / MissingOutput, each retaining the original report
+through report() and into_report(). Failed runs take precedence over missing output.
+Use into_result() when no output is acceptable: its success is Option<Arc<Out>>
+and its error is the full Report. Keep reports typed internally. At a boundary
+requiring String, use .map_err(|error| error.to_string()); text cannot preserve
+typed error downcasting. See the complete boundaries in the starter templates.
 
 ## External acquisition, typed input, and completed output
 
@@ -100,8 +100,8 @@ fn external_acquisition_is_inside_hold() {
     ));
     let report = tokio_rt.block_on(plan.start(runtime, 2));
     assert_eq!(
-        report.into_result().expect("clean run").as_deref(),
-        Some(&42)
+        *report.into_required_output().expect("completed output"),
+        42
     );
     assert_eq!(acquisitions.load(Ordering::SeqCst), 1);
     assert_eq!(releases.load(Ordering::SeqCst), 1);
@@ -177,8 +177,8 @@ fn ordinary_input_is_separate_from_a_formal_resource_port() {
     ));
     let report = tokio_rt.block_on(plan.start(runtime, ()));
     assert_eq!(
-        report.into_result().expect("clean run").as_deref(),
-        Some(&13)
+        *report.into_required_output().expect("completed output"),
+        13
     );
 }
 ~~~
@@ -215,11 +215,11 @@ fn unknown_operation_recovers_by_its_declared_identity() {
         .step("destination")
         .run(|_cx, ()| async move { Ok(Destination("preview")) });
     p.effect("publish thumbnail")
+        .on_ambiguous(Ambiguity::Recover)
+        .identified_by(operation)
         .needs(destination)
         .idempotent()
         .within(Duration::from_millis(5))
-        .on_ambiguous(Ambiguity::Recover)
-        .identified_by(operation)
         .perform(
             |cx, (destination, operation): (Arc<Destination>, Arc<u64>)| async move {
                 cx.hold(|| async move {

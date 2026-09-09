@@ -39,6 +39,10 @@ inside `cx.hold`, so when its future reports success the engine records the
 cleanup obligation in that same poll. The failure case keeps the whole `Report` by using
 `into_result`, then inspects its fault and cleanup details.
 
+For applications that require completed output, use `into_required_output()`.
+It returns `Arc<Out>` or a typed `Failed` / `MissingOutput` error, each retaining
+the full report. `into_result()` remains useful when no output is acceptable.
+
 ```rust
 use sdax::prelude::*;
 use sdax_tokio::{PlanStart, TokioRuntime};

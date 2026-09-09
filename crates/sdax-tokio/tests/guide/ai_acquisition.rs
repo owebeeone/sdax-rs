@@ -60,8 +60,8 @@ fn external_acquisition_is_inside_hold() {
     ));
     let report = tokio_rt.block_on(plan.start(runtime, 2));
     assert_eq!(
-        report.into_result().expect("clean run").as_deref(),
-        Some(&42)
+        *report.into_required_output().expect("completed output"),
+        42
     );
     assert_eq!(acquisitions.load(Ordering::SeqCst), 1);
     assert_eq!(releases.load(Ordering::SeqCst), 1);

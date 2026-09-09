@@ -16,11 +16,11 @@ fn unknown_operation_recovers_by_its_declared_identity() {
         .step("destination")
         .run(|_cx, ()| async move { Ok(Destination("preview")) });
     p.effect("publish thumbnail")
+        .on_ambiguous(Ambiguity::Recover)
+        .identified_by(operation)
         .needs(destination)
         .idempotent()
         .within(Duration::from_millis(5))
-        .on_ambiguous(Ambiguity::Recover)
-        .identified_by(operation)
         .perform(
             |cx, (destination, operation): (Arc<Destination>, Arc<u64>)| async move {
                 cx.hold(|| async move {

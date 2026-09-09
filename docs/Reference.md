@@ -90,7 +90,14 @@ is RAII (`inspect` prints `release: drop`). `initialize` returns the stable
 handle once; `serve` receives an `Arc` of that handle for every episode.
 `.on(pool)` before blocking `run`. `.on_ambiguous(a)` before `perform`.
 
-## Attributes (any order)
+## Attributes
+
+Configure attributes before the body's terminal method. Around
+`.identified_by(key)`, `.needs`, `.within`, `.retry` and `.idempotent` work on
+either side. Other attributes belong before identification. `.needs` replaces
+ordinary dependencies while retaining the identity dependency; the perform body
+still receives `(dependencies, Arc<Identity>)`. Recovery remains mandatory before
+compensation or persistence. A finished `Key` is not a configuration builder.
 
 | Method | On | Meaning |
 |---|---|---|
@@ -302,6 +309,15 @@ Report<Out> {
 
 `is_clean()` = empty lists and `Ok`.
 `into_result() -> Result<Option<Arc<Out>>, Report<Out>>`.
+Use it when a clean run may legitimately produce no output.
+
+`into_required_output() -> Result<Arc<Out>, RequiredOutputError<Out>>`.
+Use it when completed output is required. `Failed(report)` means the run was
+unclean; `MissingOutput(report)` means it was clean but produced no output.
+Failure takes precedence even if output is absent. Both variants retain the
+complete report, typed causes and trace. `error.report()` borrows it and
+`error.into_report()` returns it. Neither helper invents a default output.
+
 `Fault`: `node`, `order`, `phase`, `kind`.
 `FaultKind`: `Error`, `Panic`, `Timeout`, `DoubleHold`.
 `Phase`: `Prepare`, `Run`, `Serve`, `ReleaseBody`, `Compensate`, `Recover`,

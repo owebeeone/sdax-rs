@@ -87,6 +87,45 @@ fn build_refuses_and_the_finding_names_the_node() {
 failures, abandoned obligations, and ambiguous effects.
 `Report::into_result` is `Ok` only when every list is empty and the
 outcome is `Ok`. The error *is* the report.
+Its success is `Option<Arc<Out>>`, so a clean run may still have no output.
+
+Use `into_required_output()` when output is required. It returns `Arc<Out>` or
+`RequiredOutputError::Failed(report)` / `MissingOutput(report)`. Failure wins
+over missing output; a successful outcome alone does not hide cleanup failures,
+incomplete work or ambiguity. Both variants retain the whole report and its
+original typed errors. Use `report()` to inspect it or `into_report()` to take it
+back. Convert to text only at a boundary that requires text.
+
+```rust,guide:required_output
+use sdax::prelude::*;
+use std::sync::Arc;
+
+#[test]
+fn required_output_distinguishes_all_three_cases() {
+    let mut success = Report::empty(Outcome::Ok);
+    success.output = Some(Arc::new(42));
+    assert_eq!(
+        *success.into_required_output().expect("completed value"),
+        42
+    );
+
+    let missing = Report::<u32>::empty(Outcome::Ok)
+        .into_required_output()
+        .expect_err("no output");
+    match missing {
+        RequiredOutputError::MissingOutput(report) => assert!(report.is_clean()),
+        RequiredOutputError::Failed(_) => panic!("the run was clean"),
+    }
+
+    let failed = Report::<u32>::empty(Outcome::Cancelled)
+        .into_required_output()
+        .expect_err("cancelled");
+    assert!(matches!(&failed, RequiredOutputError::Failed(_)));
+    assert_eq!(failed.report().outcome, Outcome::Cancelled);
+    let original = failed.into_report();
+    assert_eq!(original.outcome, Outcome::Cancelled);
+}
+```
 
 `Outcome` is `Ok`, `Failed`, or `Cancelled`. A cleanup failure is a
 record, not a lost exception. `FailFast` stops the run at the first

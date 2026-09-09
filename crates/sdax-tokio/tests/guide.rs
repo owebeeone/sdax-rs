@@ -62,3 +62,6 @@ mod starter_service;
 
 #[path = "guide/starter_support.rs"]
 mod starter_support;
+
+#[path = "guide/required_output.rs"]
+mod required_output;

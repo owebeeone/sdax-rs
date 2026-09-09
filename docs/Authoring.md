@@ -58,6 +58,16 @@ service finishing ends the scope), and `.spawns(&template)`.
 `Recover` requires `.idempotent()`, `.identified_by(key)`, and
 `.recover_unknown(handler)`; `Retry` requires `.idempotent()`.
 
+On an identified effect, `.needs`, `.within`, `.retry` and `.idempotent` can go
+before or after `.identified_by(key)`. Replacing ordinary dependencies preserves
+the identity dependency. Set other attributes before identification; after
+`perform`, supply recovery and then compensation or persistence.
+
+After awaiting a run, use `report.into_required_output()` when completed data is
+required, or `report.into_result()` when no output is acceptable. Both preserve
+the complete failed report; the required form also distinguishes a clean run
+without output. See [reading reports](Errors.md).
+
 The [Quick Start](QuickStart.md) test is an input, a resource and a step. A
 service is [Running](Running.md). A template is [Instances](Instances.md).
 A blocking step is in the [Cookbook](Cookbook.md) pipeline. A plan that

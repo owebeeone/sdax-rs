@@ -58,3 +58,20 @@ rustdoc, Python script tests, external consumers and fresh package archives.
 All 847 local files matched the remote snapshot before this evidence-only update;
 the inventory is `evidence/verified-source.json`. No library source changed after
 the Rust 1.75 builds. No inference was run and no Mac build outputs were created.
+
+## Documentation follow-up
+
+The README, authoring guide, API reference and error guide now distinguish
+required from optional output and describe both error variants and report accessors.
+The reference limits configuration-order freedom to the four forwarded methods.
+The compact guide demonstrates post-identification configuration and required
+output; the composition boundary also uses the new helper. An executable guide
+example covers success, clean missing output and cancellation. This documents
+existing behavior, not a new engine feature or authoring-effectiveness experiment.
+
+The first check stopped on the new example's unnecessary large-error wrapper;
+the example now calls the API directly. All 11 shared checks then passed on
+Rust 1.96.0 at `D:/sdax-exp2/doc-pass-20260909/evidence/all-gates-02/results.json`.
+All 848 local files matched the verified snapshot before this evidence-only
+append. Guide quotations match their entire executable files. Library source is
+unchanged from the Rust 1.75-verified implementation; no new MSRV run was needed.
