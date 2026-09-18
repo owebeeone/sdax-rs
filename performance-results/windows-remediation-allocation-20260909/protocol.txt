@@ -1,6 +1,0 @@
-allocation-only Windows x86_64-pc-windows-msvc
-command: sdax-performance-harness.exe bench --samples 0 --warmup 8 --build-samples 0
-order: forward baseline then candidate; reverse candidate then baseline
-source baseline: ee2fa0f90514e6ae168c3d502a3a0aac2ca692d473a0c335daeb4e155ddb3edd
-source candidate: 3b6229329a8d057979b1d2d580dcfaecc17ef0e6cf3f7f21accbbc87d39e3cee
-fixture both: 7341fedb1370a331c151cbaf066d938e8333c04a886e44714c4ed36138e6193a

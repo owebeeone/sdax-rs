@@ -1,5 +1,0 @@
-fixture verification: graphs ok
-fixture verification: startup failure ok
-fixture verification: cleanup failure ok
-fixture verification: cancellation ok
-fixture verification: ok

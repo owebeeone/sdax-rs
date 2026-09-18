@@ -1,4 +1,0 @@
-wall_seconds=10.073826
-process_cpu_seconds=0.015625
-peak_working_set_bytes=4538368
-process_exit_code=

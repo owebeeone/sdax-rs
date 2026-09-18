@@ -1,5 +1,7 @@
 # Independent evaluation review
 
+Evidence links below point to private campaign archives and require repository access. Historical commands and recorded paths describe the original runs; see the archive README for replay setup.
+
 Neither model produced a fully passing program under the combined executable and structural criteria. Both scored 0/10 initial executable passes. Qwen passed all executable checks on f2 after one repair, while its resource acquisition still violated the separately reviewed lazy-registration requirement. Gemma had no executable pass. All 58 available responses failed structural review; one additional consumed Gemma call remains unassessed because its response was lost.
 
 Run: `run-8845efbb64c24573a19c9f3290725f21`. Final snapshot: 2026-09-08T18:18:53.706413+00:00.
@@ -80,4 +82,4 @@ These are hypotheses for a subsequent separately authorized revision, not establ
 
 ## Retained evidence
 
-The [evidence archive](../evaluation-results/2026-09-09-frozen-wave/evidence.tar.gz) and [file manifest](../evaluation-results/2026-09-09-frozen-wave/manifest.json) preserve the full request/response/diagnostic/review record without generated build directories. Original run and review directories remain retained locally.
+The [evidence archive](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/authoring-evaluation/evaluation-results/2026-09-09-frozen-wave/evidence.tar.gz) and [file manifest](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/authoring-evaluation/evaluation-results/2026-09-09-frozen-wave/manifest.json) preserve the full request/response/diagnostic/review record without generated build directories. Original run and review directories remain retained locally.

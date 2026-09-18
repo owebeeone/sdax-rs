@@ -1,5 +1,7 @@
 # Handwritten Tokio lifecycle comparator checkpoint
 
+Campaign evidence and experiment runners referenced here moved to the private [SDAX archive](https://github.com/owebeeone/sdax-core-evidence) on 2026-09-10. Recorded paths and commands remain historical; see the archive README and REPLAY.md for current locations and fresh-run setup.
+
 Date: 9 September 2026. Library snapshot: `d20b7c39b1bc6e509f8799dee43f2e364c0d6c8f`.
 Fixture revision:
 `7e442c2829a899e1f284a34d4c0a30201216a40b33e09933820e2ac2adc55e61`.

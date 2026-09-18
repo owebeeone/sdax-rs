@@ -1,5 +1,7 @@
 # sdax improvement performance results
 
+Evidence links below point to private campaign archives and require repository access. Historical commands and recorded paths describe the original runs; see the archive README for replay setup.
+
 Status: matched Mac/Pi results are complete; Windows current measurements are incomplete after an agent-caused deletion incident. No overall performance pass is claimed. See [matched results](#matched-drained-baseline-and-frozen-candidate) and the [incident record](WindowsPerformanceIncident-2026-09-08.md). The initial sections below preserve historical v1 baselines, which did not explicitly drain tracked tasks after each report.
 
 Date: 8 September 2026. Baseline commit:
@@ -10,7 +12,7 @@ The baseline crate-source revision is
 the fixture revision is
 `6e3a4023e05b0e291bf59f0197a16c61e9d1f67af52b1a21603449f4192cc22b`.
 The frozen fixture archive is
-[`performance-baseline-fixtures.tar.gz`](performance-baseline-fixtures.tar.gz),
+[`performance-baseline-fixtures.tar.gz`](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/performance/inputs/performance-baseline-fixtures.tar.gz),
 SHA-256
 `13099e59d2724637ef26a9601ff77630e23dbd23399642cf2b2fe009d5670251`.
 
@@ -38,7 +40,7 @@ report creation and observation. It is a diagnostic microbenchmark and is not
 the primary engine number.
 
 The fixture inventory and baseline support classifications are frozen in
-[`performance-harness/fixtures.csv`](../performance-harness/fixtures.csv).
+[`performance-harness/fixtures.csv`](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/performance/performance-harness/fixtures.csv).
 Unsupported revised-only behavior has no fabricated timing. In particular,
 the baseline cannot bind typed static component inputs, mount one definition
 more than once, perform callable unknown-outcome recovery, or preserve one
@@ -84,8 +86,8 @@ The baseline was captured on `weftpi`, Linux arm64, kernel
 `6.12.62+rpt-rpi-2712`, four Cortex-A76 cores with a 2.4 GHz maximum. The
 benchmark runtime used one current-thread worker. Rust and Cargo were 1.96.0.
 The exact metadata and CPU inventory are in
-[`metadata.txt`](../performance-results/baseline-pi-arm64-bdea942/metadata.txt)
-and [`cpu.txt`](../performance-results/baseline-pi-arm64-bdea942/cpu.txt).
+[`metadata.txt`](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/performance/performance-results/baseline-pi-arm64-bdea942/metadata.txt)
+and [`cpu.txt`](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/performance/performance-results/baseline-pi-arm64-bdea942/cpu.txt).
 
 The clean-target optimized build took 22.920 s. The no-change warm build took
 34.060 ms. The resulting harness executable was 1,502,248 bytes. Registry
@@ -98,9 +100,9 @@ consumer-plus-dependencies figure rather than library-only compilation.
 
 Times below are median / nearest-rank p95 over 40 samples. The complete
 distribution, min/max, allocations and bytes are in
-[`summary.csv`](../performance-results/baseline-pi-arm64-bdea942/summary.csv),
+[`summary.csv`](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/performance/performance-results/baseline-pi-arm64-bdea942/summary.csv),
 with every observation in
-[`raw-samples.csv`](../performance-results/baseline-pi-arm64-bdea942/raw-samples.csv).
+[`raw-samples.csv`](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/performance/performance-results/baseline-pi-arm64-bdea942/raw-samples.csv).
 
 ### Graph scaling
 
@@ -193,7 +195,7 @@ Windows was captured independently on `DABEEST`, Windows 11 Pro build 26200,
 an Intel Core Ultra 9 275HX with 24 physical/logical cores and 128 GiB of
 memory. The benchmark still used one current-thread worker. Rust and Cargo were
 1.98.1. Exact machine records and all samples are under
-[`baseline-windows-x64-bdea942`](../performance-results/baseline-windows-x64-bdea942/).
+[`baseline-windows-x64-bdea942`](https://github.com/owebeeone/sdax-core-evidence/tree/main/campaigns/performance/performance-results/baseline-windows-x64-bdea942).
 No model inference or concurrent compiler workload ran during the capture.
 
 The clean-target optimized build took 11.302 s, the no-change warm build
@@ -225,7 +227,7 @@ Mac was captured independently on `Giannis-MacBook-Pro.local`, macOS/Darwin
 25.6.0, an Apple M3 Pro with 12 cores and 36 GiB of memory. Rust and Cargo were
 1.96.0. Other agents stopped compiler and test work for the capture and no
 model inference ran. Exact metadata and samples are under
-[`baseline-mac-arm64-bdea942`](../performance-results/baseline-mac-arm64-bdea942/).
+[`baseline-mac-arm64-bdea942`](https://github.com/owebeeone/sdax-core-evidence/tree/main/campaigns/performance/performance-results/baseline-mac-arm64-bdea942).
 
 The clean-target optimized build took 8.297 s, the no-change warm build
 47.097 ms, and the executable was 1,330,192 bytes. Key median / p95 results are:
@@ -253,7 +255,7 @@ nodes and the pre-seeded machine is 65.5% of the 1,000-node chain median.
 
 ## Matched drained baseline and frozen candidate
 
-The separate [drained baseline fixture archive](performance-baseline-drained-fixtures.tar.gz) reproduces this boundary on the original baseline checkout. SHA-256: `c62509a3f13fada3fd8b49dc06dd4dbb22f7092870fde186dacd878a417f0924`. The earlier v1 archive remains unchanged. The current [performance-harness](../performance-harness/) directory is already adapted to the revised API; it does not require a second copy step in this checkout.
+The separate [drained baseline fixture archive](https://github.com/owebeeone/sdax-core-evidence/blob/main/campaigns/performance/inputs/performance-baseline-drained-fixtures.tar.gz) reproduces this boundary on the original baseline checkout. SHA-256: `c62509a3f13fada3fd8b49dc06dd4dbb22f7092870fde186dacd878a417f0924`. The earlier v1 archive remains unchanged. The current [performance-harness](https://github.com/owebeeone/sdax-core-evidence/tree/main/campaigns/performance/performance-harness) directory is already adapted to the revised API; it does not require a second copy step in this checkout.
 
 The original three-host baseline above is retained as v1 evidence, but its D
 boundary did not explicitly wait for executor-tracked wrapper tasks to retire

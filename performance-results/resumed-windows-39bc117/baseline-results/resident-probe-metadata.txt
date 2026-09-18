@@ -1,3 +1,0 @@
-boundary=whole process including startup, readiness, 10-second wait, shutdown, report and exit
-counter_source=GetProcessTimes and GetProcessMemoryInfo after exit, retained process handle
-wakeup_count=unmeasured

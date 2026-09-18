@@ -1,5 +1,0 @@
-boundary=whole optimized harness process including startup, readiness, 10-second resident wait, shutdown, report, and process exit
-counter_source=Linux wait4/getrusage RUSAGE_CHILDREN (maximum resident set size in KiB)
-cpu_interpretation=user plus system process CPU over the whole wall interval; not pure idle CPU
-memory_interpretation=native peak resident process memory; not engine-only bytes
-wakeup_count=unmeasured

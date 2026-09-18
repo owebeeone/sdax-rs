@@ -1,5 +1,7 @@
 # Improvement checkpoint — 8 September 2026
 
+Evidence links below point to private campaign archives and require repository access. Historical commands and recorded paths describe the original runs; see the archive README for replay setup.
+
 Latest continuation: [dynamic graph compaction](GraphCompactionCheckpoint-2026-09-08.md).
 The earlier measurements and status statements below apply to their named revisions.
 
@@ -16,8 +18,8 @@ for contracts, evidence and platform limitations.
 
 ## Retained benchmark evidence
 
-- [Windows baseline and candidate resumption](../performance-results/resumed-windows-39bc117/) contains complete raw samples, summaries, build logs and metadata for the pre-readiness-fix candidate.
-- [Windows dynamic-readiness before/after](../performance-results/dynamic-readiness-windows-64ca485/) contains both measurement orders, fixture verification and MSRV logs. The before captures use `39bc117`; after uses `64ca485` with the same full benchmark fixture.
+- [Windows baseline and candidate resumption](https://github.com/owebeeone/sdax-core-evidence/tree/main/campaigns/performance/performance-results/resumed-windows-39bc117) contains complete raw samples, summaries, build logs and metadata for the pre-readiness-fix candidate.
+- [Windows dynamic-readiness before/after](https://github.com/owebeeone/sdax-core-evidence/tree/main/campaigns/performance/performance-results/dynamic-readiness-windows-64ca485) contains both measurement orders, fixture verification and MSRV logs. The before captures use `39bc117`; after uses `64ca485` with the same full benchmark fixture.
 - Existing Mac/Pi results remain under `performance-results/`. Additional native profiling, recovery, authoring and full-check artifacts remain in the sibling workspace `artifacts/` directory referenced by the implementation report. Recovery profile data is retained on Windows, not included in Git.
 
 Generation, compilation and one-time plan construction remain separate from runtime. Runtime includes per-run setup, dynamic expansion, cleanup, reports and disposal.

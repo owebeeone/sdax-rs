@@ -1,4 +1,0 @@
-wall_seconds=10.002628326
-user_cpu_seconds=0.000000000
-system_cpu_seconds=0.001119000
-maximum_resident_set_kib=10912

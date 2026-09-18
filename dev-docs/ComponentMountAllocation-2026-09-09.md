@@ -1,5 +1,7 @@
 # Component mount allocation checkpoint
 
+Campaign evidence and experiment runners referenced here moved to the private [SDAX archive](https://github.com/owebeeone/sdax-core-evidence) on 2026-09-10. Recorded paths and commands remain historical; see the archive README and REPLAY.md for current locations and fresh-run setup.
+
 Date: 9 September 2026. Baseline: `ce339a59eefcd136562b16f4f20035c29ef0c988`.
 
 ## Performance witness

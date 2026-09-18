@@ -1,5 +1,7 @@
 # Performance measurement results — 2026-09-09
 
+Campaign evidence and experiment runners referenced here moved to the private [SDAX archive](https://github.com/owebeeone/sdax-core-evidence) on 2026-09-10. Recorded paths and commands remain historical; see the archive README and REPLAY.md for current locations and fresh-run setup.
+
 Status: Pi lifecycle and `ce339a5`/candidate captures and Windows dynamic
 allocation confirmation are complete. The isolated component-copy allocation
 objective passed. Timing flags remain order-sensitive, so no overall performance
